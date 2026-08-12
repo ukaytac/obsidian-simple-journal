@@ -7,25 +7,112 @@ import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../
 
 const MAX_COLLISION_ATTEMPTS = 100;
 
+const ASCII_ONLY = /^[\x00-\x7F]*$/;
+
+/**
+ * NFC-normalizes `value`, skipping the call entirely for plain-ASCII input
+ * (the overwhelming common case for vault paths), which cannot differ under
+ * normalization. `isEntryFile` runs once per Markdown file in the vault, so
+ * this keeps that path cheap without giving up correctness for the Unicode
+ * paths it exists to handle.
+ */
+function normalizeNfc(value: string): string {
+  return ASCII_ONLY.test(value) ? value : value.normalize("NFC");
+}
+
 /**
  * Owns every interaction with journal entry files. Knows about the vault.
  * Knows nothing about the UI.
  */
 export class EntryRepository {
+  /**
+   * Memoized resolution of the configured root to its real on-disk casing.
+   * `prefix` (the resolved root plus a trailing slash, NFC-normalized) is
+   * cached alongside it so `isEntryFile` — called once per Markdown file in
+   * the vault — never redoes string normalization work that is constant
+   * across an entire `listEntries()` pass.
+   */
+  private folderCache: { configured: string; resolved: string; prefix: string } | null = null;
+
+  /** Memoized normalization of the raw setting value, keyed on that raw string. */
+  private rawRootCache: { raw: string; normalized: string } | null = null;
+
   constructor(
     private readonly app: App,
     private readonly getFolder: () => string,
   ) {}
 
+  /** The configured journal root: trimmed, defaulted, NFC-normalized. */
   private get root(): string {
-    const trimmed = this.getFolder().trim().replace(/^\/+|\/+$/g, "");
-    return trimmed || "Journal";
+    const raw = this.getFolder();
+    if (this.rawRootCache?.raw === raw) return this.rawRootCache.normalized;
+
+    const trimmed = raw.trim().replace(/^\/+|\/+$/g, "");
+    const normalized = normalizeNfc(trimmed || "Journal");
+    this.rawRootCache = { raw, normalized };
+    return normalized;
+  }
+
+  /**
+   * Resolves the configured root to its real on-disk casing, so a setting
+   * like "journal" matches (and creates alongside) an existing "Journal/"
+   * folder rather than mismatching it or colliding with it on a
+   * case-insensitive filesystem. Memoized because `isEntryFile` runs once per
+   * Markdown file in the vault, and a folder walk per call would be a real
+   * cost at scale. Invalidated when the cached path no longer resolves to a
+   * folder — a cheap lookup — so a folder created (or removed) after the
+   * first resolution is still picked up.
+   */
+  private resolveFolder(): { resolved: string; prefix: string } {
+    const configured = this.root;
+
+    if (
+      this.folderCache?.configured === configured &&
+      this.app.vault.getAbstractFileByPath(this.folderCache.resolved) instanceof TFolder
+    ) {
+      return this.folderCache;
+    }
+
+    const resolved = this.resolveCasing(configured);
+    const prefix = normalizeNfc(`${resolved}/`);
+    this.folderCache = { configured, resolved, prefix };
+    return this.folderCache;
+  }
+
+  /**
+   * Walks the configured root's segments from the vault root. At each level,
+   * looks for a child folder whose name matches the configured segment
+   * case-insensitively (both sides NFC-normalized) and, if found, continues
+   * from its real name; otherwise the segment doesn't exist yet and is kept
+   * as configured, since it will be created with that casing.
+   */
+  private resolveCasing(configured: string): string {
+    const segments = configured.split("/");
+    let children = this.app.vault.getRoot().children;
+    const resolved: string[] = [];
+
+    for (const segment of segments) {
+      const target = normalizeNfc(segment).toLowerCase();
+      const match = children.find(
+        (child): child is TFolder =>
+          child instanceof TFolder && normalizeNfc(child.name).toLowerCase() === target,
+      );
+
+      if (match) {
+        resolved.push(match.name);
+        children = match.children;
+      } else {
+        resolved.push(segment);
+        children = [];
+      }
+    }
+
+    return resolved.join("/");
   }
 
   isEntryFile(file: TFile): boolean {
     if (file.extension !== "md") return false;
-    const prefix = `${this.root}/`.toLowerCase();
-    return file.path.toLowerCase().startsWith(prefix);
+    return normalizeNfc(file.path).startsWith(this.resolveFolder().prefix);
   }
 
   /** Builds the entry record for a file, or null if the file is not an entry. */
@@ -64,7 +151,7 @@ export class EntryRepository {
    * written in the same second gets a numeric suffix.
    */
   async createEntry(at: Date): Promise<TFile> {
-    const folder = entryFolderPath(this.root, at);
+    const folder = entryFolderPath(this.resolveFolder().resolved, at);
     await this.ensureFolder(folder);
 
     const stem = formatEntryFilename(at);
@@ -107,7 +194,9 @@ export class EntryRepository {
         // Lost a race against another writer (Sync, Templater, ...) creating
         // the same folder. If it now exists, proceed rather than losing the
         // entry the user is about to write; otherwise the failure is real.
-        if (!this.app.vault.getFolderByPath(current)) throw error;
+        // `getFolderByPath` would be simpler but is 1.5.7+; `getAbstractFileByPath`
+        // plus an `instanceof` check works back to our declared minAppVersion.
+        if (!(this.app.vault.getAbstractFileByPath(current) instanceof TFolder)) throw error;
       }
     }
   }

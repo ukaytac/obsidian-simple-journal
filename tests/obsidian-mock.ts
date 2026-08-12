@@ -57,17 +57,40 @@ export function debounce<T extends unknown[]>(fn: (...args: T) => void): (...arg
   return fn;
 }
 
-/** In-memory vault. Files are stored as path -> contents. */
+function parentPath(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "" : path.slice(0, index);
+}
+
+/**
+ * In-memory vault. Files are stored as path -> contents. `folders` is the
+ * single source of truth for folder existence — exact, path-keyed, so
+ * `getAbstractFileByPath` stays an O(1) lookup like the real vault's path
+ * index. `addFile` keeps it complete by registering every ancestor
+ * directory, the same way a real vault never has a file without its parent
+ * folders also existing.
+ */
 export class FakeVault {
   files = new Map<string, TFile>();
   contents = new Map<string, string>();
   folders = new Set<string>();
   trashed: string[] = [];
 
+  // Real Obsidian hands back the same TFolder instance on every lookup for a
+  // given path; reusing instances here (rather than allocating fresh ones per
+  // call) keeps `getAbstractFileByPath` cheap enough to call once per file,
+  // matching production cost instead of a mock-only allocation tax.
+  private folderNodes = new Map<string, TFolder>();
+
   addFile(path: string, data: string, ctime = 0): TFile {
     const file = new TFile(path, ctime);
     this.files.set(path, file);
     this.contents.set(path, data);
+
+    for (let current = parentPath(path); current; current = parentPath(current)) {
+      this.folders.add(current);
+    }
+
     return file;
   }
 
@@ -77,23 +100,61 @@ export class FakeVault {
 
   getAbstractFileByPath(path: string): TAbstractFile | null {
     if (this.files.has(path)) return this.files.get(path) as TFile;
-    if (this.folders.has(path)) {
-      const folder = new TFolder();
-      folder.path = path;
-      return folder;
-    }
+    if (this.folders.has(path) || path === "") return this.folderNode(path);
     return null;
   }
 
-  getFolderByPath(path: string): TFolder | null {
-    if (!this.folders.has(path)) return null;
-    const folder = new TFolder();
-    folder.path = path;
+  private folderNode(path: string): TFolder {
+    let folder = this.folderNodes.get(path);
+    if (!folder) {
+      folder = new TFolder();
+      folder.path = path;
+      folder.name = path.split("/").pop() ?? path;
+      this.folderNodes.set(path, folder);
+    }
     return folder;
   }
 
+  /** The vault's root folder, with a real (if shallow-computed) child tree. */
+  getRoot(): TFolder {
+    const root = this.folderNode("");
+    root.children = this.childrenOf("");
+    return root;
+  }
+
+  private childrenOf(parent: string): TAbstractFile[] {
+    const children: TAbstractFile[] = [];
+
+    for (const folderPath of this.folders) {
+      if (parentPath(folderPath) !== parent) continue;
+      const folder = this.folderNode(folderPath);
+      folder.children = this.childrenOf(folderPath);
+      children.push(folder);
+    }
+
+    for (const [filePath, file] of this.files) {
+      if (parentPath(filePath) !== parent) continue;
+      children.push(file);
+    }
+
+    return children;
+  }
+
+  /**
+   * Mirrors a case-insensitive filesystem (e.g. macOS's default APFS): two
+   * sibling folders differing only in case collide, matching the real
+   * failure mode a mismatched-casing setting can trigger.
+   */
   async createFolder(path: string): Promise<void> {
-    if (this.folders.has(path)) throw new Error("Folder already exists.");
+    const parent = parentPath(path);
+    const name = path.slice(parent ? parent.length + 1 : 0).toLowerCase();
+
+    for (const existing of this.folders) {
+      if (parentPath(existing) !== parent) continue;
+      const existingName = existing.slice(parent ? parent.length + 1 : 0).toLowerCase();
+      if (existingName === name) throw new Error("Folder already exists.");
+    }
+
     this.folders.add(path);
   }
 

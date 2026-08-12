@@ -57,6 +57,25 @@ describe("isEntryFile", () => {
     const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
     expect(repo.isEntryFile(file)).toBe(true);
   });
+
+  it("does not treat a differently-cased sibling folder as the journal folder", () => {
+    const fake = createFakeApp();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    const strayFile = fake.vault.addFile("JOURNAL/private.md", "");
+    const repo = new EntryRepository(fake as unknown as App, () => "Journal");
+
+    expect(repo.isEntryFile(strayFile)).toBe(false);
+    expect(repo.listEntries()).toHaveLength(1);
+  });
+
+  it("matches a folder across NFC and NFD Unicode normalization", () => {
+    const fake = createFakeApp();
+    const nfdFolder = "Günlük".normalize("NFD");
+    const file = fake.vault.addFile(`${nfdFolder}/2026/08/2026-08-12-22-41-52.md`, "");
+    const repo = new EntryRepository(fake as unknown as App, () => "Günlük");
+
+    expect(repo.isEntryFile(file)).toBe(true);
+  });
 });
 
 describe("listEntries", () => {
@@ -149,6 +168,26 @@ describe("createEntry", () => {
     const repo = new EntryRepository(fake as unknown as App, () => "");
     const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
     expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("creates an entry when the folder setting's casing differs from the on-disk folder", async () => {
+    const fake = createFakeApp();
+    fake.vault.addFile("Journal/2026/07/2026-07-01-08-00-00.md", "");
+    const repo = new EntryRepository(fake as unknown as App, () => "journal");
+
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("resolves each segment of a nested configured root to its real casing", async () => {
+    const fake = createFakeApp();
+    fake.vault.addFile("Notes/Journal/2026/07/2026-07-01-08-00-00.md", "");
+    const repo = new EntryRepository(fake as unknown as App, () => "notes/Journal");
+
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+
+    expect(file.path).toBe("Notes/Journal/2026/08/2026-08-12-22-41-52.md");
   });
 
   it("survives another writer creating the same folder concurrently", async () => {
