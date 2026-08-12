@@ -45,6 +45,10 @@ export default class JournalEntriesPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+    if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
+      this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
+    }
   }
 
   async saveSettings(): Promise<void> {
