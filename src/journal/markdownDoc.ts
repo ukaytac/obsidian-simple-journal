@@ -5,30 +5,42 @@ export interface SplitDocument {
   body: string;
 }
 
-const OPENING_DELIMITER = /^---\r?\n/;
-const CLOSING_DELIMITER = /\r?\n---(\r?\n|$)/;
+// Matches the whole frontmatter block in one pass: an optional leading BOM,
+// the opening `---` (with optional trailing spaces/tabs), an optional
+// property region, the closing `---` (with optional trailing spaces/tabs),
+// and its trailing newline if present. The property region is non-greedy and
+// always consumes a full trailing newline before matching the closer, so a
+// `---` line is only ever recognized as a delimiter at the very start of a
+// line — never as a horizontal rule embedded in a YAML block scalar.
+const FRONTMATTER = /^﻿?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/;
 
 /**
  * Splits a Markdown document into its frontmatter block and its body.
  * Frontmatter is only recognized at the very start of the document, so a
  * horizontal rule further down is never mistaken for a delimiter.
+ *
+ * Invariant: `frontmatter + body === data` always holds.
  */
 export function splitFrontmatter(data: string): SplitDocument {
-  const opening = OPENING_DELIMITER.exec(data);
-  if (!opening) return { frontmatter: "", body: data };
+  const match = FRONTMATTER.exec(data);
+  if (!match) return { frontmatter: "", body: data };
 
-  const afterOpening = opening[0].length;
-  const closing = CLOSING_DELIMITER.exec(data.slice(afterOpening));
-  if (!closing) return { frontmatter: "", body: data };
-
-  const end = afterOpening + closing.index + closing[0].length;
-  return { frontmatter: data.slice(0, end), body: data.slice(end) };
+  const frontmatter = match[0];
+  return { frontmatter, body: data.slice(frontmatter.length) };
 }
 
 /**
  * Returns `data` with its body replaced. The frontmatter block, including any
  * properties this plugin does not understand, is preserved exactly.
+ *
+ * Guarantees the result never reparses with different frontmatter than what
+ * was preserved: if the frontmatter block doesn't already end in a newline
+ * (only possible when the original document had no trailing newline after
+ * its closing `---`), a newline is inserted so the delimiter can never fuse
+ * with `body` into what would look like a horizontal rule or altered line.
  */
 export function replaceBody(data: string, body: string): string {
-  return splitFrontmatter(data).frontmatter + body;
+  const { frontmatter } = splitFrontmatter(data);
+  if (frontmatter && !frontmatter.endsWith("\n")) return `${frontmatter}\n${body}`;
+  return frontmatter + body;
 }
