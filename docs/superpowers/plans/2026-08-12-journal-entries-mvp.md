@@ -1023,18 +1023,27 @@ export function sliceBefore(
 /**
  * Position-based paging: the next `limit` entries after the entry at
  * `lastPath`. Unlike date-based paging this cannot skip entries that share a
- * timestamp with the cursor. An unknown cursor yields the first page, because
- * `findIndex` returns -1 and -1 + 1 === 0.
+ * timestamp with the cursor.
+ *
+ * A null `lastPath` means "the first page". A `lastPath` that is not in the
+ * list returns null — the cursor entry was deleted or renamed, and the caller
+ * must re-anchor rather than silently restart from the top.
  */
 export function pageAfter(
   list: JournalEntry[],
   lastPath: string | null,
   limit: number,
-): JournalEntry[] {
-  const start = lastPath === null ? 0 : list.findIndex((e) => e.file.path === lastPath) + 1;
-  return list.slice(start, start + limit);
+): JournalEntry[] | null {
+  if (lastPath === null) return list.slice(0, limit);
+
+  const index = list.findIndex((e) => e.file.path === lastPath);
+  if (index < 0) return null;
+
+  return list.slice(index + 1, index + 1 + limit);
 }
 ```
+
+`insertSorted` also removes any existing entry with the same path before inserting, so a re-inserted entry can never leave a stale duplicate behind, and the final tie-break in `compareEntries` is a code-point comparison rather than `localeCompare` — locale-dependent collation would order tied entries differently on different synced devices.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -2721,7 +2730,7 @@ Add to the class fields:
     this.loading = true;
 
     try {
-      const page = pageAfter(this.index, this.lastLoadedPath, PAGE_SIZE);
+      const page = this.nextPage();
       if (page.length === 0) return false;
 
       for (const entry of page) {
@@ -2733,6 +2742,37 @@ Add to the class fields:
     } finally {
       this.loading = false;
     }
+  }
+
+  /**
+   * The next page below what is rendered.
+   *
+   * `pageAfter` returns null when its cursor is no longer in the index — the
+   * cursor entry was deleted or renamed since it was recorded. Re-anchor on the
+   * oldest rendered entry that still exists, rather than silently handing back
+   * page one and re-appending entries that are already on screen.
+   */
+  private nextPage(): JournalEntry[] {
+    if (this.lastLoadedPath === null) {
+      return pageAfter(this.index, null, PAGE_SIZE) ?? [];
+    }
+
+    const direct = pageAfter(this.index, this.lastLoadedPath, PAGE_SIZE);
+    if (direct !== null) return direct;
+
+    // `this.rendered` is insertion-ordered newest first, so reversing walks
+    // upward from the bottom of the timeline — closest to the lost cursor.
+    for (const path of [...this.rendered.keys()].reverse()) {
+      const page = pageAfter(this.index, path, PAGE_SIZE);
+      if (page === null) continue;
+
+      this.lastLoadedPath = path;
+      return page;
+    }
+
+    // Nothing currently rendered survives in the index. Start from the top.
+    this.lastLoadedPath = null;
+    return pageAfter(this.index, null, PAGE_SIZE) ?? [];
   }
 
   /**
