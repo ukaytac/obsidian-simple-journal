@@ -1,0 +1,6 @@
+/* Journal Entries — all colors and metrics come from Obsidian CSS variables. */
+.journal-timeline {
+  padding: var(--size-4-6) var(--size-4-8);
+  max-width: var(--file-line-width);
+  margin: 0 auto;
+}
