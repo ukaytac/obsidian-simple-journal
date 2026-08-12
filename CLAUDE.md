@@ -304,20 +304,24 @@ This is a writing surface.
 
 Inline editing is a core feature.
 
-The ideal experience is that the user clicks or tabs into an entry and edits Markdown directly without opening the source note.
+The user edits Markdown directly in the timeline without opening the source note.
 
-Prefer documented and stable Obsidian APIs.
+The editing experience must be the **full Obsidian editor**, not an approximation. Live preview, `[[` autocomplete, editor commands, embeds, vim mode, and theme parity are product requirements, not nice-to-haves.
 
-Do NOT depend on undocumented internal APIs simply to mimic Journal View.
+No public Obsidian API provides an editable embedded editor. `MarkdownRenderer.render()` is read-only, and `Editor` is reachable only from an active `MarkdownView`.
 
-If embedding multiple full Obsidian editors is difficult or unsafe with the public API:
+Therefore the primary editor implementation mounts a real Obsidian Markdown editor through the internal `app.embedRegistry.embedByExtension["md"]` mechanism — the same one Obsidian uses for Canvas cards and callout editing.
 
-1. investigate documented approaches,
-2. explain the tradeoff,
-3. implement the simplest robust solution,
-4. keep the editing layer abstract enough that it can be improved later.
+This is a deliberate, documented exception to the general rule of avoiding undocumented Obsidian internals. It is justified only by the editing-fidelity requirement above. It does NOT license internal API usage anywhere else in the codebase.
 
-Do not build a fragile hack just to achieve visual parity.
+Two rules make this exception safe:
+
+1. **Feature detection with fallback is mandatory.** The internal API is probed at plugin load. If it is unavailable, the plugin falls back to a plain `<textarea>` editor and shows a one-time notice. The journal must never become unusable, and no journal data may be at risk.
+2. **All internal API usage is confined to a single file** behind an `EntryEditor` interface (`mount / getValue / setValue / focus / destroy / onChange`). Swapping to a future public API, or retreating permanently to the fallback, must be a one-file change.
+
+Every entry in the loaded timeline window is a live editor, not click-to-edit. The number of simultaneously mounted editors is bounded; entries far outside the viewport fall back to static rendering.
+
+Do not build a fragile hack anywhere else just to achieve visual parity.
 
 Markdown content must remain valid Markdown.
 
@@ -592,6 +596,23 @@ Newest first
 
 ---
 
+# Target Platforms
+
+The MVP targets **desktop and mobile**.
+
+`manifest.json` sets `isDesktopOnly: false`.
+
+Mobile is not a separate UI. It is the same timeline and the same code paths, with:
+
+* larger touch targets on the entry body
+* an earlier incremental-loading threshold
+* keeping the focused entry visible when the on-screen keyboard opens
+* a lower cap on simultaneously mounted editors
+
+Do not build a mobile-specific redesign.
+
+---
+
 # Compatibility With Obsidian
 
 All journal entries must remain ordinary `.md` files inside the user's vault.
@@ -820,7 +841,7 @@ Avoid:
 * network requests
 * telemetry
 * unnecessary dependencies
-* undocumented Obsidian internals
+* undocumented Obsidian internals — except the single sanctioned editor exception described under **Editing**
 * storing journal content in plugin settings
 * giant `main.ts` files
 * premature abstractions
