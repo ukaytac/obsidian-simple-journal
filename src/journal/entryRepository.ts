@@ -81,10 +81,14 @@ export class EntryRepository {
 
   /**
    * Walks the configured root's segments from the vault root. At each level,
-   * looks for a child folder whose name matches the configured segment
-   * case-insensitively (both sides NFC-normalized) and, if found, continues
-   * from its real name; otherwise the segment doesn't exist yet and is kept
-   * as configured, since it will be created with that casing.
+   * prefers a child folder whose name matches the configured segment
+   * exactly (NFC-normalized); only when no exact match exists does a
+   * case-insensitive match win. Without that preference, two siblings
+   * differing only in case (possible on a case-sensitive filesystem, or after
+   * a sync conflict) would resolve to whichever happened to be listed first —
+   * an outcome that must never depend on iteration order. A segment matching
+   * neither doesn't exist yet and is kept as configured, since it will be
+   * created with that casing.
    */
   private resolveCasing(configured: string): string {
     const segments = configured.split("/");
@@ -92,11 +96,25 @@ export class EntryRepository {
     const resolved: string[] = [];
 
     for (const segment of segments) {
-      const target = normalizeNfc(segment).toLowerCase();
-      const match = children.find(
-        (child): child is TFolder =>
-          child instanceof TFolder && normalizeNfc(child.name).toLowerCase() === target,
-      );
+      const exactTarget = normalizeNfc(segment);
+      const looseTarget = exactTarget.toLowerCase();
+      let looseMatch: TFolder | undefined;
+      let exactMatch: TFolder | undefined;
+
+      for (const child of children) {
+        if (!(child instanceof TFolder)) continue;
+        const name = normalizeNfc(child.name);
+
+        if (name === exactTarget) {
+          exactMatch = child;
+          break;
+        }
+        if (!looseMatch && name.toLowerCase() === looseTarget) {
+          looseMatch = child;
+        }
+      }
+
+      const match = exactMatch ?? looseMatch;
 
       if (match) {
         resolved.push(match.name);

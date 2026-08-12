@@ -68,6 +68,28 @@ describe("isEntryFile", () => {
     expect(repo.listEntries()).toHaveLength(1);
   });
 
+  it("prefers the exact-case sibling regardless of which one was added first", () => {
+    // Added in the order the setting-matching folder appears second, so a
+    // naive "first case-insensitive match wins" resolution would pick the
+    // stray folder instead.
+    const reversed = createFakeApp();
+    const strayFirst = reversed.vault.addFile("JOURNAL/private.md", "");
+    reversed.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    const repoReversed = new EntryRepository(reversed as unknown as App, () => "Journal");
+
+    expect(repoReversed.isEntryFile(strayFirst)).toBe(false);
+    expect(repoReversed.listEntries()).toHaveLength(1);
+
+    // And the original order, so sibling order can never decide the outcome.
+    const forward = createFakeApp();
+    forward.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    const strayLast = forward.vault.addFile("JOURNAL/private.md", "");
+    const repoForward = new EntryRepository(forward as unknown as App, () => "Journal");
+
+    expect(repoForward.isEntryFile(strayLast)).toBe(false);
+    expect(repoForward.listEntries()).toHaveLength(1);
+  });
+
   it("matches a folder across NFC and NFD Unicode normalization", () => {
     const fake = createFakeApp();
     const nfdFolder = "Günlük".normalize("NFD");
