@@ -1,0 +1,4185 @@
+# Journal Entries MVP Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build an Obsidian plugin that shows every journal entry Markdown file in one continuous, reverse-chronological, directly editable timeline.
+
+**Architecture:** Four layers with one-way dependencies — `EntryRepository` (files) → `JournalService` (in-memory sorted index + vault events) → `JournalView` (timeline DOM) → `EntryEditor` (an interface with two implementations: Obsidian's internal embedded editor, and a `<textarea>` fallback). All pure logic — date resolution, frontmatter splitting, ordering, paging — lives in small modules that are unit tested without Obsidian.
+
+**Tech Stack:** TypeScript, esbuild, Obsidian plugin API, Vitest (with a hand-written `obsidian` module mock).
+
+**Spec:** `docs/superpowers/specs/2026-08-12-journal-entries-design.md`
+**Product rules:** `CLAUDE.md` — read it before starting. It is the authority on product decisions.
+
+---
+
+## File Structure
+
+Created over the course of this plan:
+
+```
+manifest.json                  plugin manifest (isDesktopOnly: false)
+package.json                   scripts + dev dependencies
+tsconfig.json                  strict TypeScript config
+esbuild.config.mjs             bundler config (obsidian + codemirror external)
+vitest.config.ts               aliases the `obsidian` module to the test mock
+styles.css                     timeline styling, Obsidian CSS variables only
+versions.json                  Obsidian version compatibility map
+
+src/
+  main.ts                      plugin lifecycle, commands, wiring
+  journal/
+    entry.ts                   JournalEntry type
+    entryDate.ts               timestamp resolution (pure)
+    markdownDoc.ts             frontmatter-preserving body read/write (pure)
+    entryRepository.ts         file discovery + CRUD, no UI knowledge
+  services/
+    entryIndex.ts              ordering, insertion, paging (pure)
+    journalService.ts          index cache + vault event handling
+  views/
+    JournalView.ts             timeline, day groups, paging, mount window
+    EntryEditor.ts             editor interface + factory + feature detection
+    ObsidianEmbedEditor.ts     internal embedded editor (the ONLY internal API use)
+    TextareaEditor.ts          fallback editor
+  settings/
+    settings.ts                settings type + defaults
+    SettingsTab.ts             settings UI
+
+tests/
+  obsidian-mock.ts             fake TFile/Vault/MetadataCache used by unit tests
+  dates.test.ts
+  markdownDoc.test.ts
+  entryDate.test.ts
+  entryIndex.test.ts
+  entryRepository.test.ts
+
+docs/
+  editor-embed-api.md          findings from the Task 8 spike
+  manual-testing.md            the tests that need a real Obsidian instance
+```
+
+`DayGroup.ts` from the spec's sketch is **not** created. Day-group DOM is ~30 lines and is only ever built by `JournalView`; a separate module would be indirection without a boundary. Everything else in the spec's module sketch is kept.
+
+---
+
+## Task 1: Project scaffold
+
+**Files:**
+- Create: `package.json`, `tsconfig.json`, `esbuild.config.mjs`, `manifest.json`, `versions.json`, `vitest.config.ts`, `.gitignore`, `src/main.ts`, `styles.css`, `LICENSE`
+
+- [ ] **Step 1: Create `package.json`**
+
+```json
+{
+  "name": "journal-entries",
+  "version": "0.1.0",
+  "description": "Entry-based journaling for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": ["obsidian", "journal"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "latest",
+    "tslib": "^2.6.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}
+```
+
+- [ ] **Step 2: Create `tsconfig.json`**
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "inlineSourceMap": true,
+    "inlineSources": true,
+    "module": "ESNext",
+    "target": "ES2018",
+    "allowJs": true,
+    "noImplicitAny": true,
+    "moduleResolution": "node",
+    "importHelpers": true,
+    "isolatedModules": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "types": ["node"],
+    "lib": ["DOM", "ES2018"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+```
+
+- [ ] **Step 3: Create `esbuild.config.mjs`**
+
+The `external` list matters: Obsidian provides these modules at runtime. Bundling CodeMirror would produce a second, incompatible copy of the editor library.
+
+```js
+import esbuild from "esbuild";
+import process from "process";
+import builtins from "builtin-modules";
+
+const banner = `/*
+THIS IS A GENERATED/BUNDLED FILE BY ESBUILD
+If you want to view the source, visit the plugin's repository.
+*/
+`;
+
+const prod = process.argv[2] === "production";
+
+const context = await esbuild.context({
+  banner: { js: banner },
+  entryPoints: ["src/main.ts"],
+  bundle: true,
+  external: [
+    "obsidian",
+    "electron",
+    "@codemirror/autocomplete",
+    "@codemirror/collab",
+    "@codemirror/commands",
+    "@codemirror/language",
+    "@codemirror/lint",
+    "@codemirror/search",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@lezer/common",
+    "@lezer/highlight",
+    "@lezer/lr",
+    ...builtins,
+  ],
+  format: "cjs",
+  target: "es2018",
+  logLevel: "info",
+  sourcemap: prod ? false : "inline",
+  treeShaking: true,
+  outfile: "main.js",
+  minify: prod,
+});
+
+if (prod) {
+  await context.rebuild();
+  process.exit(0);
+} else {
+  await context.watch();
+}
+```
+
+- [ ] **Step 4: Create `manifest.json` and `versions.json`**
+
+`manifest.json`:
+
+```json
+{
+  "id": "journal-entries",
+  "name": "Journal Entries",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "A continuous, reverse-chronological journal where every entry is its own Markdown note.",
+  "author": "",
+  "isDesktopOnly": false
+}
+```
+
+`versions.json`:
+
+```json
+{
+  "0.1.0": "1.5.0"
+}
+```
+
+- [ ] **Step 5: Create `vitest.config.ts`**
+
+The `obsidian` module does not exist on npm as a runtime package, so every test import of it is redirected to a hand-written mock.
+
+```ts
+import { defineConfig } from "vitest/config";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      obsidian: path.resolve(dirname, "tests/obsidian-mock.ts"),
+    },
+  },
+  test: {
+    environment: "node",
+    include: ["tests/**/*.test.ts"],
+  },
+});
+```
+
+- [ ] **Step 6: Create `.gitignore`, `styles.css`, `LICENSE`**
+
+`.gitignore`:
+
+```
+node_modules/
+main.js
+*.js.map
+data.json
+.DS_Store
+```
+
+`styles.css` (empty placeholder is not acceptable — this is the real base, extended in Task 11):
+
+```css
+/* Journal Entries — all colors and metrics come from Obsidian CSS variables. */
+.journal-timeline {
+  padding: var(--size-4-6) var(--size-4-8);
+  max-width: var(--file-line-width);
+  margin: 0 auto;
+}
+```
+
+`LICENSE`: standard MIT license text, copyright 2026.
+
+- [ ] **Step 7: Create the stub plugin entry point `src/main.ts`**
+
+```ts
+import { Plugin } from "obsidian";
+
+export default class JournalEntriesPlugin extends Plugin {
+  async onload(): Promise<void> {
+    console.log("Journal Entries: loaded");
+  }
+}
+```
+
+- [ ] **Step 8: Install dependencies and verify the build**
+
+Run: `npm install && npm run build`
+Expected: exits 0, `main.js` is created in the repository root.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "chore: scaffold Obsidian plugin project"
+```
+
+---
+
+## Task 2: Date utilities
+
+Every filename, folder path, header, and `created` property is produced here. Tests must not depend on the machine's timezone, so they construct dates with the local-time `Date` constructor and assert on locally formatted output. The one value whose text is timezone-dependent — the `created` property — is tested by round-tripping instead of string equality.
+
+**Files:**
+- Create: `src/utils/dates.ts`
+- Test: `tests/dates.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/dates.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  dayKey,
+  entryFolderPath,
+  formatCreatedProperty,
+  formatDayHeader,
+  formatEntryFilename,
+  formatMonthHeader,
+  formatTime,
+  parseEntryFilename,
+} from "../src/utils/dates";
+
+// 12 August 2026 is a Wednesday. Local time, so formatting is deterministic.
+const d = new Date(2026, 7, 12, 22, 41, 52);
+
+describe("formatEntryFilename", () => {
+  it("produces a zero-padded timestamp filename", () => {
+    expect(formatEntryFilename(d)).toBe("2026-08-12-22-41-52");
+  });
+
+  it("zero-pads single-digit components", () => {
+    expect(formatEntryFilename(new Date(2026, 0, 5, 9, 4, 7))).toBe("2026-01-05-09-04-07");
+  });
+});
+
+describe("parseEntryFilename", () => {
+  it("round-trips a filename produced by formatEntryFilename", () => {
+    const parsed = parseEntryFilename(formatEntryFilename(d));
+    expect(parsed?.date.getTime()).toBe(d.getTime());
+    expect(parsed?.collision).toBe(1);
+  });
+
+  it("reads the collision suffix", () => {
+    const parsed = parseEntryFilename("2026-08-12-22-41-52-3");
+    expect(parsed?.date.getTime()).toBe(d.getTime());
+    expect(parsed?.collision).toBe(3);
+  });
+
+  it("returns null for a filename that is not ours", () => {
+    expect(parseEntryFilename("some-note")).toBeNull();
+    expect(parseEntryFilename("2026-08-12")).toBeNull();
+  });
+
+  it("returns null for an impossible date", () => {
+    expect(parseEntryFilename("2026-13-45-99-99-99")).toBeNull();
+  });
+});
+
+describe("entryFolderPath", () => {
+  it("nests by year and zero-padded month", () => {
+    expect(entryFolderPath("Journal", d)).toBe("Journal/2026/08");
+  });
+
+  it("normalizes a folder setting with stray slashes", () => {
+    expect(entryFolderPath("/Journal/", d)).toBe("Journal/2026/08");
+  });
+});
+
+describe("formatCreatedProperty", () => {
+  it("round-trips through Date parsing without losing the instant", () => {
+    expect(new Date(formatCreatedProperty(d)).getTime()).toBe(d.getTime());
+  });
+
+  it("includes an explicit offset rather than Z-less local time", () => {
+    expect(formatCreatedProperty(d)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([+-]\d{2}:\d{2}|Z)$/);
+  });
+});
+
+describe("headers and keys", () => {
+  it("formats the day key in local time", () => {
+    expect(dayKey(d)).toBe("2026-08-12");
+  });
+
+  it("formats the day header", () => {
+    expect(formatDayHeader(d)).toBe("WEDNESDAY, 12 AUGUST");
+  });
+
+  it("formats the month header", () => {
+    expect(formatMonthHeader(d)).toBe("AUGUST 2026");
+  });
+
+  it("formats the entry time as 24-hour HH:mm", () => {
+    expect(formatTime(d)).toBe("22:41");
+    expect(formatTime(new Date(2026, 7, 12, 9, 4, 0))).toBe("09:04");
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/dates.test.ts`
+Expected: FAIL — `Failed to resolve import "../src/utils/dates"`.
+
+- [ ] **Step 3: Write the implementation**
+
+`src/utils/dates.ts`:
+
+```ts
+const ENTRY_FILENAME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-(\d+))?$/;
+
+function pad(value: number, length = 2): string {
+  return String(value).padStart(length, "0");
+}
+
+/** Filename stem for an entry created at `date`, without extension or collision suffix. */
+export function formatEntryFilename(date: Date): string {
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("-");
+}
+
+export interface ParsedEntryFilename {
+  date: Date;
+  /** 1 for a plain filename, 2+ for a same-second collision suffix. */
+  collision: number;
+}
+
+/** Parses the plugin's filename convention. Returns null for anything else. */
+export function parseEntryFilename(basename: string): ParsedEntryFilename | null {
+  const match = ENTRY_FILENAME_RE.exec(basename);
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute, second, collision] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  );
+
+  // Reject values that rolled over, e.g. month 13 or day 45.
+  if (
+    date.getFullYear() !== Number(year) ||
+    date.getMonth() !== Number(month) - 1 ||
+    date.getDate() !== Number(day) ||
+    date.getHours() !== Number(hour) ||
+    date.getMinutes() !== Number(minute) ||
+    date.getSeconds() !== Number(second)
+  ) {
+    return null;
+  }
+
+  return { date, collision: collision ? Number(collision) : 1 };
+}
+
+/** Strips leading and trailing slashes so settings like "/Journal/" behave. */
+function normalizeRoot(root: string): string {
+  return root.replace(/^\/+|\/+$/g, "");
+}
+
+export function entryFolderPath(root: string, date: Date): string {
+  return `${normalizeRoot(root)}/${date.getFullYear()}/${pad(date.getMonth() + 1)}`;
+}
+
+/** ISO 8601 with an explicit local offset, e.g. 2026-08-12T22:41:52+03:00. */
+export function formatCreatedProperty(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad(Math.floor(absolute / 60))}:${pad(absolute % 60)}`;
+
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    offset
+  );
+}
+
+/** Local calendar day identifier, used to group entries. */
+export function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function formatDayHeader(date: Date): string {
+  const weekday = date.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase();
+  const month = date.toLocaleDateString("en-US", { month: "long" }).toUpperCase();
+  return `${weekday}, ${date.getDate()} ${month}`;
+}
+
+export function formatMonthHeader(date: Date): string {
+  const month = date.toLocaleDateString("en-US", { month: "long" }).toUpperCase();
+  return `${month} ${date.getFullYear()}`;
+}
+
+export function formatTime(date: Date): string {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/dates.test.ts`
+Expected: PASS, 13 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/utils/dates.ts tests/dates.test.ts
+git commit -m "feat: add entry date and filename utilities"
+```
+
+---
+
+## Task 3: Frontmatter-preserving document handling
+
+This module is the guarantee behind "editing never destroys frontmatter". Everything the plugin writes goes through `replaceBody`, which touches only the region after the closing `---`.
+
+**Files:**
+- Create: `src/journal/markdownDoc.ts`
+- Test: `tests/markdownDoc.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/markdownDoc.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { replaceBody, splitFrontmatter } from "../src/journal/markdownDoc";
+
+const withFrontmatter = `---
+created: 2026-08-12T22:41:52+03:00
+tags:
+  - journal
+mood: "calm"
+---
+
+Today I realized something.
+`;
+
+describe("splitFrontmatter", () => {
+  it("separates the frontmatter block from the body", () => {
+    const { frontmatter, body } = splitFrontmatter(withFrontmatter);
+    expect(frontmatter).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\ntags:\n  - journal\nmood: "calm"\n---\n`,
+    );
+    expect(body).toBe("\nToday I realized something.\n");
+  });
+
+  it("treats a document without frontmatter as all body", () => {
+    const { frontmatter, body } = splitFrontmatter("Just text.\n");
+    expect(frontmatter).toBe("");
+    expect(body).toBe("Just text.\n");
+  });
+
+  it("treats an unterminated frontmatter block as all body", () => {
+    const data = "---\ncreated: 2026-08-12T22:41:52+03:00\nno closing delimiter\n";
+    expect(splitFrontmatter(data).frontmatter).toBe("");
+    expect(splitFrontmatter(data).body).toBe(data);
+  });
+
+  it("does not treat a horizontal rule mid-document as frontmatter", () => {
+    const data = "Some text\n\n---\n\nMore text\n";
+    expect(splitFrontmatter(data).frontmatter).toBe("");
+  });
+});
+
+describe("replaceBody", () => {
+  it("preserves unknown frontmatter properties byte for byte", () => {
+    const result = replaceBody(withFrontmatter, "\nCompletely new text.\n");
+    expect(result).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\ntags:\n  - journal\nmood: "calm"\n---\n` +
+        `\nCompletely new text.\n`,
+    );
+  });
+
+  it("round-trips an unchanged body", () => {
+    const { body } = splitFrontmatter(withFrontmatter);
+    expect(replaceBody(withFrontmatter, body)).toBe(withFrontmatter);
+  });
+
+  it("replaces the whole document when there is no frontmatter", () => {
+    expect(replaceBody("Old text.\n", "New text.\n")).toBe("New text.\n");
+  });
+
+  it("preserves CRLF frontmatter delimiters", () => {
+    const data = "---\r\ncreated: x\r\n---\r\nold body";
+    expect(replaceBody(data, "new body")).toBe("---\r\ncreated: x\r\n---\r\nnew body");
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/markdownDoc.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write the implementation**
+
+`src/journal/markdownDoc.ts`:
+
+```ts
+export interface SplitDocument {
+  /** The frontmatter block including both `---` delimiter lines and the trailing newline. Empty when absent. */
+  frontmatter: string;
+  /** Everything after the frontmatter block, including any leading blank line. */
+  body: string;
+}
+
+const OPENING_DELIMITER = /^---\r?\n/;
+const CLOSING_DELIMITER = /\r?\n---(\r?\n|$)/;
+
+/**
+ * Splits a Markdown document into its frontmatter block and its body.
+ * Frontmatter is only recognized at the very start of the document, so a
+ * horizontal rule further down is never mistaken for a delimiter.
+ */
+export function splitFrontmatter(data: string): SplitDocument {
+  const opening = OPENING_DELIMITER.exec(data);
+  if (!opening) return { frontmatter: "", body: data };
+
+  const afterOpening = opening[0].length;
+  const closing = CLOSING_DELIMITER.exec(data.slice(afterOpening));
+  if (!closing) return { frontmatter: "", body: data };
+
+  const end = afterOpening + closing.index + closing[0].length;
+  return { frontmatter: data.slice(0, end), body: data.slice(end) };
+}
+
+/**
+ * Returns `data` with its body replaced. The frontmatter block, including any
+ * properties this plugin does not understand, is preserved exactly.
+ */
+export function replaceBody(data: string, body: string): string {
+  return splitFrontmatter(data).frontmatter + body;
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/markdownDoc.test.ts`
+Expected: PASS, 8 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/journal/markdownDoc.ts tests/markdownDoc.test.ts
+git commit -m "feat: add frontmatter-preserving document split"
+```
+
+---
+
+## Task 4: Entry timestamp resolution
+
+The isolated resolution function required by `CLAUDE.md`. Takes plain data, not Obsidian objects, so it is trivially testable.
+
+**Files:**
+- Create: `src/journal/entryDate.ts`
+- Test: `tests/entryDate.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/entryDate.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { resolveEntryDate } from "../src/journal/entryDate";
+
+const filenameDate = new Date(2026, 7, 12, 22, 41, 52);
+const createdDate = new Date(2026, 7, 12, 9, 0, 0);
+const ctimeDate = new Date(2026, 0, 1, 12, 0, 0);
+
+const base = {
+  basename: "2026-08-12-22-41-52",
+  ctime: ctimeDate.getTime(),
+};
+
+describe("resolveEntryDate", () => {
+  it("prefers a valid created property", () => {
+    const result = resolveEntryDate({ ...base, created: createdDate.toISOString() });
+    expect(result.getTime()).toBe(createdDate.getTime());
+  });
+
+  it("accepts a Date instance from the metadata cache", () => {
+    const result = resolveEntryDate({ ...base, created: createdDate });
+    expect(result.getTime()).toBe(createdDate.getTime());
+  });
+
+  it("falls back to the filename when created is missing", () => {
+    expect(resolveEntryDate(base).getTime()).toBe(filenameDate.getTime());
+  });
+
+  it("falls back to the filename when created is malformed", () => {
+    expect(resolveEntryDate({ ...base, created: "not a date" }).getTime()).toBe(
+      filenameDate.getTime(),
+    );
+  });
+
+  it("falls back to the filename when created is the wrong type", () => {
+    expect(resolveEntryDate({ ...base, created: 42 }).getTime()).toBe(filenameDate.getTime());
+    expect(resolveEntryDate({ ...base, created: null }).getTime()).toBe(filenameDate.getTime());
+    expect(resolveEntryDate({ ...base, created: {} }).getTime()).toBe(filenameDate.getTime());
+  });
+
+  it("falls back to ctime when created and the filename are both unusable", () => {
+    const result = resolveEntryDate({ basename: "some-note", ctime: ctimeDate.getTime() });
+    expect(result.getTime()).toBe(ctimeDate.getTime());
+  });
+
+  it("never returns an invalid Date", () => {
+    const result = resolveEntryDate({ basename: "some-note", ctime: Number.NaN });
+    expect(Number.isNaN(result.getTime())).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/entryDate.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write the implementation**
+
+`src/journal/entryDate.ts`:
+
+```ts
+import { parseEntryFilename } from "../utils/dates";
+
+export interface EntryDateSource {
+  /** Filename without extension. */
+  basename: string;
+  /** File creation time in milliseconds, from TFile.stat.ctime. */
+  ctime: number;
+  /** Raw `created` frontmatter value, whatever the metadata cache produced. */
+  created?: unknown;
+}
+
+function fromCreatedProperty(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value !== "string") return null;
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Resolves the timestamp of a journal entry.
+ *
+ * Order, per CLAUDE.md: valid `created` property, then the plugin's filename
+ * convention, then file creation time. A missing or malformed value never
+ * removes an entry from the timeline.
+ */
+export function resolveEntryDate(source: EntryDateSource): Date {
+  const fromProperty = fromCreatedProperty(source.created);
+  if (fromProperty) return fromProperty;
+
+  const fromFilename = parseEntryFilename(source.basename);
+  if (fromFilename) return fromFilename.date;
+
+  if (Number.isFinite(source.ctime)) return new Date(source.ctime);
+
+  // Last resort: an entry with no usable timestamp anywhere still gets a
+  // stable position rather than an Invalid Date that would poison sorting.
+  return new Date(0);
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/entryDate.test.ts`
+Expected: PASS, 7 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/journal/entryDate.ts tests/entryDate.test.ts
+git commit -m "feat: add entry timestamp resolution with fallbacks"
+```
+
+---
+
+## Task 5: Entry ordering and paging
+
+Pure ordering logic, covering `CLAUDE.md` test cases 17–20.
+
+Two paging functions exist on purpose:
+
+- `sliceBefore(list, before, limit)` matches the repository API named in the spec.
+- `pageAfter(list, lastPath, limit)` is what the **view** uses. Date-based paging silently skips entries that share a timestamp with the cursor — two entries written in the same second would lose one. Position-based paging cannot.
+
+**Files:**
+- Create: `src/journal/entry.ts`, `src/services/entryIndex.ts`
+- Test: `tests/entryIndex.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/entryIndex.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { JournalEntry } from "../src/journal/entry";
+import {
+  compareEntries,
+  findByPath,
+  insertSorted,
+  pageAfter,
+  removeByPath,
+  sliceBefore,
+  sortEntries,
+} from "../src/services/entryIndex";
+
+function entry(basename: string, created: Date): JournalEntry {
+  return {
+    file: { path: `Journal/${basename}.md`, basename } as JournalEntry["file"],
+    created,
+  };
+}
+
+const aug12_2241 = entry("2026-08-12-22-41-52", new Date(2026, 7, 12, 22, 41, 52));
+const aug12_1723 = entry("2026-08-12-17-23-41", new Date(2026, 7, 12, 17, 23, 41));
+const aug12_0934 = entry("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+const aug11_2110 = entry("2026-08-11-21-10-00", new Date(2026, 7, 11, 21, 10, 0));
+
+describe("sortEntries", () => {
+  it("orders newest first across days and within a day", () => {
+    const sorted = sortEntries([aug12_0934, aug11_2110, aug12_2241, aug12_1723]);
+    expect(sorted.map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-12-17-23-41",
+      "2026-08-12-09-34-21",
+      "2026-08-11-21-10-00",
+    ]);
+  });
+
+  it("puts the later collision suffix first when timestamps are identical", () => {
+    const same = new Date(2026, 7, 12, 22, 41, 52);
+    const first = entry("2026-08-12-22-41-52", same);
+    const second = entry("2026-08-12-22-41-52-2", same);
+    expect(sortEntries([first, second]).map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52-2",
+      "2026-08-12-22-41-52",
+    ]);
+  });
+
+  it("is a total order, so sorting is stable across calls", () => {
+    const a = sortEntries([aug12_0934, aug12_2241, aug11_2110]);
+    const b = sortEntries([aug11_2110, aug12_2241, aug12_0934]);
+    expect(a.map((e) => e.file.path)).toEqual(b.map((e) => e.file.path));
+  });
+});
+
+describe("insertSorted", () => {
+  it("puts a newer entry at the top", () => {
+    const list = [aug12_1723, aug12_0934];
+    const index = insertSorted(list, aug12_2241);
+    expect(index).toBe(0);
+    expect(list[0]).toBe(aug12_2241);
+  });
+
+  it("puts an older entry at the bottom", () => {
+    const list = [aug12_2241, aug12_1723];
+    expect(insertSorted(list, aug11_2110)).toBe(2);
+  });
+
+  it("inserts into the middle at the right position", () => {
+    const list = [aug12_2241, aug12_0934];
+    expect(insertSorted(list, aug12_1723)).toBe(1);
+    expect(list.map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-12-17-23-41",
+      "2026-08-12-09-34-21",
+    ]);
+  });
+
+  it("keeps the list consistent with compareEntries", () => {
+    const list: JournalEntry[] = [];
+    for (const e of [aug12_0934, aug12_2241, aug11_2110, aug12_1723]) insertSorted(list, e);
+    expect(list).toEqual(sortEntries(list));
+  });
+});
+
+describe("removeByPath and findByPath", () => {
+  it("removes the matching entry and reports its old index", () => {
+    const list = [aug12_2241, aug12_1723, aug12_0934];
+    expect(removeByPath(list, aug12_1723.file.path)).toBe(1);
+    expect(list.map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-12-09-34-21",
+    ]);
+  });
+
+  it("returns -1 for an unknown path", () => {
+    expect(removeByPath([aug12_2241], "Journal/nope.md")).toBe(-1);
+    expect(findByPath([aug12_2241], "Journal/nope.md")).toBeNull();
+  });
+
+  it("finds an entry by path", () => {
+    expect(findByPath([aug12_2241, aug12_1723], aug12_1723.file.path)).toBe(aug12_1723);
+  });
+});
+
+describe("sliceBefore", () => {
+  const list = [aug12_2241, aug12_1723, aug12_0934, aug11_2110];
+
+  it("returns the newest entries when no cursor is given", () => {
+    expect(sliceBefore(list, undefined, 2)).toEqual([aug12_2241, aug12_1723]);
+  });
+
+  it("returns only entries strictly older than the cursor", () => {
+    expect(sliceBefore(list, new Date(2026, 7, 12, 17, 23, 41))).toEqual([
+      aug12_0934,
+      aug11_2110,
+    ]);
+  });
+
+  it("returns everything when no limit is given", () => {
+    expect(sliceBefore(list)).toHaveLength(4);
+  });
+});
+
+describe("pageAfter", () => {
+  const list = [aug12_2241, aug12_1723, aug12_0934, aug11_2110];
+
+  it("returns the first page when there is no cursor", () => {
+    expect(pageAfter(list, null, 2)).toEqual([aug12_2241, aug12_1723]);
+  });
+
+  it("continues after the cursor entry by position", () => {
+    expect(pageAfter(list, aug12_1723.file.path, 2)).toEqual([aug12_0934, aug11_2110]);
+  });
+
+  it("does not skip entries that share a timestamp with the cursor", () => {
+    const same = new Date(2026, 7, 12, 22, 41, 52);
+    const twin = entry("2026-08-12-22-41-52-2", same);
+    const withTwin = sortEntries([...list, twin]);
+    expect(pageAfter(withTwin, twin.file.path, 1)).toEqual([aug12_2241]);
+  });
+
+  it("returns an empty page when the cursor is the last entry", () => {
+    expect(pageAfter(list, aug11_2110.file.path, 5)).toEqual([]);
+  });
+
+  it("returns the first page when the cursor is no longer in the list", () => {
+    expect(pageAfter(list, "Journal/deleted.md", 1)).toEqual([aug12_2241]);
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/entryIndex.test.ts`
+Expected: FAIL — modules not found.
+
+- [ ] **Step 3: Write `src/journal/entry.ts`**
+
+```ts
+import type { TFile } from "obsidian";
+
+export interface JournalEntry {
+  file: TFile;
+  created: Date;
+}
+```
+
+- [ ] **Step 4: Write `src/services/entryIndex.ts`**
+
+```ts
+import type { JournalEntry } from "../journal/entry";
+import { parseEntryFilename } from "../utils/dates";
+
+function collisionIndex(basename: string): number {
+  return parseEntryFilename(basename)?.collision ?? 1;
+}
+
+/**
+ * Total ordering, newest first. Entries created within the same second are
+ * ordered by their collision suffix so that the later one appears above.
+ * Falls back to path comparison so the order is never ambiguous.
+ */
+export function compareEntries(a: JournalEntry, b: JournalEntry): number {
+  const byTime = b.created.getTime() - a.created.getTime();
+  if (byTime !== 0) return byTime;
+
+  const byCollision = collisionIndex(b.file.basename) - collisionIndex(a.file.basename);
+  if (byCollision !== 0) return byCollision;
+
+  return b.file.path.localeCompare(a.file.path);
+}
+
+export function sortEntries(entries: JournalEntry[]): JournalEntry[] {
+  return [...entries].sort(compareEntries);
+}
+
+/** Inserts into an already sorted list and returns the insertion index. */
+export function insertSorted(list: JournalEntry[], entry: JournalEntry): number {
+  let low = 0;
+  let high = list.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (compareEntries(list[mid], entry) < 0) low = mid + 1;
+    else high = mid;
+  }
+
+  list.splice(low, 0, entry);
+  return low;
+}
+
+/** Removes the entry with this path. Returns its former index, or -1. */
+export function removeByPath(list: JournalEntry[], path: string): number {
+  const index = list.findIndex((entry) => entry.file.path === path);
+  if (index >= 0) list.splice(index, 1);
+  return index;
+}
+
+export function findByPath(list: JournalEntry[], path: string): JournalEntry | null {
+  return list.find((entry) => entry.file.path === path) ?? null;
+}
+
+/**
+ * Date-based paging: entries strictly older than `before`.
+ * Prefer `pageAfter` for timeline paging — see the note in this module's task.
+ */
+export function sliceBefore(
+  list: JournalEntry[],
+  before?: Date,
+  limit?: number,
+): JournalEntry[] {
+  const cutoff = before?.getTime();
+  const filtered =
+    cutoff === undefined ? list : list.filter((entry) => entry.created.getTime() < cutoff);
+
+  return limit === undefined ? filtered.slice() : filtered.slice(0, limit);
+}
+
+/**
+ * Position-based paging: the next `limit` entries after the entry at
+ * `lastPath`. Unlike date-based paging this cannot skip entries that share a
+ * timestamp with the cursor. An unknown cursor yields the first page, because
+ * `findIndex` returns -1 and -1 + 1 === 0.
+ */
+export function pageAfter(
+  list: JournalEntry[],
+  lastPath: string | null,
+  limit: number,
+): JournalEntry[] {
+  const start = lastPath === null ? 0 : list.findIndex((e) => e.file.path === lastPath) + 1;
+  return list.slice(start, start + limit);
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/entryIndex.test.ts`
+Expected: PASS, 17 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/journal/entry.ts src/services/entryIndex.ts tests/entryIndex.test.ts
+git commit -m "feat: add reverse-chronological entry ordering and paging"
+```
+
+---
+
+## Task 6: Entry repository
+
+The only module that touches the vault. Tested against a hand-written fake vault, which also becomes the mock that lets `import { ... } from "obsidian"` work in tests at all.
+
+**Files:**
+- Create: `tests/obsidian-mock.ts`, `src/journal/entryRepository.ts`
+- Test: `tests/entryRepository.test.ts`
+
+- [ ] **Step 1: Write the Obsidian mock**
+
+`tests/obsidian-mock.ts`:
+
+```ts
+/**
+ * Minimal stand-in for the `obsidian` module. Vitest aliases `obsidian` to this
+ * file, so unit tests can import Obsidian types and exercise repository code
+ * without a running Obsidian instance. Only what the tested code needs is here.
+ */
+
+export class TAbstractFile {
+  path = "";
+  name = "";
+}
+
+export class TFolder extends TAbstractFile {
+  children: TAbstractFile[] = [];
+}
+
+export class TFile extends TAbstractFile {
+  basename = "";
+  extension = "md";
+  stat = { ctime: 0, mtime: 0, size: 0 };
+
+  constructor(path: string, ctime = 0) {
+    super();
+    this.path = path;
+    this.name = path.split("/").pop() ?? path;
+    this.basename = this.name.replace(/\.md$/, "");
+    this.extension = "md";
+    this.stat = { ctime, mtime: ctime, size: 0 };
+  }
+}
+
+export function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+export class Notice {
+  constructor(public message: string) {}
+}
+
+export class Component {
+  onload(): void {}
+  onunload(): void {}
+  load(): void {
+    this.onload();
+  }
+  unload(): void {
+    this.onunload();
+  }
+  registerEvent(): void {}
+}
+
+export function debounce<T extends unknown[]>(fn: (...args: T) => void): (...args: T) => void {
+  return fn;
+}
+
+/** In-memory vault. Files are stored as path -> contents. */
+export class FakeVault {
+  files = new Map<string, TFile>();
+  contents = new Map<string, string>();
+  folders = new Set<string>();
+  trashed: string[] = [];
+
+  addFile(path: string, data: string, ctime = 0): TFile {
+    const file = new TFile(path, ctime);
+    this.files.set(path, file);
+    this.contents.set(path, data);
+    return file;
+  }
+
+  getMarkdownFiles(): TFile[] {
+    return [...this.files.values()];
+  }
+
+  getAbstractFileByPath(path: string): TAbstractFile | null {
+    if (this.files.has(path)) return this.files.get(path) as TFile;
+    if (this.folders.has(path)) {
+      const folder = new TFolder();
+      folder.path = path;
+      return folder;
+    }
+    return null;
+  }
+
+  async createFolder(path: string): Promise<void> {
+    if (this.folders.has(path)) throw new Error("Folder already exists.");
+    this.folders.add(path);
+  }
+
+  async create(path: string, data: string): Promise<TFile> {
+    if (this.files.has(path)) throw new Error("File already exists.");
+    return this.addFile(path, data);
+  }
+
+  async read(file: TFile): Promise<string> {
+    return this.contents.get(file.path) ?? "";
+  }
+
+  async process(file: TFile, fn: (data: string) => string): Promise<string> {
+    const next = fn(this.contents.get(file.path) ?? "");
+    this.contents.set(file.path, next);
+    return next;
+  }
+}
+
+/** In-memory metadata cache. Frontmatter is supplied per path by the test. */
+export class FakeMetadataCache {
+  frontmatter = new Map<string, Record<string, unknown>>();
+
+  getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {
+    const fm = this.frontmatter.get(file.path);
+    return fm ? { frontmatter: fm } : null;
+  }
+}
+
+export class FakeFileManager {
+  trashed: TFile[] = [];
+
+  async trashFile(file: TFile): Promise<void> {
+    this.trashed.push(file);
+  }
+}
+
+/** Assembles the three fakes into something shaped like `App`. */
+export function createFakeApp(): {
+  vault: FakeVault;
+  metadataCache: FakeMetadataCache;
+  fileManager: FakeFileManager;
+} {
+  return {
+    vault: new FakeVault(),
+    metadataCache: new FakeMetadataCache(),
+    fileManager: new FakeFileManager(),
+  };
+}
+
+export class App {}
+export class Plugin {}
+export class ItemView {}
+export class PluginSettingTab {}
+export class Setting {}
+export class Menu {}
+export class MarkdownRenderer {}
+export class WorkspaceLeaf {}
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+`tests/entryRepository.test.ts`:
+
+```ts
+import { beforeEach, describe, expect, it } from "vitest";
+import type { App, TFile } from "obsidian";
+import { createFakeApp } from "./obsidian-mock";
+import { EntryRepository } from "../src/journal/entryRepository";
+
+function setup() {
+  const fake = createFakeApp();
+  const repo = new EntryRepository(fake as unknown as App, () => "Journal");
+  return { fake, repo };
+}
+
+const body = "\nToday I realized something.\n";
+
+describe("isEntryFile", () => {
+  it("accepts markdown files under the journal folder", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    expect(repo.isEntryFile(file)).toBe(true);
+  });
+
+  it("rejects files outside the journal folder", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Daily Notes/2026-08-12.md", "");
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+
+  it("rejects a folder whose name merely starts with the journal folder name", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journalling/note.md", "");
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+
+  it("rejects non-markdown files", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/photo.png", "");
+    file.extension = "png";
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+});
+
+describe("listEntries", () => {
+  it("returns entries newest first across days", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-11-21-10-00.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-09-34-21.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+
+    expect(repo.listEntries().map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-12-09-34-21",
+      "2026-08-11-21-10-00",
+    ]);
+  });
+
+  it("uses the created property over the filename", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.metadataCache.frontmatter.set(file.path, {
+      created: new Date(2026, 7, 1, 8, 0, 0).toISOString(),
+    });
+
+    expect(repo.listEntries()[0].created.getTime()).toBe(new Date(2026, 7, 1, 8, 0, 0).getTime());
+  });
+
+  it("keeps entries whose created property is malformed", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.metadataCache.frontmatter.set(file.path, { created: "garbage" });
+
+    expect(repo.listEntries()).toHaveLength(1);
+    expect(repo.listEntries()[0].created.getTime()).toBe(
+      new Date(2026, 7, 12, 22, 41, 52).getTime(),
+    );
+  });
+
+  it("ignores files outside the journal folder", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.vault.addFile("Inbox/idea.md", "");
+    expect(repo.listEntries()).toHaveLength(1);
+  });
+});
+
+describe("createEntry", () => {
+  it("writes to the nested year and month folder", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("creates the folder hierarchy", async () => {
+    const { fake, repo } = setup();
+    await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect([...fake.vault.folders]).toEqual(["Journal", "Journal/2026", "Journal/2026/08"]);
+  });
+
+  it("writes only a created property and no heading", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    const data = fake.vault.contents.get(file.path) ?? "";
+
+    expect(data.startsWith("---\ncreated: 2026-08-12T22:41:52")).toBe(true);
+    expect(data).not.toContain("#");
+    expect(data.trimEnd().endsWith("---")).toBe(true);
+  });
+
+  it("suffixes a second entry created in the same second", async () => {
+    const { repo } = setup();
+    const at = new Date(2026, 7, 12, 22, 41, 52);
+    const first = await repo.createEntry(at);
+    const second = await repo.createEntry(at);
+    const third = await repo.createEntry(at);
+
+    expect(first.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+    expect(second.path).toBe("Journal/2026/08/2026-08-12-22-41-52-2.md");
+    expect(third.path).toBe("Journal/2026/08/2026-08-12-22-41-52-3.md");
+  });
+
+  it("never overwrites an existing file", async () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "PRECIOUS");
+    await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-12-22-41-52.md")).toBe("PRECIOUS");
+  });
+});
+
+describe("readBody and writeBody", () => {
+  it("reads the body without the frontmatter", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
+    );
+    expect(await repo.readBody(file)).toBe(body);
+  });
+
+  it("preserves arbitrary frontmatter when writing", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
+    );
+
+    await repo.writeBody(file, "\nRewritten.\n");
+    const data = fake.vault.contents.get(file.path) ?? "";
+
+    expect(data).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n\nRewritten.\n`,
+    );
+  });
+
+  it("round-trips unicode and Turkish characters", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
+    );
+    const text = "\nİstanbul'da yağmur yağıyordu — ışıklar süzülüyordu. 🌧️\n";
+
+    await repo.writeBody(file, text);
+    expect(await repo.readBody(file)).toBe(text);
+  });
+
+  it("round-trips wikilinks and markdown formatting", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
+    );
+    const text = "\nSee [[Some Note|alias]] and **bold** and `code`.\n\n- item\n";
+
+    await repo.writeBody(file, text);
+    expect(await repo.readBody(file)).toBe(text);
+  });
+});
+
+describe("deleteEntry", () => {
+  it("uses the file manager so Obsidian's trash setting is respected", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    await repo.deleteEntry(file as TFile);
+    expect(fake.fileManager.trashed.map((f) => f.path)).toEqual([file.path]);
+  });
+});
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/entryRepository.test.ts`
+Expected: FAIL — `../src/journal/entryRepository` not found.
+
+- [ ] **Step 4: Write the implementation**
+
+`src/journal/entryRepository.ts`:
+
+```ts
+import { App, TFile, TFolder } from "obsidian";
+import type { JournalEntry } from "./entry";
+import { resolveEntryDate } from "./entryDate";
+import { replaceBody, splitFrontmatter } from "./markdownDoc";
+import { sortEntries, sliceBefore } from "../services/entryIndex";
+import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../utils/dates";
+
+const MAX_COLLISION_ATTEMPTS = 100;
+
+/**
+ * Owns every interaction with journal entry files. Knows about the vault.
+ * Knows nothing about the UI.
+ */
+export class EntryRepository {
+  constructor(
+    private readonly app: App,
+    private readonly getFolder: () => string,
+  ) {}
+
+  private get root(): string {
+    return this.getFolder().replace(/^\/+|\/+$/g, "");
+  }
+
+  isEntryFile(file: TFile): boolean {
+    if (file.extension !== "md") return false;
+    return file.path.startsWith(`${this.root}/`);
+  }
+
+  /** Builds the entry record for a file, or null if the file is not an entry. */
+  entryFor(file: TFile): JournalEntry | null {
+    if (!this.isEntryFile(file)) return null;
+
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    const created = resolveEntryDate({
+      basename: file.basename,
+      ctime: file.stat.ctime,
+      created: frontmatter?.created,
+    });
+
+    return { file, created };
+  }
+
+  /** Every entry in the vault, newest first. */
+  listEntries(): JournalEntry[] {
+    const entries: JournalEntry[] = [];
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const entry = this.entryFor(file);
+      if (entry) entries.push(entry);
+    }
+
+    return sortEntries(entries);
+  }
+
+  /** Reverse-chronological query, as described in CLAUDE.md. */
+  getEntries(options: { before?: Date; limit?: number } = {}): JournalEntry[] {
+    return sliceBefore(this.listEntries(), options.before, options.limit);
+  }
+
+  /**
+   * Creates an entry file for `at`. Never overwrites: a name taken by an entry
+   * written in the same second gets a numeric suffix.
+   */
+  async createEntry(at: Date): Promise<TFile> {
+    const folder = entryFolderPath(this.root, at);
+    await this.ensureFolder(folder);
+
+    const stem = formatEntryFilename(at);
+    const contents = `---\ncreated: ${formatCreatedProperty(at)}\n---\n\n`;
+
+    for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS; attempt++) {
+      const name = attempt === 1 ? stem : `${stem}-${attempt}`;
+      const path = `${folder}/${name}.md`;
+
+      if (this.app.vault.getAbstractFileByPath(path)) continue;
+
+      try {
+        return await this.app.vault.create(path, contents);
+      } catch (error) {
+        // Lost a race against another writer. Try the next suffix rather than
+        // risking an overwrite.
+        if (attempt === MAX_COLLISION_ATTEMPTS) throw error;
+      }
+    }
+
+    throw new Error(`Journal Entries: could not find a free filename for ${stem}`);
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    const parts = path.split("/");
+    let current = "";
+
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFolder) continue;
+      if (existing) {
+        throw new Error(`Journal Entries: ${current} exists but is not a folder`);
+      }
+
+      await this.app.vault.createFolder(current);
+    }
+  }
+
+  /** The entry text, without its frontmatter block. */
+  async readBody(file: TFile): Promise<string> {
+    return splitFrontmatter(await this.app.vault.read(file)).body;
+  }
+
+  /** Replaces the entry text. Frontmatter is preserved exactly. */
+  async writeBody(file: TFile, body: string): Promise<void> {
+    await this.app.vault.process(file, (data) => replaceBody(data, body));
+  }
+
+  async deleteEntry(file: TFile): Promise<void> {
+    await this.app.fileManager.trashFile(file);
+  }
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/entryRepository.test.ts`
+Expected: PASS, 17 tests.
+
+The `TFolder instanceof` check in `ensureFolder` relies on the mock exporting a real `TFolder` class — it does.
+
+- [ ] **Step 6: Run the whole suite and typecheck**
+
+Run: `npm test && npx tsc --noEmit --skipLibCheck`
+Expected: all tests pass, no type errors.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tests/obsidian-mock.ts tests/entryRepository.test.ts src/journal/entryRepository.ts
+git commit -m "feat: add entry repository with collision-safe creation"
+```
+
+---
+
+## Task 7: Settings, plugin wiring, and an empty view
+
+Gets a real plugin loading in Obsidian with a registered view and working commands, before any timeline logic exists. From here on, every task can be verified by hand in a real vault.
+
+**Files:**
+- Create: `src/settings/settings.ts`, `src/settings/SettingsTab.ts`, `src/views/JournalView.ts`
+- Modify: `src/main.ts` (replace the stub entirely)
+
+- [ ] **Step 1: Write `src/settings/settings.ts`**
+
+```ts
+export interface JournalSettings {
+  /** Vault-relative folder that holds journal entries. */
+  journalFolder: string;
+}
+
+export const DEFAULT_SETTINGS: JournalSettings = {
+  journalFolder: "Journal",
+};
+```
+
+- [ ] **Step 2: Write `src/settings/SettingsTab.ts`**
+
+```ts
+import { PluginSettingTab, Setting } from "obsidian";
+import type JournalEntriesPlugin from "../main";
+
+export class JournalSettingsTab extends PluginSettingTab {
+  constructor(private readonly plugin: JournalEntriesPlugin) {
+    super(plugin.app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Journal folder")
+      .setDesc("Vault folder that holds journal entries. Created when the first entry is written.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Journal")
+          .setValue(this.plugin.settings.journalFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.journalFolder = value.trim() || "Journal";
+            await this.plugin.saveSettings();
+            this.plugin.refreshJournal();
+          }),
+      );
+  }
+}
+```
+
+- [ ] **Step 3: Write the empty `src/views/JournalView.ts`**
+
+Filled in by Task 11. This version registers cleanly and shows the empty state.
+
+```ts
+import { ItemView, WorkspaceLeaf } from "obsidian";
+import type JournalEntriesPlugin from "../main";
+
+export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
+
+export class JournalView extends ItemView {
+  constructor(
+    leaf: WorkspaceLeaf,
+    protected readonly plugin: JournalEntriesPlugin,
+  ) {
+    super(leaf);
+  }
+
+  getViewType(): string {
+    return VIEW_TYPE_JOURNAL;
+  }
+
+  getDisplayText(): string {
+    return "Journal";
+  }
+
+  getIcon(): string {
+    return "book-open";
+  }
+
+  async onOpen(): Promise<void> {
+    this.contentEl.empty();
+    this.contentEl.addClass("journal-view");
+    this.contentEl.createDiv({ cls: "journal-timeline" });
+  }
+
+  async onClose(): Promise<void> {
+    this.contentEl.empty();
+  }
+}
+```
+
+- [ ] **Step 4: Replace `src/main.ts`**
+
+```ts
+import { Plugin, WorkspaceLeaf } from "obsidian";
+import { EntryRepository } from "./journal/entryRepository";
+import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
+import { JournalSettingsTab } from "./settings/SettingsTab";
+import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
+
+export default class JournalEntriesPlugin extends Plugin {
+  settings: JournalSettings = { ...DEFAULT_SETTINGS };
+  repository!: EntryRepository;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+
+    this.repository = new EntryRepository(this.app, () => this.settings.journalFolder);
+
+    this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
+    this.addSettingTab(new JournalSettingsTab(this));
+
+    this.addRibbonIcon("book-open", "Open journal", () => {
+      void this.openJournal();
+    });
+
+    this.addCommand({
+      id: "open-journal",
+      name: "Open journal",
+      callback: () => void this.openJournal(),
+    });
+
+    this.addCommand({
+      id: "new-journal-entry",
+      name: "New journal entry",
+      callback: () => void this.newEntry(),
+    });
+
+    this.addCommand({
+      id: "go-to-today",
+      name: "Go to today",
+      callback: () => void this.goToToday(),
+    });
+  }
+
+  onunload(): void {
+    // Obsidian detaches views of a plugin's registered types automatically.
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  /** Opens the journal view, reusing an existing leaf when one exists. */
+  async openJournal(): Promise<JournalView> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
+    let leaf: WorkspaceLeaf;
+
+    if (existing.length > 0) {
+      leaf = existing[0];
+    } else {
+      leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type: VIEW_TYPE_JOURNAL, active: true });
+    }
+
+    await this.app.workspace.revealLeaf(leaf);
+    return leaf.view as JournalView;
+  }
+
+  async newEntry(): Promise<void> {
+    const view = await this.openJournal();
+    await view.startNewEntry();
+  }
+
+  async goToToday(): Promise<void> {
+    const view = await this.openJournal();
+    view.scrollToTop();
+  }
+
+  refreshJournal(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
+      void (leaf.view as JournalView).reload();
+    }
+  }
+}
+```
+
+- [ ] **Step 5: Add the placeholder view methods `main.ts` now calls**
+
+Append to `JournalView` in `src/views/JournalView.ts`, above `onClose`:
+
+```ts
+  /** Replaced with real behaviour in Task 15. */
+  async startNewEntry(): Promise<void> {
+    // No timeline yet.
+  }
+
+  /** Replaced with real behaviour in Task 12. */
+  scrollToTop(): void {
+    this.contentEl.scrollTo({ top: 0 });
+  }
+
+  /** Replaced with real behaviour in Task 11. */
+  async reload(): Promise<void> {
+    // No timeline yet.
+  }
+```
+
+- [ ] **Step 6: Build and install into a test vault**
+
+Run: `npm run build`
+Expected: exits 0.
+
+Create a scratch vault (or use an existing test vault) and link the build output:
+
+```bash
+VAULT="$HOME/ObsidianTestVault"
+mkdir -p "$VAULT/.obsidian/plugins/journal-entries"
+ln -sf "$PWD/main.js" "$VAULT/.obsidian/plugins/journal-entries/main.js"
+ln -sf "$PWD/manifest.json" "$VAULT/.obsidian/plugins/journal-entries/manifest.json"
+ln -sf "$PWD/styles.css" "$VAULT/.obsidian/plugins/journal-entries/styles.css"
+```
+
+- [ ] **Step 7: Verify by hand in Obsidian**
+
+1. Open the vault, enable **Journal Entries** in Community plugins → Installed plugins.
+2. Run the command **Open journal** — an empty tab titled "Journal" opens.
+3. Open Settings → Journal Entries — the **Journal folder** field shows `Journal`.
+4. The commands **New journal entry** and **Go to today** appear in the command palette and do not throw (check the developer console with `Ctrl/Cmd+Shift+I`).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main.ts src/settings src/views/JournalView.ts
+git commit -m "feat: register journal view, settings, and commands"
+```
+
+---
+
+## Task 8: Spike — verify the internal embedded editor API
+
+The one part of this plan that cannot be written from documentation, because the API is not documented. Before building on it, confirm its actual shape in the Obsidian version being targeted, and write down what was found. Tasks 10 onward depend on this record.
+
+**Files:**
+- Create: `docs/editor-embed-api.md`
+- Modify: `src/main.ts` (temporary probe command, removed in Step 5)
+
+- [ ] **Step 1: Add a temporary probe command**
+
+In `src/main.ts`, inside `onload()`:
+
+```ts
+    this.addCommand({
+      id: "probe-embed-api",
+      name: "DEBUG: probe embedded editor API",
+      callback: () => {
+        const app = this.app as unknown as {
+          embedRegistry?: { embedByExtension?: Record<string, unknown> };
+        };
+        const registry = app.embedRegistry?.embedByExtension;
+        console.log("embedRegistry present:", Boolean(app.embedRegistry));
+        console.log("extensions:", registry ? Object.keys(registry) : "none");
+        console.log("md creator type:", typeof registry?.md);
+
+        const file = this.app.workspace.getActiveFile();
+        if (!file || typeof registry?.md !== "function") return;
+
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+
+        const creator = registry.md as (
+          context: unknown,
+          file: unknown,
+          subpath: string,
+        ) => Record<string, unknown>;
+
+        const embed = creator(
+          { app: this.app, containerEl: host, showInline: true, depth: 0 },
+          file,
+          "",
+        );
+
+        console.log("embed keys:", Object.keys(embed));
+        console.log("prototype keys:", Object.getOwnPropertyNames(Object.getPrototypeOf(embed)));
+        console.log("embed object:", embed);
+        (window as unknown as Record<string, unknown>).__journalEmbed = embed;
+        (window as unknown as Record<string, unknown>).__journalEmbedHost = host;
+      },
+    });
+```
+
+- [ ] **Step 2: Run the probe**
+
+1. `npm run build`, reload the plugin in Obsidian (Settings → Community plugins → toggle off/on, or the **Reload app without saving** command).
+2. Open any Markdown note so `getActiveFile()` returns something.
+3. Open the developer console, then run **DEBUG: probe embedded editor API**.
+
+- [ ] **Step 3: In the console, determine how to make it editable and read/write its value**
+
+Try, in order, and note which work:
+
+```js
+const e = window.__journalEmbed;
+e.editable = true;
+e.showEditor?.();
+e.load?.();
+document.body.appendChild(window.__journalEmbedHost); // make it visible if needed
+e.editMode                    // the edit-mode object, if present
+e.editMode?.cm                // the CodeMirror EditorView
+e.editMode?.get?.()           // current text
+e.editMode?.set?.("hello", true)  // set text; second arg is usually "clear history"
+e.editMode?.cm?.state.doc.toString()
+e.onunload?.() ?? e.unload?.()    // teardown
+```
+
+- [ ] **Step 4: Record the findings**
+
+Write `docs/editor-embed-api.md` with:
+
+- the Obsidian version tested (Settings → About)
+- whether `app.embedRegistry.embedByExtension.md` exists and its type
+- the exact call signature that produced a working embed
+- the exact property/method names for: enabling editing, reading the value, setting the value, focusing, and unloading
+- whether change notification is available via `editMode.cm` (a CodeMirror `EditorView`, whose `state.doc` can be watched through a `ViewPlugin` or by polling on `blur`) or through a callback on the embed
+- anything that did **not** work, so the next person does not retry it
+- the same checks repeated on Obsidian mobile if a device is available; note any differences
+
+This file is the contract Task 10 implements against.
+
+- [ ] **Step 5: Remove the probe command**
+
+Delete the `probe-embed-api` command block added in Step 1.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/editor-embed-api.md src/main.ts
+git commit -m "docs: record internal embedded editor API findings"
+```
+
+---
+
+## Task 9: Editor interface and the textarea fallback
+
+The fallback is built first so the timeline has a working editor before the risky one is attempted, and so the interface is designed against the simpler implementation.
+
+**Files:**
+- Create: `src/views/EntryEditor.ts`, `src/views/TextareaEditor.ts`
+
+- [ ] **Step 1: Write `src/views/EntryEditor.ts`**
+
+```ts
+import type { App, TFile } from "obsidian";
+
+/**
+ * One entry's editing surface. Every implementation detail of how text gets
+ * edited lives behind this interface, so the internal-API implementation can be
+ * swapped for the fallback — or for a future public API — in one place.
+ */
+export interface EntryEditor {
+  /** Renders the editor into `el` for `file`. `file` is null for an uncommitted composer. */
+  mount(el: HTMLElement, file: TFile | null, initialValue: string): void;
+  getValue(): string;
+  setValue(value: string): void;
+  focus(): void;
+  /** True when this editor currently holds the keyboard focus. */
+  hasFocus(): boolean;
+  /** Called on every edit. Registered before mount. */
+  onChange(callback: (value: string) => void): void;
+  /** Called when the editor loses focus. */
+  onBlur(callback: () => void): void;
+  destroy(): void;
+  /**
+   * Checked after `mount`. Implemented only by editors that can fail at mount
+   * time; when it returns false the caller destroys this editor and mounts a
+   * `TextareaEditor` instead. Absent means "always usable".
+   */
+  isUsable?(): boolean;
+}
+
+export type EntryEditorFactory = {
+  create(): EntryEditor;
+  /** True when the internal API was unavailable and the fallback is in use. */
+  usingFallback: boolean;
+};
+
+/**
+ * True when Obsidian exposes the internal embedded-editor registry this plugin
+ * uses for full-fidelity editing. See docs/editor-embed-api.md.
+ */
+export function hasEmbeddedEditorApi(app: App): boolean {
+  const registry = (app as unknown as {
+    embedRegistry?: { embedByExtension?: Record<string, unknown> };
+  }).embedRegistry?.embedByExtension;
+
+  return typeof registry?.md === "function";
+}
+```
+
+- [ ] **Step 2: Write `src/views/TextareaEditor.ts`**
+
+```ts
+import type { TFile } from "obsidian";
+import type { EntryEditor } from "./EntryEditor";
+
+/**
+ * Fallback editor used when the internal embedded-editor API is unavailable.
+ * Plain Markdown text editing: no live preview, no autocomplete, but it cannot
+ * break, and it keeps the journal usable and the data safe.
+ */
+export class TextareaEditor implements EntryEditor {
+  private textarea: HTMLTextAreaElement | null = null;
+  private changeCallback: ((value: string) => void) | null = null;
+  private blurCallback: (() => void) | null = null;
+
+  mount(el: HTMLElement, _file: TFile | null, initialValue: string): void {
+    const textarea = el.createEl("textarea", { cls: "journal-entry-textarea" });
+    textarea.value = initialValue;
+    textarea.rows = 1;
+
+    const resize = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    };
+
+    textarea.addEventListener("input", () => {
+      resize();
+      this.changeCallback?.(textarea.value);
+    });
+    textarea.addEventListener("blur", () => this.blurCallback?.());
+
+    this.textarea = textarea;
+    // Height depends on layout, so measure after the element is in the document.
+    window.setTimeout(resize, 0);
+  }
+
+  getValue(): string {
+    return this.textarea?.value ?? "";
+  }
+
+  setValue(value: string): void {
+    if (!this.textarea) return;
+    this.textarea.value = value;
+    this.textarea.style.height = "auto";
+    this.textarea.style.height = `${this.textarea.scrollHeight}px`;
+  }
+
+  focus(): void {
+    this.textarea?.focus();
+  }
+
+  hasFocus(): boolean {
+    return this.textarea !== null && document.activeElement === this.textarea;
+  }
+
+  onChange(callback: (value: string) => void): void {
+    this.changeCallback = callback;
+  }
+
+  onBlur(callback: () => void): void {
+    this.blurCallback = callback;
+  }
+
+  destroy(): void {
+    this.textarea?.remove();
+    this.textarea = null;
+    this.changeCallback = null;
+    this.blurCallback = null;
+  }
+}
+```
+
+- [ ] **Step 3: Add the textarea styles to `styles.css`**
+
+```css
+.journal-entry-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  padding: 0;
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+```
+
+- [ ] **Step 4: Typecheck**
+
+Run: `npx tsc --noEmit --skipLibCheck`
+Expected: no errors.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/views/EntryEditor.ts src/views/TextareaEditor.ts styles.css
+git commit -m "feat: add entry editor interface and textarea fallback"
+```
+
+---
+
+## Task 10: Obsidian embedded editor
+
+The single file permitted to touch internal APIs. Implement it against `docs/editor-embed-api.md` from Task 8 — **if the spike recorded different property or method names than the reference implementation below, use the names from the spike.** The structure, the defensive checks, and the fallback contract stay the same either way.
+
+**Files:**
+- Create: `src/views/ObsidianEmbedEditor.ts`
+- Modify: `src/views/EntryEditor.ts` (add the factory)
+
+- [ ] **Step 1: Write `src/views/ObsidianEmbedEditor.ts`**
+
+```ts
+import type { App, TFile } from "obsidian";
+import type { EntryEditor } from "./EntryEditor";
+
+/**
+ * The ONLY file in this plugin that uses undocumented Obsidian internals.
+ *
+ * It mounts a real Obsidian Markdown editor — live preview, [[ autocomplete,
+ * editor commands, embeds, theme parity — by way of the internal embed
+ * registry, the same mechanism Obsidian uses for Canvas cards and callout
+ * editing. See docs/editor-embed-api.md for the verified API shape and
+ * CLAUDE.md § Editing for why this exception exists.
+ *
+ * Every internal access is optional-chained. If Obsidian changes shape, this
+ * editor reports failure through `isUsable()` and the caller falls back.
+ */
+
+interface EmbedCreatorContext {
+  app: App;
+  containerEl: HTMLElement;
+  showInline: boolean;
+  depth: number;
+}
+
+interface EmbedEditMode {
+  cm?: { focus(): void; hasFocus?: boolean; state: { doc: { toString(): string } } };
+  get?(): string;
+  set?(value: string, clearHistory: boolean): void;
+}
+
+interface MarkdownEmbed {
+  editable?: boolean;
+  editMode?: EmbedEditMode;
+  showEditor?(): void;
+  load?(): void;
+  unload?(): void;
+  onunload?(): void;
+}
+
+type EmbedCreator = (
+  context: EmbedCreatorContext,
+  file: TFile,
+  subpath: string,
+) => MarkdownEmbed;
+
+function getCreator(app: App): EmbedCreator | null {
+  const registry = (app as unknown as {
+    embedRegistry?: { embedByExtension?: Record<string, unknown> };
+  }).embedRegistry?.embedByExtension;
+
+  return typeof registry?.md === "function" ? (registry.md as EmbedCreator) : null;
+}
+
+export class ObsidianEmbedEditor implements EntryEditor {
+  private embed: MarkdownEmbed | null = null;
+  private containerEl: HTMLElement | null = null;
+  private changeCallback: ((value: string) => void) | null = null;
+  private blurCallback: (() => void) | null = null;
+  private pollHandle: number | null = null;
+  private lastValue = "";
+  private usable = false;
+
+  constructor(private readonly app: App) {}
+
+  /** False when the internal API did not behave as expected; the caller must fall back. */
+  isUsable(): boolean {
+    return this.usable;
+  }
+
+  mount(el: HTMLElement, file: TFile | null, initialValue: string): void {
+    const creator = getCreator(this.app);
+    if (!creator || !file) return;
+
+    this.containerEl = el.createDiv({ cls: "journal-entry-embed" });
+
+    try {
+      const embed = creator(
+        { app: this.app, containerEl: this.containerEl, showInline: true, depth: 0 },
+        file,
+        "",
+      );
+
+      embed.editable = true;
+      embed.showEditor?.();
+      embed.load?.();
+
+      if (!embed.editMode) {
+        this.teardownEmbed(embed);
+        return;
+      }
+
+      this.embed = embed;
+      this.usable = true;
+      this.lastValue = this.readValue();
+
+      if (this.lastValue !== initialValue) {
+        this.setValue(initialValue);
+      }
+
+      this.watchForChanges();
+      this.containerEl.addEventListener("focusout", () => this.blurCallback?.());
+    } catch (error) {
+      console.error("Journal Entries: embedded editor failed to mount", error);
+      this.containerEl.empty();
+      this.usable = false;
+    }
+  }
+
+  private readValue(): string {
+    const mode = this.embed?.editMode;
+    if (!mode) return "";
+    if (typeof mode.get === "function") return mode.get();
+    return mode.cm?.state.doc.toString() ?? "";
+  }
+
+  /**
+   * The embed exposes no change callback, so the document is polled while the
+   * editor exists. Polling a CodeMirror doc reference is cheap: it is a
+   * pointer comparison plus a string read only when the pointer changed.
+   */
+  private watchForChanges(): void {
+    this.pollHandle = window.setInterval(() => {
+      const value = this.readValue();
+      if (value === this.lastValue) return;
+      this.lastValue = value;
+      this.changeCallback?.(value);
+    }, 250);
+  }
+
+  getValue(): string {
+    return this.readValue();
+  }
+
+  setValue(value: string): void {
+    this.embed?.editMode?.set?.(value, false);
+    this.lastValue = value;
+  }
+
+  focus(): void {
+    this.embed?.editMode?.cm?.focus();
+  }
+
+  hasFocus(): boolean {
+    const cm = this.embed?.editMode?.cm;
+    if (cm?.hasFocus !== undefined) return cm.hasFocus;
+    return this.containerEl?.contains(document.activeElement) ?? false;
+  }
+
+  onChange(callback: (value: string) => void): void {
+    this.changeCallback = callback;
+  }
+
+  onBlur(callback: () => void): void {
+    this.blurCallback = callback;
+  }
+
+  destroy(): void {
+    if (this.pollHandle !== null) {
+      window.clearInterval(this.pollHandle);
+      this.pollHandle = null;
+    }
+    if (this.embed) this.teardownEmbed(this.embed);
+    this.embed = null;
+    this.containerEl?.remove();
+    this.containerEl = null;
+    this.changeCallback = null;
+    this.blurCallback = null;
+  }
+
+  private teardownEmbed(embed: MarkdownEmbed): void {
+    try {
+      embed.unload?.();
+      embed.onunload?.();
+    } catch (error) {
+      console.error("Journal Entries: embedded editor failed to unload", error);
+    }
+  }
+}
+```
+
+If the spike found a real change callback on the embed, replace `watchForChanges` with it and delete `pollHandle`.
+
+- [ ] **Step 2: Add the factory to `src/views/EntryEditor.ts`**
+
+Append:
+
+```ts
+import { Notice } from "obsidian";
+import { ObsidianEmbedEditor } from "./ObsidianEmbedEditor";
+import { TextareaEditor } from "./TextareaEditor";
+
+/**
+ * Chooses the editor implementation once, at plugin load. If the internal API
+ * is missing the user is told once, and the journal keeps working on the
+ * fallback rather than breaking.
+ */
+export function createEntryEditorFactory(app: App): EntryEditorFactory {
+  const available = hasEmbeddedEditorApi(app);
+
+  if (!available) {
+    new Notice(
+      "Journal Entries: this Obsidian version does not expose its embedded editor. " +
+        "Falling back to plain text editing.",
+      10000,
+    );
+  }
+
+  return {
+    usingFallback: !available,
+    create: () => (available ? new ObsidianEmbedEditor(app) : new TextareaEditor()),
+  };
+}
+```
+
+Move the `import type { App, TFile } from "obsidian";` line at the top of the file to `import { Notice, type App, type TFile } from "obsidian";` so `Notice` is available.
+
+- [ ] **Step 3: Add embed styles to `styles.css`**
+
+```css
+.journal-entry-embed .markdown-source-view,
+.journal-entry-embed .cm-editor {
+  background: transparent;
+}
+
+.journal-entry-embed .cm-scroller {
+  padding: 0;
+  font-family: var(--font-text);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-embed .cm-editor.cm-focused {
+  outline: none;
+}
+```
+
+- [ ] **Step 4: Build and typecheck**
+
+Run: `npm run build`
+Expected: exits 0.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/views/ObsidianEmbedEditor.ts src/views/EntryEditor.ts styles.css
+git commit -m "feat: add Obsidian embedded editor with feature detection"
+```
+
+---
+
+## Task 11: Timeline rendering
+
+The view finally shows entries. Static rendering only — editors arrive in Task 13 — so ordering and grouping can be verified on their own.
+
+**Files:**
+- Modify: `src/views/JournalView.ts` (full rewrite), `styles.css`, `src/main.ts`
+
+- [ ] **Step 1: Rewrite `src/views/JournalView.ts`**
+
+```ts
+import { Component, ItemView, MarkdownRenderer, WorkspaceLeaf } from "obsidian";
+import type { JournalEntry } from "../journal/entry";
+import type JournalEntriesPlugin from "../main";
+import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
+
+export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
+
+/** One entry as it currently exists in the DOM. */
+interface RenderedEntry {
+  entry: JournalEntry;
+  el: HTMLElement;
+  bodyEl: HTMLElement;
+  /** Component that owns any MarkdownRenderer output, so it can be unloaded. */
+  renderComponent: Component | null;
+}
+
+export class JournalView extends ItemView {
+  private timelineEl!: HTMLElement;
+  private rendered = new Map<string, RenderedEntry>();
+  private lastRenderedMonth: string | null = null;
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    protected readonly plugin: JournalEntriesPlugin,
+  ) {
+    super(leaf);
+  }
+
+  getViewType(): string {
+    return VIEW_TYPE_JOURNAL;
+  }
+
+  getDisplayText(): string {
+    return "Journal";
+  }
+
+  getIcon(): string {
+    return "book-open";
+  }
+
+  async onOpen(): Promise<void> {
+    this.contentEl.empty();
+    this.contentEl.addClass("journal-view");
+    this.timelineEl = this.contentEl.createDiv({ cls: "journal-timeline" });
+    await this.reload();
+  }
+
+  async onClose(): Promise<void> {
+    this.clearTimeline();
+    this.contentEl.empty();
+  }
+
+  /** Discards and rebuilds the whole timeline. */
+  async reload(): Promise<void> {
+    this.clearTimeline();
+
+    const entries = this.plugin.repository.listEntries();
+    for (const entry of entries) {
+      this.appendEntry(entry);
+    }
+
+    if (entries.length === 0) this.renderEmptyState();
+  }
+
+  private clearTimeline(): void {
+    for (const rendered of this.rendered.values()) {
+      rendered.renderComponent?.unload();
+    }
+    this.rendered.clear();
+    this.lastRenderedMonth = null;
+    this.timelineEl.empty();
+  }
+
+  private renderEmptyState(): void {
+    this.timelineEl.createDiv({
+      cls: "journal-empty",
+      text: "No journal entries yet. Run “New journal entry” to write the first one.",
+    });
+  }
+
+  /** Appends an entry below everything currently rendered. */
+  private appendEntry(entry: JournalEntry): void {
+    const group = this.ensureDayGroup(entry.created, "append");
+    const el = this.createEntryEl(entry);
+    group.appendChild(el.el);
+    this.rendered.set(entry.file.path, el);
+    void this.renderStatic(el);
+  }
+
+  /**
+   * Returns the day group for this date, creating it — and its month header
+   * when the month changes — if it does not exist yet.
+   */
+  private ensureDayGroup(date: Date, position: "append" | "prepend"): HTMLElement {
+    const key = dayKey(date);
+    const existing = this.timelineEl.querySelector<HTMLElement>(
+      `.journal-day[data-day="${key}"] .journal-day-entries`,
+    );
+    if (existing) return existing;
+
+    const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+
+    const dayEl = createDiv({ cls: "journal-day" });
+    dayEl.dataset.day = key;
+    dayEl.createDiv({ cls: "journal-day-header", text: formatDayHeader(date) });
+    const entriesEl = dayEl.createDiv({ cls: "journal-day-entries" });
+
+    if (position === "append") {
+      if (monthKey !== this.lastRenderedMonth) {
+        this.timelineEl.createDiv({
+          cls: "journal-month-header",
+          text: formatMonthHeader(date),
+        });
+        this.lastRenderedMonth = monthKey;
+      }
+      this.timelineEl.appendChild(dayEl);
+    } else {
+      this.timelineEl.prepend(dayEl);
+      // Prepending can introduce a new topmost month; rebuild month headers.
+      this.rebuildMonthHeaders();
+    }
+
+    return entriesEl;
+  }
+
+  /**
+   * Month headers depend on their neighbours, so after any insertion that is
+   * not a plain append they are recomputed from the day groups in the DOM.
+   */
+  private rebuildMonthHeaders(): void {
+    for (const el of Array.from(this.timelineEl.querySelectorAll(".journal-month-header"))) {
+      el.remove();
+    }
+
+    let previousMonth: string | null = null;
+
+    for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
+      const day = dayEl.dataset.day;
+      if (!day) continue;
+
+      const [year, month] = day.split("-");
+      const monthKey = `${year}-${month}`;
+      if (monthKey === previousMonth) continue;
+
+      const header = createDiv({
+        cls: "journal-month-header",
+        text: formatMonthHeader(new Date(Number(year), Number(month) - 1, 1)),
+      });
+      dayEl.parentElement?.insertBefore(header, dayEl);
+      previousMonth = monthKey;
+    }
+
+    this.lastRenderedMonth = previousMonth;
+  }
+
+  private createEntryEl(entry: JournalEntry): RenderedEntry {
+    const el = createDiv({ cls: "journal-entry" });
+    el.dataset.path = entry.file.path;
+
+    const headerEl = el.createDiv({ cls: "journal-entry-header" });
+    headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
+
+    const bodyEl = el.createDiv({ cls: "journal-entry-body" });
+
+    return { entry, el, bodyEl, renderComponent: null };
+  }
+
+  /** Read-only rendering of an entry, used when no editor is mounted for it. */
+  private async renderStatic(rendered: RenderedEntry): Promise<void> {
+    rendered.renderComponent?.unload();
+    rendered.bodyEl.empty();
+
+    const component = new Component();
+    component.load();
+    rendered.renderComponent = component;
+
+    const body = await this.plugin.repository.readBody(rendered.entry.file);
+
+    await MarkdownRenderer.render(
+      this.app,
+      body.trim(),
+      rendered.bodyEl,
+      rendered.entry.file.path,
+      component,
+    );
+  }
+
+  /** Replaced with real behaviour in Task 15. */
+  async startNewEntry(): Promise<void> {
+    this.scrollToTop();
+  }
+
+  scrollToTop(): void {
+    this.contentEl.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+```
+
+- [ ] **Step 2: Replace the timeline block in `styles.css`**
+
+Replace the whole file with:
+
+```css
+/* Journal Entries — all colors and metrics come from Obsidian CSS variables.
+   This is a writing surface: no cards, borders, shadows, or gradients. */
+
+.journal-view {
+  overflow-y: auto;
+}
+
+.journal-timeline {
+  padding: var(--size-4-6) var(--size-4-8) 40vh;
+  max-width: var(--file-line-width);
+  margin: 0 auto;
+}
+
+.journal-month-header {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin: var(--size-4-12) 0 var(--size-4-4);
+}
+
+.journal-month-header:first-child {
+  margin-top: 0;
+}
+
+.journal-day-header {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: var(--size-4-8) 0 var(--size-4-3);
+}
+
+.journal-entry {
+  margin-bottom: var(--size-4-6);
+}
+
+.journal-entry-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-1);
+}
+
+.journal-entry-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-entry-body {
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-body > :first-child {
+  margin-top: 0;
+}
+
+.journal-entry-body > :last-child {
+  margin-bottom: 0;
+}
+
+.journal-empty {
+  color: var(--text-faint);
+  text-align: center;
+  padding: var(--size-4-12) 0;
+}
+
+.journal-entry-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  padding: 0;
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.journal-entry-embed .markdown-source-view,
+.journal-entry-embed .cm-editor {
+  background: transparent;
+}
+
+.journal-entry-embed .cm-scroller {
+  padding: 0;
+  font-family: var(--font-text);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-embed .cm-editor.cm-focused {
+  outline: none;
+}
+```
+
+- [ ] **Step 3: Build and verify by hand**
+
+Run: `npm run build`, then reload the plugin in Obsidian.
+
+Create these files by hand in the test vault, each with only a `created` property and one line of text:
+
+```
+Journal/2026/08/2026-08-11-21-10-00.md
+Journal/2026/08/2026-08-12-09-34-21.md
+Journal/2026/08/2026-08-12-17-23-41.md
+Journal/2026/08/2026-08-12-22-41-52.md
+Journal/2026/07/2026-07-30-08-00-00.md
+```
+
+Run **Open journal**. Expected:
+
+- `AUGUST 2026` appears above `WEDNESDAY, 12 AUGUST`, which is the topmost day
+- within 12 August, the order is 22:41, 17:23, 09:34
+- `TUESDAY, 11 AUGUST` follows, then `JULY 2026`, then `THURSDAY, 30 JULY`
+- entry text renders as Markdown; no filenames or headings are shown
+- the layout looks native in both the default light and dark themes
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css
+git commit -m "feat: render reverse-chronological timeline grouped by day"
+```
+
+---
+
+## Task 12: Incremental loading
+
+Thousands of entries must not all hit the DOM. The first page is rendered; scrolling to the bottom appends the next.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`
+
+- [ ] **Step 1: Add paging state and constants**
+
+At the top of `src/views/JournalView.ts`, after the imports:
+
+```ts
+import { pageAfter } from "../services/entryIndex";
+
+/** Entries rendered per page. */
+const PAGE_SIZE = 40;
+```
+
+Add to the class fields:
+
+```ts
+  private sentinelEl: HTMLElement | null = null;
+  private observer: IntersectionObserver | null = null;
+  private index: JournalEntry[] = [];
+  private lastLoadedPath: string | null = null;
+  private loading = false;
+```
+
+- [ ] **Step 2: Replace `reload()` with a paged version**
+
+```ts
+  /** Discards and rebuilds the timeline, rendering only the first page. */
+  async reload(): Promise<void> {
+    this.clearTimeline();
+
+    this.index = this.plugin.repository.listEntries();
+    this.lastLoadedPath = null;
+
+    if (this.index.length === 0) {
+      this.renderEmptyState();
+      return;
+    }
+
+    await this.loadNextPage();
+    this.installSentinel();
+  }
+```
+
+- [ ] **Step 3: Add page loading and the sentinel**
+
+```ts
+  /** Appends the next page below what is already rendered. Returns false when exhausted. */
+  private async loadNextPage(): Promise<boolean> {
+    if (this.loading) return false;
+    this.loading = true;
+
+    try {
+      const page = pageAfter(this.index, this.lastLoadedPath, PAGE_SIZE);
+      if (page.length === 0) return false;
+
+      for (const entry of page) {
+        this.appendEntry(entry);
+      }
+
+      this.lastLoadedPath = page[page.length - 1].file.path;
+      return true;
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /**
+   * Watches an element at the bottom of the timeline. Because older entries are
+   * appended below, the content above them never moves and scroll position is
+   * preserved without any manual correction.
+   */
+  private installSentinel(): void {
+    this.sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
+
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        void this.onSentinelVisible();
+      },
+      {
+        root: this.contentEl,
+        // Start loading before the sentinel is actually on screen.
+        rootMargin: "600px 0px",
+      },
+    );
+
+    this.observer.observe(this.sentinelEl);
+  }
+
+  private async onSentinelVisible(): Promise<void> {
+    const loaded = await this.loadNextPage();
+
+    if (loaded) {
+      // Keep the sentinel below the newly appended entries.
+      if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+      return;
+    }
+
+    this.teardownSentinel();
+  }
+
+  private teardownSentinel(): void {
+    this.observer?.disconnect();
+    this.observer = null;
+    this.sentinelEl?.remove();
+    this.sentinelEl = null;
+  }
+```
+
+- [ ] **Step 4: Tear down the observer in `clearTimeline`**
+
+Change `clearTimeline` to:
+
+```ts
+  private clearTimeline(): void {
+    this.teardownSentinel();
+
+    for (const rendered of this.rendered.values()) {
+      rendered.renderComponent?.unload();
+    }
+    this.rendered.clear();
+    this.lastRenderedMonth = null;
+    this.timelineEl.empty();
+  }
+```
+
+- [ ] **Step 5: Add sentinel styling to `styles.css`**
+
+```css
+.journal-sentinel {
+  height: 1px;
+}
+```
+
+- [ ] **Step 6: Build and verify by hand**
+
+Generate a large history in the test vault:
+
+```bash
+VAULT="$HOME/ObsidianTestVault"
+python3 - "$VAULT" <<'PY'
+import os, sys, datetime
+vault = sys.argv[1]
+start = datetime.datetime(2026, 8, 12, 22, 41, 52)
+for i in range(300):
+    ts = start - datetime.timedelta(hours=7 * i)
+    folder = os.path.join(vault, "Journal", f"{ts.year}", f"{ts.month:02d}")
+    os.makedirs(folder, exist_ok=True)
+    name = ts.strftime("%Y-%m-%d-%H-%M-%S") + ".md"
+    with open(os.path.join(folder, name), "w") as f:
+        f.write(f"---\ncreated: {ts.isoformat()}\n---\n\nEntry number {i}.\n")
+print("wrote 300 entries")
+PY
+```
+
+Reload Obsidian, run **Open journal**. Expected:
+
+- the view appears quickly; the developer console's Elements panel shows roughly 40 `.journal-entry` nodes, not 300
+- scrolling down appends more entries and the scroll position never jumps
+- scrolling to the very bottom eventually stops loading and the console shows no errors
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css
+git commit -m "feat: load older entries incrementally on scroll"
+```
+
+---
+
+## Task 13: Editor mounting and the mount window
+
+Every loaded entry becomes a live editor, capped so memory stays bounded. Entries beyond the cap fall back to static rendering.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`, `src/main.ts`
+
+- [ ] **Step 1: Create the editor factory once, on the plugin**
+
+In `src/main.ts`, add the import and field:
+
+```ts
+import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
+```
+
+```ts
+  editorFactory!: EntryEditorFactory;
+```
+
+In `onload()`, after the repository is created:
+
+```ts
+    this.editorFactory = createEntryEditorFactory(this.app);
+```
+
+- [ ] **Step 2: Extend `RenderedEntry` and add mount-window state in `JournalView.ts`**
+
+```ts
+import type { EntryEditor } from "./EntryEditor";
+import { TextareaEditor } from "./TextareaEditor";
+import { Platform } from "obsidian";
+
+/** Maximum simultaneously mounted editors. Lower on mobile, where memory is tighter. */
+const MAX_MOUNTED_EDITORS = Platform.isMobile ? 25 : 60;
+```
+
+Change the interface:
+
+```ts
+interface RenderedEntry {
+  entry: JournalEntry;
+  el: HTMLElement;
+  bodyEl: HTMLElement;
+  renderComponent: Component | null;
+  editor: EntryEditor | null;
+  /** Debounced save timer handle. */
+  saveHandle: number | null;
+}
+```
+
+Update `createEntryEl` to return `{ entry, el, bodyEl, renderComponent: null, editor: null, saveHandle: null }`.
+
+Add the field:
+
+```ts
+  /** Paths of entries with a mounted editor, oldest-mounted first. */
+  private mountOrder: string[] = [];
+```
+
+- [ ] **Step 3: Mount an editor instead of static rendering when appending**
+
+Replace `appendEntry`:
+
+```ts
+  private appendEntry(entry: JournalEntry): void {
+    const group = this.ensureDayGroup(entry.created, "append");
+    const rendered = this.createEntryEl(entry);
+    group.appendChild(rendered.el);
+    this.rendered.set(entry.file.path, rendered);
+    void this.mountEditor(rendered);
+  }
+```
+
+- [ ] **Step 4: Add editor mounting, unmounting, and the window cap**
+
+```ts
+  /** Turns an entry into a live editor and enforces the mount cap. */
+  private async mountEditor(rendered: RenderedEntry): Promise<void> {
+    if (rendered.editor) return;
+
+    rendered.renderComponent?.unload();
+    rendered.renderComponent = null;
+    rendered.bodyEl.empty();
+    rendered.bodyEl.style.removeProperty("min-height");
+
+    const body = await this.plugin.repository.readBody(rendered.entry.file);
+    const editor = this.mountUsableEditor(rendered, body);
+
+    rendered.editor = editor;
+    this.mountOrder.push(rendered.entry.file.path);
+
+    this.enforceMountLimit();
+  }
+
+  /**
+   * Mounts the configured editor, and if it reports that it failed — the
+   * internal API changed shape on this Obsidian version — replaces it with the
+   * textarea fallback for this entry. The journal stays editable either way.
+   */
+  private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
+    const editor = this.plugin.editorFactory.create();
+    editor.onChange((value) => this.scheduleSave(rendered, value));
+    editor.mount(rendered.bodyEl, rendered.entry.file, body);
+
+    if (editor.isUsable?.() === false) {
+      console.error(
+        "Journal Entries: embedded editor was unusable; falling back to plain text for",
+        rendered.entry.file.path,
+      );
+      editor.destroy();
+      rendered.bodyEl.empty();
+
+      const fallback = new TextareaEditor();
+      fallback.onChange((value) => this.scheduleSave(rendered, value));
+      fallback.mount(rendered.bodyEl, rendered.entry.file, body);
+      return fallback;
+    }
+
+    return editor;
+  }
+
+  /**
+   * Unmounts editors furthest from the viewport — the oldest entries, at the
+   * bottom of the list — replacing them with static rendering. The focused
+   * editor is never unmounted.
+   */
+  private enforceMountLimit(): void {
+    while (this.mountOrder.length > MAX_MOUNTED_EDITORS) {
+      const path = this.mountOrder.shift();
+      if (!path) break;
+
+      const rendered = this.rendered.get(path);
+      if (!rendered?.editor) continue;
+
+      if (rendered.editor.hasFocus()) {
+        // Skip the focused editor; put it back at the end of the queue.
+        this.mountOrder.push(path);
+        if (this.mountOrder.every((p) => this.rendered.get(p)?.editor?.hasFocus())) break;
+        continue;
+      }
+
+      void this.unmountEditor(rendered);
+    }
+  }
+
+  /** Flushes pending edits, destroys the editor, and restores static rendering. */
+  private async unmountEditor(rendered: RenderedEntry): Promise<void> {
+    if (!rendered.editor) return;
+
+    await this.flushSave(rendered);
+
+    // Freeze the height across the swap so the scroll position does not shift.
+    const height = rendered.bodyEl.offsetHeight;
+    rendered.bodyEl.style.minHeight = `${height}px`;
+
+    rendered.editor.destroy();
+    rendered.editor = null;
+
+    const index = this.mountOrder.indexOf(rendered.entry.file.path);
+    if (index >= 0) this.mountOrder.splice(index, 1);
+
+    await this.renderStatic(rendered);
+    rendered.bodyEl.style.removeProperty("min-height");
+  }
+```
+
+- [ ] **Step 5: Add debounced saving**
+
+```ts
+  /** Debounces writes so typing does not hit the disk on every keystroke. */
+  private scheduleSave(rendered: RenderedEntry, value: string): void {
+    if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+
+    rendered.saveHandle = window.setTimeout(() => {
+      rendered.saveHandle = null;
+      void this.save(rendered, value);
+    }, 500);
+  }
+
+  private async flushSave(rendered: RenderedEntry): Promise<void> {
+    if (rendered.saveHandle === null) return;
+    window.clearTimeout(rendered.saveHandle);
+    rendered.saveHandle = null;
+    await this.save(rendered, rendered.editor?.getValue() ?? "");
+  }
+
+  private async save(rendered: RenderedEntry, value: string): Promise<void> {
+    await this.plugin.repository.writeBody(rendered.entry.file, value);
+  }
+```
+
+Error handling for `save` is added in Task 18.
+
+- [ ] **Step 6: Destroy editors in `clearTimeline`**
+
+```ts
+  private clearTimeline(): void {
+    this.teardownSentinel();
+
+    for (const rendered of this.rendered.values()) {
+      if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+      rendered.editor?.destroy();
+      rendered.renderComponent?.unload();
+    }
+
+    this.rendered.clear();
+    this.mountOrder = [];
+    this.lastRenderedMonth = null;
+    this.timelineEl.empty();
+  }
+```
+
+- [ ] **Step 7: Build and verify by hand**
+
+Run: `npm run build`, reload Obsidian, run **Open journal**.
+
+Expected, with the 300-entry vault from Task 12:
+
+- entries are directly editable without clicking a separate "edit" affordance
+- typing in an entry and waiting a second writes to the file — verify by opening that file in a second pane and watching it change
+- `[[` opens Obsidian's link autocomplete inside a timeline entry (or, if the fallback is in use, the one-time notice appeared at load)
+- scrolling far down and back up does not throw, and the entries scrolled past still show their text
+- the developer console shows at most `MAX_MOUNTED_EDITORS` mounted `.journal-entry-embed` elements
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/views/JournalView.ts src/main.ts
+git commit -m "feat: mount live editors within a bounded window"
+```
+
+---
+
+## Task 14: Journal service and external change handling
+
+The timeline reacts to edits made anywhere else in Obsidian, without update loops and without polling.
+
+**Files:**
+- Create: `src/services/journalService.ts`
+- Modify: `src/main.ts`, `src/views/JournalView.ts`
+
+- [ ] **Step 1: Write `src/services/journalService.ts`**
+
+```ts
+import { App, Component, TAbstractFile, TFile } from "obsidian";
+import type { JournalEntry } from "../journal/entry";
+import type { EntryRepository } from "../journal/entryRepository";
+import { findByPath, insertSorted, removeByPath } from "./entryIndex";
+
+export type JournalChange =
+  | { kind: "added"; entry: JournalEntry }
+  | { kind: "removed"; path: string }
+  | { kind: "content"; entry: JournalEntry }
+  | { kind: "moved"; entry: JournalEntry };
+
+const DEBOUNCE_MS = 300;
+/** How long a self-write is remembered if no modify event ever arrives for it. */
+const SELF_WRITE_TTL_MS = 2000;
+
+/**
+ * Owns the in-memory index of entries and translates vault events into
+ * timeline-level changes. Stores only paths and timestamps, never content, so
+ * the index stays cheap at tens of thousands of entries.
+ */
+export class JournalService extends Component {
+  private index: JournalEntry[] = [];
+  private listeners = new Set<(change: JournalChange) => void>();
+  private selfWrites = new Map<string, number>();
+  private pending = new Map<string, "upsert" | "remove">();
+  private flushHandle: number | null = null;
+
+  constructor(
+    private readonly app: App,
+    private readonly repository: EntryRepository,
+  ) {
+    super();
+  }
+
+  onload(): void {
+    this.rebuild();
+
+    this.registerEvent(this.app.vault.on("create", (file) => this.queue(file, "upsert")));
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (this.consumeSelfWrite(file.path)) return;
+        this.queue(file, "upsert");
+      }),
+    );
+    this.registerEvent(this.app.vault.on("delete", (file) => this.queue(file, "remove")));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        this.queuePath(oldPath, "remove");
+        this.queue(file, "upsert");
+      }),
+    );
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        if (this.consumeSelfWrite(file.path)) return;
+        this.queue(file, "upsert");
+      }),
+    );
+  }
+
+  onunload(): void {
+    if (this.flushHandle !== null) window.clearTimeout(this.flushHandle);
+    this.listeners.clear();
+  }
+
+  /** Rebuilds the index from scratch, e.g. after the journal folder changes. */
+  rebuild(): void {
+    this.index = this.repository.listEntries();
+  }
+
+  getEntries(): JournalEntry[] {
+    return this.index;
+  }
+
+  onChange(callback: (change: JournalChange) => void): () => void {
+    this.listeners.add(callback);
+    return () => this.listeners.delete(callback);
+  }
+
+  /**
+   * Marks a path as about to be written by this plugin, so the resulting
+   * modify event does not bounce back and re-render the entry being typed in.
+   */
+  markSelfWrite(path: string): void {
+    this.selfWrites.set(path, Date.now());
+  }
+
+  private consumeSelfWrite(path: string): boolean {
+    const stamp = this.selfWrites.get(path);
+    if (stamp === undefined) return false;
+
+    this.selfWrites.delete(path);
+    return Date.now() - stamp < SELF_WRITE_TTL_MS;
+  }
+
+  private queue(file: TAbstractFile, action: "upsert" | "remove"): void {
+    if (!(file instanceof TFile)) return;
+    this.queuePath(file.path, action);
+  }
+
+  private queuePath(path: string, action: "upsert" | "remove"): void {
+    this.pending.set(path, action);
+
+    if (this.flushHandle !== null) window.clearTimeout(this.flushHandle);
+    this.flushHandle = window.setTimeout(() => {
+      this.flushHandle = null;
+      this.flush();
+    }, DEBOUNCE_MS);
+  }
+
+  private flush(): void {
+    const pending = [...this.pending.entries()];
+    this.pending.clear();
+
+    for (const [path, action] of pending) {
+      if (action === "remove") {
+        this.applyRemoval(path);
+        continue;
+      }
+
+      const file = this.app.vault.getAbstractFileByPath(path);
+      const entry = file instanceof TFile ? this.repository.entryFor(file) : null;
+
+      if (!entry) {
+        // Not (or no longer) an entry — e.g. moved out of the journal folder.
+        this.applyRemoval(path);
+        continue;
+      }
+
+      this.applyUpsert(entry);
+    }
+  }
+
+  private applyRemoval(path: string): void {
+    if (removeByPath(this.index, path) < 0) return;
+    this.emit({ kind: "removed", path });
+  }
+
+  private applyUpsert(entry: JournalEntry): void {
+    const existing = findByPath(this.index, entry.file.path);
+
+    if (!existing) {
+      insertSorted(this.index, entry);
+      this.emit({ kind: "added", entry });
+      return;
+    }
+
+    if (existing.created.getTime() !== entry.created.getTime()) {
+      removeByPath(this.index, entry.file.path);
+      insertSorted(this.index, entry);
+      this.emit({ kind: "moved", entry });
+      return;
+    }
+
+    this.emit({ kind: "content", entry });
+  }
+
+  private emit(change: JournalChange): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        console.error("Journal Entries: change listener failed", error);
+      }
+    }
+  }
+}
+```
+
+- [ ] **Step 2: Wire the service into `src/main.ts`**
+
+Add the import and field:
+
+```ts
+import { JournalService } from "./services/journalService";
+```
+
+```ts
+  journal!: JournalService;
+```
+
+In `onload()`, after `this.editorFactory = ...`:
+
+```ts
+    this.journal = new JournalService(this.app, this.repository);
+    this.addChild(this.journal);
+```
+
+`addChild` ties the service's lifecycle to the plugin, so its event registrations are released on unload.
+
+Update `refreshJournal` so a folder change rebuilds the index too:
+
+```ts
+  refreshJournal(): void {
+    this.journal.rebuild();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
+      void (leaf.view as JournalView).reload();
+    }
+  }
+```
+
+- [ ] **Step 3: Mark self-writes in `JournalView.save`**
+
+```ts
+  private async save(rendered: RenderedEntry, value: string): Promise<void> {
+    this.plugin.journal.markSelfWrite(rendered.entry.file.path);
+    await this.plugin.repository.writeBody(rendered.entry.file, value);
+  }
+```
+
+- [ ] **Step 4: Take the index from the service and subscribe to changes**
+
+In `JournalView.reload()`, replace the index assignment:
+
+```ts
+    this.index = this.plugin.journal.getEntries();
+```
+
+Add to `onOpen()`, before `await this.reload()`:
+
+```ts
+    this.register(this.plugin.journal.onChange((change) => this.applyChange(change)));
+```
+
+`ItemView.register` runs the returned unsubscribe function when the view closes.
+
+- [ ] **Step 5: Add change handling to `JournalView`**
+
+```ts
+  /** Applies one index change to the DOM, if it affects a loaded entry. */
+  private applyChange(change: JournalChange): void {
+    switch (change.kind) {
+      case "removed": {
+        this.removeRenderedEntry(change.path);
+        break;
+      }
+
+      case "content": {
+        const rendered = this.rendered.get(change.entry.file.path);
+        if (!rendered) return;
+        // Never clobber what the user is typing.
+        if (rendered.editor?.hasFocus()) return;
+        void this.refreshEntryContent(rendered);
+        break;
+      }
+
+      case "moved": {
+        this.removeRenderedEntry(change.entry.file.path);
+        this.insertEntryInPlace(change.entry);
+        break;
+      }
+
+      case "added": {
+        this.insertEntryInPlace(change.entry);
+        break;
+      }
+    }
+  }
+
+  private removeRenderedEntry(path: string): void {
+    const rendered = this.rendered.get(path);
+    if (!rendered) return;
+
+    if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+    rendered.editor?.destroy();
+    rendered.renderComponent?.unload();
+    rendered.el.remove();
+
+    this.rendered.delete(path);
+    const mountIndex = this.mountOrder.indexOf(path);
+    if (mountIndex >= 0) this.mountOrder.splice(mountIndex, 1);
+
+    this.removeEmptyDayGroups();
+  }
+
+  private removeEmptyDayGroups(): void {
+    for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
+      if (dayEl.querySelector(".journal-entry")) continue;
+      dayEl.remove();
+    }
+    this.rebuildMonthHeaders();
+  }
+
+  /**
+   * Inserts an entry at its correct reverse-chronological position, but only if
+   * it belongs inside the range currently loaded. Entries older than everything
+   * loaded are left to normal paging.
+   */
+  private insertEntryInPlace(entry: JournalEntry): void {
+    if (this.rendered.has(entry.file.path)) return;
+
+    const position = this.index.indexOf(entry);
+    const loadedCount = this.rendered.size;
+    if (position < 0) return;
+    if (position > loadedCount && this.sentinelEl) return;
+
+    const group = this.ensureDayGroup(entry.created, "prepend");
+    const rendered = this.createEntryEl(entry);
+
+    // Find the first already-rendered sibling that is older than this entry.
+    const siblings = Array.from(group.querySelectorAll<HTMLElement>(".journal-entry"));
+    const olderSibling = siblings.find((el) => {
+      const siblingEntry = this.rendered.get(el.dataset.path ?? "");
+      return siblingEntry ? compareEntries(entry, siblingEntry.entry) < 0 : false;
+    });
+
+    if (olderSibling) group.insertBefore(rendered.el, olderSibling);
+    else group.appendChild(rendered.el);
+
+    this.rendered.set(entry.file.path, rendered);
+    void this.mountEditor(rendered);
+  }
+
+  /** Reloads one entry's text from disk without remounting its editor. */
+  private async refreshEntryContent(rendered: RenderedEntry): Promise<void> {
+    const body = await this.plugin.repository.readBody(rendered.entry.file);
+
+    if (rendered.editor) {
+      if (rendered.editor.getValue() === body) return;
+      rendered.editor.setValue(body);
+      return;
+    }
+
+    await this.renderStatic(rendered);
+  }
+```
+
+Add the imports this needs at the top of `JournalView.ts`:
+
+```ts
+import { compareEntries, pageAfter } from "../services/entryIndex";
+import type { JournalChange } from "../services/journalService";
+```
+
+(Replace the earlier `import { pageAfter } ...` line.)
+
+Note on `ensureDayGroup(entry.created, "prepend")`: the "prepend" branch places a *new day group* at the top of the timeline. When the day group already exists, the existing one is returned and the position argument is unused, which is the common case here.
+
+- [ ] **Step 6: Build and verify by hand**
+
+Run: `npm run build`, reload Obsidian.
+
+1. Open the journal in one pane and an entry's source file in another. Type in the source pane — the timeline entry updates within a second, and does not update while you are typing in the timeline itself.
+2. Delete an entry file from the File Explorer — it disappears from the timeline, and its day header disappears too if it was the last entry of that day.
+3. Create a file by hand at `Journal/2026/08/2026-08-13-10-00-00.md` with a `created` property — it appears at the top of the timeline under a new `THURSDAY, 13 AUGUST` header.
+4. Edit an existing entry's `created` property in the source pane to a much older date — the entry moves down to the correct day.
+5. Type continuously in a timeline entry for 30 seconds — the editor never loses focus, never resets its content, and no update loop appears in the console.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/services/journalService.ts src/main.ts src/views/JournalView.ts
+git commit -m "feat: react to external vault changes without update loops"
+```
+
+---
+
+## Task 15: New entry composer with lazy creation
+
+The capture flow. No filename, title, folder, or date is ever requested, and an abandoned composer leaves nothing behind.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`, `styles.css`
+
+- [ ] **Step 1: Add composer state to `JournalView`**
+
+```ts
+  /** The uncommitted composer, if one is open. Has no file until the user types. */
+  private composer: RenderedEntry | null = null;
+```
+
+- [ ] **Step 2: Replace `startNewEntry`**
+
+```ts
+  /**
+   * Opens an empty composer at the top of today's entries and focuses it.
+   * No file is created until the user types something meaningful.
+   */
+  async startNewEntry(): Promise<void> {
+    if (this.composer) {
+      this.composer.editor?.focus();
+      this.scrollToTop();
+      return;
+    }
+
+    const now = new Date();
+    const group = this.ensureTodayGroup(now);
+
+    const placeholder: JournalEntry = {
+      // No file yet. Nothing reads `file` before the entry is committed.
+      file: null as unknown as JournalEntry["file"],
+      created: now,
+    };
+
+    const rendered = this.createEntryEl(placeholder);
+    rendered.el.addClass("journal-entry-composer");
+    rendered.el.removeAttribute("data-path");
+    group.prepend(rendered.el);
+
+    const editor = this.plugin.editorFactory.create();
+    editor.onChange((value) => void this.onComposerInput(rendered, value));
+    editor.onBlur(() => this.discardEmptyComposer(rendered));
+    editor.mount(rendered.bodyEl, null, "");
+
+    rendered.editor = editor;
+    this.composer = rendered;
+
+    this.scrollToTop();
+    editor.focus();
+  }
+```
+
+- [ ] **Step 3: Add today's day group creation**
+
+Today may have no entries yet, so its group has to be created above every existing day.
+
+```ts
+  /** Returns today's entry container, creating the day group at the top if needed. */
+  private ensureTodayGroup(now: Date): HTMLElement {
+    const key = dayKey(now);
+    const existing = this.timelineEl.querySelector<HTMLElement>(
+      `.journal-day[data-day="${key}"] .journal-day-entries`,
+    );
+    if (existing) return existing;
+
+    this.timelineEl.querySelector(".journal-empty")?.remove();
+
+    const dayEl = createDiv({ cls: "journal-day" });
+    dayEl.dataset.day = key;
+    dayEl.createDiv({ cls: "journal-day-header", text: formatDayHeader(now) });
+    const entriesEl = dayEl.createDiv({ cls: "journal-day-entries" });
+
+    this.timelineEl.prepend(dayEl);
+    this.rebuildMonthHeaders();
+
+    return entriesEl;
+  }
+```
+
+- [ ] **Step 4: Add commit and discard**
+
+```ts
+  /**
+   * Creates the Markdown file the first time the composer holds meaningful
+   * content, then hands the composer over to the normal save path.
+   */
+  private async onComposerInput(rendered: RenderedEntry, value: string): Promise<void> {
+    if (this.composer !== rendered) {
+      // Already committed; this is an ordinary edit.
+      this.scheduleSave(rendered, value);
+      return;
+    }
+
+    if (value.trim().length === 0) return;
+
+    // Claim the composer before the await, so a fast second keystroke cannot
+    // create a second file.
+    this.composer = null;
+
+    try {
+      const file = await this.plugin.repository.createEntry(rendered.entry.created);
+
+      rendered.entry = { file, created: rendered.entry.created };
+      rendered.el.dataset.path = file.path;
+      rendered.el.removeClass("journal-entry-composer");
+
+      this.rendered.set(file.path, rendered);
+      this.mountOrder.push(file.path);
+
+      this.plugin.journal.markSelfWrite(file.path);
+      await this.plugin.repository.writeBody(file, `\n${value.trimStart()}`);
+    } catch (error) {
+      console.error("Journal Entries: could not create entry", error);
+      new Notice("Journal Entries: could not create the entry file. Your text is still here.");
+      // Let the user retry on the next keystroke.
+      this.composer = rendered;
+    }
+  }
+
+  /**
+   * Removes an abandoned empty composer. Only ever applies before the file
+   * exists — a committed entry is never auto-deleted, however empty it becomes.
+   */
+  private discardEmptyComposer(rendered: RenderedEntry): void {
+    if (this.composer !== rendered) return;
+    if ((rendered.editor?.getValue() ?? "").trim().length > 0) return;
+
+    rendered.editor?.destroy();
+    rendered.el.remove();
+    this.composer = null;
+    this.removeEmptyDayGroups();
+  }
+```
+
+Add `Notice` to the `obsidian` import at the top of `JournalView.ts`.
+
+- [ ] **Step 5: Skip the composer when the timeline is rebuilt**
+
+`clearTimeline` iterates `this.rendered`, which never contains the composer. Add explicit cleanup so a reload does not orphan it:
+
+```ts
+  private clearTimeline(): void {
+    this.teardownSentinel();
+
+    if (this.composer) {
+      this.composer.editor?.destroy();
+      this.composer = null;
+    }
+
+    for (const rendered of this.rendered.values()) {
+      if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+      rendered.editor?.destroy();
+      rendered.renderComponent?.unload();
+    }
+
+    this.rendered.clear();
+    this.mountOrder = [];
+    this.lastRenderedMonth = null;
+    this.timelineEl.empty();
+  }
+```
+
+- [ ] **Step 6: Ignore the service's "added" event for an entry the view just created**
+
+`insertEntryInPlace` already returns early when `this.rendered` has the path, and the composer registers itself in `this.rendered` before the file's create event is flushed. No further change is needed — verify this holds in Step 8.
+
+- [ ] **Step 7: Add composer styling to `styles.css`**
+
+```css
+.journal-entry-composer .journal-entry-time {
+  color: var(--text-accent);
+}
+```
+
+- [ ] **Step 8: Build and verify by hand**
+
+Run: `npm run build`, reload Obsidian.
+
+1. Run **New journal entry** from anywhere — the journal opens, scrolls to the top, and a cursor appears under today's date.
+2. Type a sentence. Check the File Explorer: exactly one new file exists under `Journal/<year>/<month>/`, with a timestamp filename.
+3. Open that file — it has a `created` property, no heading, and the text you typed.
+4. Run **New journal entry** again, type nothing, click elsewhere — no file is created and the empty composer disappears.
+5. Type into an entry, then delete all of its text — the file still exists.
+6. Run **New journal entry** twice quickly and type immediately — exactly one file per composer, no duplicates.
+7. Scroll far into the past, then run **New journal entry** — the view returns to today and focuses the new composer.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css
+git commit -m "feat: add new entry composer with lazy file creation"
+```
+
+---
+
+## Task 16: Entry actions
+
+Minimal, non-permanent affordances: one hover button per entry, and a context menu.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`, `styles.css`
+
+- [ ] **Step 1: Add the actions button in `createEntryEl`**
+
+Replace `createEntryEl`:
+
+```ts
+  private createEntryEl(entry: JournalEntry): RenderedEntry {
+    const el = createDiv({ cls: "journal-entry" });
+    if (entry.file) el.dataset.path = entry.file.path;
+
+    const headerEl = el.createDiv({ cls: "journal-entry-header" });
+    headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
+
+    const actionsEl = headerEl.createDiv({ cls: "journal-entry-actions" });
+    const button = new ButtonComponent(actionsEl)
+      .setIcon("more-horizontal")
+      .setTooltip("Entry actions")
+      .setClass("clickable-icon");
+    button.buttonEl.addClass("journal-entry-menu-button");
+
+    const rendered: RenderedEntry = {
+      entry,
+      el,
+      bodyEl: createDiv({ cls: "journal-entry-body" }),
+      renderComponent: null,
+      editor: null,
+      saveHandle: null,
+    };
+
+    el.appendChild(rendered.bodyEl);
+
+    button.onClick((event) => this.showEntryMenu(rendered, event));
+    el.addEventListener("contextmenu", (event) => {
+      // Only take over the entry's own chrome; leave the editor's own menu alone.
+      if (event.target instanceof HTMLElement && event.target.closest(".journal-entry-body")) return;
+      event.preventDefault();
+      this.showEntryMenu(rendered, event);
+    });
+
+    return rendered;
+  }
+```
+
+Add `ButtonComponent` and `Menu` to the `obsidian` import.
+
+- [ ] **Step 2: Add the menu**
+
+```ts
+  private showEntryMenu(rendered: RenderedEntry, event: MouseEvent): void {
+    const file = rendered.entry.file;
+    if (!file) return; // Uncommitted composer has nothing to act on.
+
+    const menu = new Menu();
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Open source note")
+        .setIcon("file-text")
+        .onClick(() => {
+          void this.app.workspace.getLeaf("tab").openFile(file);
+        }),
+    );
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Copy link to entry")
+        .setIcon("link")
+        .onClick(() => {
+          const link = this.app.fileManager.generateMarkdownLink(file, "");
+          void navigator.clipboard.writeText(link);
+          new Notice("Link copied");
+        }),
+    );
+
+    menu.addSeparator();
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Delete entry")
+        .setIcon("trash")
+        .onClick(() => {
+          void this.confirmDelete(rendered);
+        }),
+    );
+
+    menu.showAtMouseEvent(event);
+  }
+
+  private async confirmDelete(rendered: RenderedEntry): Promise<void> {
+    const file = rendered.entry.file;
+    if (!file) return;
+
+    const confirmed = window.confirm(
+      `Delete this journal entry?\n\n${file.path}\n\nIt goes to the trash configured in Obsidian's settings.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+      rendered.editor?.destroy();
+      rendered.editor = null;
+
+      await this.plugin.repository.deleteEntry(file);
+      // The delete event removes it from the index and the DOM.
+    } catch (error) {
+      console.error("Journal Entries: could not delete entry", error);
+      new Notice("Journal Entries: could not delete the entry.");
+      void this.mountEditor(rendered);
+    }
+  }
+```
+
+- [ ] **Step 3: Add action styling to `styles.css`**
+
+```css
+.journal-entry-actions {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 100ms ease-in-out;
+}
+
+.journal-entry:hover .journal-entry-actions,
+.journal-entry-actions:focus-within {
+  opacity: 1;
+}
+
+.journal-entry-menu-button {
+  padding: 0 var(--size-2-2);
+  height: var(--size-4-5);
+}
+```
+
+- [ ] **Step 4: Build and verify by hand**
+
+Run: `npm run build`, reload Obsidian.
+
+1. Hover an entry — a `⋯` button appears at the right of the timestamp and disappears on mouse-out. No buttons are visible when not hovering.
+2. **Open source note** opens the underlying `.md` file in a new tab.
+3. **Copy link to entry** puts a working wikilink on the clipboard; paste it into a note and confirm it resolves.
+4. **Delete entry** asks for confirmation, then removes the entry from the timeline and puts the file in the trash configured in Obsidian's settings.
+5. Right-clicking inside the entry text still shows the editor's own context menu, not the entry menu.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css
+git commit -m "feat: add hover and context menu entry actions"
+```
+
+---
+
+## Task 17: Save failure handling
+
+Writes can fail. When they do, the text must stay on screen and the failure must be visible.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`, `styles.css`
+
+- [ ] **Step 1: Replace `save` with a failure-aware version**
+
+```ts
+  private async save(rendered: RenderedEntry, value: string): Promise<void> {
+    const file = rendered.entry.file;
+    if (!file) return;
+
+    try {
+      this.plugin.journal.markSelfWrite(file.path);
+      await this.plugin.repository.writeBody(file, value);
+      this.clearSaveError(rendered);
+    } catch (error) {
+      console.error(`Journal Entries: could not save ${file.path}`, error);
+      this.showSaveError(rendered);
+    }
+  }
+
+  /**
+   * Marks the entry as unsaved. The editor keeps the text, so nothing is lost
+   * and the next successful write clears the marker.
+   */
+  private showSaveError(rendered: RenderedEntry): void {
+    if (rendered.el.querySelector(".journal-entry-error")) return;
+
+    const header = rendered.el.querySelector(".journal-entry-header");
+    header?.createSpan({
+      cls: "journal-entry-error",
+      text: "not saved",
+      attr: { "aria-label": "This entry could not be written to disk. See the developer console." },
+    });
+  }
+
+  private clearSaveError(rendered: RenderedEntry): void {
+    rendered.el.querySelector(".journal-entry-error")?.remove();
+  }
+```
+
+Insert the error span before the actions element so it sits next to the timestamp — `createSpan` appends, and the actions div uses `margin-left: auto`, so it stays right-aligned regardless.
+
+- [ ] **Step 2: Flush pending saves when the view closes**
+
+Replace `onClose`:
+
+```ts
+  async onClose(): Promise<void> {
+    // Do not lose edits that are still inside the debounce window.
+    for (const rendered of this.rendered.values()) {
+      await this.flushSave(rendered);
+    }
+
+    this.clearTimeline();
+    this.contentEl.empty();
+  }
+```
+
+- [ ] **Step 3: Add error styling to `styles.css`**
+
+```css
+.journal-entry-error {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-error);
+  margin-left: var(--size-2-2);
+}
+```
+
+- [ ] **Step 4: Build and verify by hand**
+
+Run: `npm run build`, reload Obsidian.
+
+1. Type in an entry, then before the save fires, make the file unwritable:
+   `chmod 444 "$VAULT/Journal/2026/08/<some entry>.md"`
+   Type again and wait a second — a red `not saved` marker appears next to that entry's timestamp, the text stays on screen, and the console shows the error.
+2. Restore permissions with `chmod 644`, type once more — the marker disappears.
+3. Type in an entry and immediately close the journal tab — reopen it and confirm the last keystrokes were saved.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css
+git commit -m "feat: surface save failures without losing text"
+```
+
+---
+
+## Task 18: Mobile behaviour
+
+Same timeline, same code paths, four adjustments.
+
+**Files:**
+- Modify: `src/views/JournalView.ts`, `styles.css`
+
+- [ ] **Step 1: Widen the sentinel margin on mobile**
+
+In `installSentinel`, replace the observer options:
+
+```ts
+      {
+        root: this.contentEl,
+        // Mobile scrolls more slowly and repaints later, so start earlier.
+        rootMargin: Platform.isMobile ? "1200px 0px" : "600px 0px",
+      },
+```
+
+`Platform` is already imported from Task 13.
+
+- [ ] **Step 2: Keep the focused entry visible when the keyboard opens**
+
+Add to `mountEditor`, after `rendered.editor = editor;`:
+
+```ts
+    if (Platform.isMobile) {
+      // The on-screen keyboard shrinks the viewport after focus; scroll the
+      // focused entry back into view once that has happened.
+      rendered.bodyEl.addEventListener("focusin", () => {
+        window.setTimeout(() => {
+          rendered.el.scrollIntoView({ block: "nearest" });
+        }, 300);
+      });
+    }
+```
+
+- [ ] **Step 3: Long-press to open the entry menu**
+
+In `createEntryEl`, after the `contextmenu` listener:
+
+```ts
+    if (Platform.isMobile) {
+      let pressTimer: number | null = null;
+
+      el.addEventListener("touchstart", (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest(".journal-entry-body")) return;
+
+        pressTimer = window.setTimeout(() => {
+          const touch = event.touches[0];
+          this.showEntryMenu(
+            rendered,
+            new MouseEvent("contextmenu", { clientX: touch.clientX, clientY: touch.clientY }),
+          );
+        }, 500);
+      });
+
+      const cancel = () => {
+        if (pressTimer !== null) window.clearTimeout(pressTimer);
+        pressTimer = null;
+      };
+
+      el.addEventListener("touchend", cancel);
+      el.addEventListener("touchmove", cancel);
+      el.addEventListener("touchcancel", cancel);
+    }
+```
+
+- [ ] **Step 4: Add mobile styles to `styles.css`**
+
+```css
+.is-mobile .journal-timeline {
+  padding: var(--size-4-4) var(--size-4-4) 50vh;
+}
+
+.is-mobile .journal-entry {
+  margin-bottom: var(--size-4-8);
+}
+
+.is-mobile .journal-entry-body {
+  padding: var(--size-4-2) 0;
+}
+
+/* Touch devices have no hover, so keep the actions button always reachable. */
+.is-mobile .journal-entry-actions {
+  opacity: 0.5;
+}
+```
+
+- [ ] **Step 5: Build and verify on a device**
+
+Run: `npm run build`. Copy `main.js`, `manifest.json`, and `styles.css` into the test vault's `.obsidian/plugins/journal-entries/` on a phone or tablet — via Obsidian Sync, iCloud, or a cable — and open the vault there.
+
+Expected:
+
+- the journal opens and shows entries in the same order as desktop
+- tapping an entry places a cursor and the keyboard opens without hiding the entry being edited
+- long-pressing an entry's timestamp area opens the actions menu
+- scrolling loads older entries without stutter
+- if the internal editor API is unavailable on mobile, the fallback notice appears and typing still works
+
+Record any mobile-specific differences in `docs/editor-embed-api.md`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/views/JournalView.ts styles.css docs/editor-embed-api.md
+git commit -m "feat: adapt timeline behaviour for mobile"
+```
+
+---
+
+## Task 19: Manual test checklist and release files
+
+The cases from `CLAUDE.md` that cannot be automated, written down so they get run.
+
+**Files:**
+- Create: `docs/manual-testing.md`, `README.md`
+- Modify: `package.json` (version scripts are out of scope; no change needed if already correct)
+
+- [ ] **Step 1: Write `docs/manual-testing.md`**
+
+```markdown
+# Manual test checklist
+
+The cases from `CLAUDE.md` § Testing Priorities that need a real Obsidian instance.
+Cases 1–9 and 17–20 are covered by `npm test` and are not repeated here.
+
+Run this list against a scratch vault before every release, on desktop and on mobile.
+
+## Data integrity
+
+- [ ] **10. Editing from another pane updates the journal.** Open an entry's source
+      file beside the journal. Type in the source pane. The timeline entry updates
+      within about a second.
+- [ ] **The reverse does not loop.** Type continuously in the timeline for 30
+      seconds. The editor never loses focus, the text never resets, and the
+      developer console shows no repeated event storm.
+- [ ] **11. Deleting an entry updates the timeline.** Delete an entry file from the
+      File Explorer. It disappears from the timeline, and its day header disappears
+      if it was that day's last entry.
+- [ ] **12. Restarting Obsidian preserves everything.** Write several entries, quit
+      Obsidian completely, reopen. Every entry is present, in the same order, with
+      the same text.
+- [ ] **13. An empty composer creates no file.** Run "New journal entry", type
+      nothing, click away. No file appears anywhere in the vault.
+- [ ] **A committed entry is never auto-deleted.** Write an entry, then delete all
+      of its text. The file still exists.
+- [ ] **Frontmatter survives editing.** Add `mood: calm` and `tags: [journal]` to an
+      entry's frontmatter by hand. Edit the entry from the timeline. Both properties
+      are unchanged, in the same order.
+
+## Content fidelity
+
+- [ ] **14. Unicode and Turkish characters.** Type
+      `İstanbul'da yağmur yağıyordu — ışıklar süzülüyordu 🌧️` into an entry. Reopen
+      the file: the text is byte-identical.
+- [ ] **15. Wikilinks remain valid.** Type `[[Some Note]]` in an entry. It renders as
+      a link, resolves on click, and appears in the target note's backlinks pane.
+- [ ] **16. Markdown formatting remains intact.** Type a list, a code block, a
+      heading, bold, and italics. All render correctly and the raw file contains
+      ordinary Markdown.
+- [ ] **The entry is an ordinary note.** The entry appears in Search, in the graph,
+      and in Properties. A Dataview or Bases query over the journal folder finds it.
+
+## Timeline behaviour
+
+- [ ] **19. A new entry appears at the top.** Run "New journal entry" and type. The
+      entry appears above every other entry from today.
+- [ ] **20. An externally changed timestamp repositions the entry.** Edit an entry's
+      `created` property to a date two weeks ago. The entry moves to that day, in
+      the right position within it.
+- [ ] **21. Loading older entries does not disturb scroll position.** Scroll down
+      until a page loads. The content under the cursor does not jump.
+- [ ] **Go to today.** Scroll far into the past, run "Go to today". The view returns
+      to the top.
+
+## Editing surface
+
+- [ ] **Full editor features.** Inside a timeline entry: `[[` opens link
+      autocomplete, live preview renders formatting as you type, and editor
+      commands from the command palette apply to the focused entry.
+- [ ] **Fallback path.** Temporarily force the fallback by editing
+      `hasEmbeddedEditorApi` to `return false`, rebuild, and reload. A notice
+      appears once, entries are editable as plain text, and saving still works.
+      Revert the change afterwards.
+
+## Failure handling
+
+- [ ] **Save failure is visible.** Make an entry file read-only
+      (`chmod 444`), type into it, wait. A "not saved" marker appears, the text
+      stays on screen, and the console logs the error. Restore permissions and type
+      again — the marker clears.
+- [ ] **Same-second entries.** Run "New journal entry" twice within one second and
+      type in both. Two files exist, the second suffixed `-2`, and neither
+      overwrote the other.
+
+## Themes and platforms
+
+- [ ] Light theme and dark theme both look native; no unreadable text, no stray
+      borders or shadows.
+- [ ] At least one community theme renders acceptably.
+- [ ] Mobile: entries render, the keyboard does not cover the focused entry,
+      long-press opens the actions menu, and paging works.
+```
+
+- [ ] **Step 2: Write `README.md`**
+
+```markdown
+# Journal Entries
+
+An Obsidian plugin for entry-based journaling.
+
+One journal entry is one Markdown file. A day holds as many entries as you wrote
+that day. The plugin shows them all in a single continuous timeline, newest first,
+directly editable — so you think about writing, not about files.
+
+## What it does
+
+- **No titles.** Entries are identified by their timestamp. Nothing asks you for a
+  name, a folder, or a date.
+- **Newest first.** Days run newest to oldest, and so do the entries inside each day.
+- **Ordinary Markdown.** Every entry is a normal note in your vault. Links, tags,
+  properties, search, backlinks, graph, and other plugins all work.
+- **Local only.** No network requests, no telemetry, no account. Your journal never
+  leaves your vault.
+
+## Storage
+
+```
+Journal/
+└── 2026/
+    └── 08/
+        ├── 2026-08-12-09-34-21.md
+        ├── 2026-08-12-14-17-03.md
+        └── 2026-08-12-22-41-52.md
+```
+
+Each file carries a single `created` property and your text. No heading is added.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `Open journal` | Opens the timeline |
+| `New journal entry` | Returns to today and focuses a fresh entry |
+| `Go to today` | Scrolls the timeline back to the top |
+
+## Settings
+
+**Journal folder** — where entries live. Defaults to `Journal`.
+
+## Development
+
+```bash
+npm install
+npm run dev     # watch build
+npm test        # unit tests
+npm run build   # typecheck + production build
+```
+
+See `docs/manual-testing.md` for the checks that need a real Obsidian instance.
+
+## A note on the editor
+
+Obsidian exposes no public API for an editable editor embedded in a custom view.
+To give entries the full Obsidian editing experience, this plugin uses an internal
+mechanism, isolated in `src/views/ObsidianEmbedEditor.ts`. If a future Obsidian
+release changes it, the plugin detects this at load and falls back to plain text
+editing rather than breaking. See `docs/editor-embed-api.md`.
+
+## License
+
+MIT
+```
+
+- [ ] **Step 3: Run the full verification**
+
+Run: `npm test && npm run build`
+Expected: all tests pass, build exits 0.
+
+Then work through `docs/manual-testing.md` end to end in a scratch vault, on desktop and mobile. Fix anything that fails before committing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/manual-testing.md README.md
+git commit -m "docs: add manual test checklist and readme"
+```
+
+---
+
+## Definition of done
+
+The MVP is complete when the seven-step flow in `CLAUDE.md` § MVP Definition works
+reliably on desktop and mobile, `npm test` passes, and every box in
+`docs/manual-testing.md` is checked.
