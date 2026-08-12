@@ -1,8 +1,13 @@
 const ENTRY_FILENAME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-(\d+))?$/;
+  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-([1-9]\d*))?$/;
 
 function pad(value: number, length = 2): string {
   return String(value).padStart(length, "0");
+}
+
+/** Number of days in `month` (1-12) of `year`, accounting for leap years. */
+function daysInMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate();
 }
 
 /** Filename stem for an entry created at `date`, without extension or collision suffix. */
@@ -23,32 +28,39 @@ export interface ParsedEntryFilename {
   collision: number;
 }
 
-/** Parses the plugin's filename convention. Returns null for anything else. */
+/**
+ * Parses the plugin's filename convention. Returns null for anything else,
+ * including genuinely impossible dates (month 13, 31 April, etc).
+ *
+ * Note: during the DST fall-back hour, two distinct instants (e.g. 01:30 EST
+ * and 01:30 EDT) format to the same filename, so parsing recovers only one
+ * of them. This is inherent to the filename format and is not fixed here —
+ * callers that need the exact instant should prefer the `created` property,
+ * which carries an explicit offset and round-trips exactly.
+ */
 export function parseEntryFilename(basename: string): ParsedEntryFilename | null {
   const match = ENTRY_FILENAME_RE.exec(basename);
   if (!match) return null;
 
   const [, year, month, day, hour, minute, second, collision] = match;
-  const date = new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second),
-  );
+  const yearNum = Number(year);
+  const monthNum = Number(month);
+  const dayNum = Number(day);
+  const hourNum = Number(hour);
+  const minuteNum = Number(minute);
+  const secondNum = Number(second);
 
-  // Reject values that rolled over, e.g. month 13 or day 45.
-  if (
-    date.getFullYear() !== Number(year) ||
-    date.getMonth() !== Number(month) - 1 ||
-    date.getDate() !== Number(day) ||
-    date.getHours() !== Number(hour) ||
-    date.getMinutes() !== Number(minute) ||
-    date.getSeconds() !== Number(second)
-  ) {
-    return null;
-  }
+  // Validate components numerically rather than round-tripping through Date:
+  // Date *normalizes* nonexistent local times (e.g. the DST spring-forward
+  // gap) instead of rolling over, so comparing getHours()/etc. against the
+  // input would wrongly reject legitimate filenames landing in that gap.
+  if (monthNum < 1 || monthNum > 12) return null;
+  if (dayNum < 1 || dayNum > daysInMonth(yearNum, monthNum)) return null;
+  if (hourNum > 23) return null;
+  if (minuteNum > 59) return null;
+  if (secondNum > 59) return null;
+
+  const date = new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum, secondNum);
 
   return { date, collision: collision ? Number(collision) : 1 };
 }
@@ -59,7 +71,9 @@ function normalizeRoot(root: string): string {
 }
 
 export function entryFolderPath(root: string, date: Date): string {
-  return `${normalizeRoot(root)}/${date.getFullYear()}/${pad(date.getMonth() + 1)}`;
+  const normalizedRoot = normalizeRoot(root);
+  const yearMonth = `${date.getFullYear()}/${pad(date.getMonth() + 1)}`;
+  return normalizedRoot ? `${normalizedRoot}/${yearMonth}` : yearMonth;
 }
 
 /** ISO 8601 with an explicit local offset, e.g. 2026-08-12T22:41:52+03:00. */

@@ -44,6 +44,26 @@ describe("parseEntryFilename", () => {
   it("returns null for an impossible date", () => {
     expect(parseEntryFilename("2026-13-45-99-99-99")).toBeNull();
   });
+
+  it("returns null for 31 April", () => {
+    expect(parseEntryFilename("2026-04-31-10-00-00")).toBeNull();
+  });
+
+  it("accepts a time inside a DST spring-forward gap without failing", () => {
+    // In zones that spring forward at this instant (e.g. America/New_York),
+    // 02:30 on this date does not exist as a local time. Date normalizes it
+    // rather than rolling over, so this must still parse as a valid entry
+    // filename rather than being rejected as foreign. Assert only in a
+    // timezone-independent way: this holds in every zone.
+    const parsed = parseEntryFilename("2026-03-08-02-30-00");
+    expect(parsed).not.toBeNull();
+    expect(parsed?.collision).toBe(1);
+  });
+
+  it("rejects a zero or zero-padded collision suffix", () => {
+    expect(parseEntryFilename("2026-08-12-22-41-52-0")).toBeNull();
+    expect(parseEntryFilename("2026-08-12-22-41-52-02")).toBeNull();
+  });
 });
 
 describe("entryFolderPath", () => {
@@ -54,6 +74,11 @@ describe("entryFolderPath", () => {
   it("normalizes a folder setting with stray slashes", () => {
     expect(entryFolderPath("/Journal/", d)).toBe("Journal/2026/08");
   });
+
+  it("does not produce a leading slash for an empty root", () => {
+    expect(entryFolderPath("", d)).toBe("2026/08");
+    expect(entryFolderPath("/", d)).toBe("2026/08");
+  });
 });
 
 describe("formatCreatedProperty", () => {
@@ -63,6 +88,12 @@ describe("formatCreatedProperty", () => {
 
   it("includes an explicit offset rather than Z-less local time", () => {
     expect(formatCreatedProperty(d)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([+-]\d{2}:\d{2}|Z)$/);
+  });
+
+  it("truncates milliseconds to the second", () => {
+    const withMs = new Date(2026, 7, 12, 22, 41, 52, 789);
+    const truncatedToSecond = new Date(2026, 7, 12, 22, 41, 52, 0);
+    expect(new Date(formatCreatedProperty(withMs)).getTime()).toBe(truncatedToSecond.getTime());
   });
 });
 
