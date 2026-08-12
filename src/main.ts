@@ -55,8 +55,13 @@ export default class JournalEntriesPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  /** Opens the journal view, reusing an existing leaf when one exists. */
-  async openJournal(): Promise<JournalView> {
+  /**
+   * Opens the journal view, reusing an existing leaf when one exists. Returns
+   * null if the leaf's view isn't a JournalView by the time this resolves —
+   * for example if the plugin was disabled mid-await, which detaches the
+   * leaf and leaves it with an empty view.
+   */
+  async openJournal(): Promise<JournalView | null> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL);
     let leaf: WorkspaceLeaf;
 
@@ -68,22 +73,27 @@ export default class JournalEntriesPlugin extends Plugin {
     }
 
     await this.app.workspace.revealLeaf(leaf);
-    return leaf.view as JournalView;
+    const view = leaf.view;
+    return view instanceof JournalView ? view : null;
   }
 
   async newEntry(): Promise<void> {
     const view = await this.openJournal();
-    await view.startNewEntry();
+    if (view) await view.startNewEntry();
   }
 
   async goToToday(): Promise<void> {
     const view = await this.openJournal();
-    view.scrollToTop();
+    if (view) view.scrollToTop();
   }
 
   refreshJournal(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
-      void (leaf.view as JournalView).reload();
+      // A deferred leaf's view is a DeferredView, not a JournalView — its
+      // onOpen rebuilds it when it loads, so it needs no refresh here. Skip
+      // rather than throw, or one deferred leaf would abort the whole loop.
+      const view = leaf.view;
+      if (view instanceof JournalView) void view.reload();
     }
   }
 }
