@@ -8,7 +8,11 @@ function collisionIndex(basename: string): number {
 /**
  * Total ordering, newest first. Entries created within the same second are
  * ordered by their collision suffix so that the later one appears above.
- * Falls back to path comparison so the order is never ambiguous.
+ * Falls back to a code-point path comparison so the order is never ambiguous
+ * — not `localeCompare`, whose ICU collation treats Unicode-equivalent but
+ * distinct byte sequences (e.g. NFC vs NFD forms of "café") as equal and
+ * varies by locale/platform, which would make a synced vault order tied
+ * entries differently on different devices.
  */
 export function compareEntries(a: JournalEntry, b: JournalEntry): number {
   const byTime = b.created.getTime() - a.created.getTime();
@@ -17,15 +21,22 @@ export function compareEntries(a: JournalEntry, b: JournalEntry): number {
   const byCollision = collisionIndex(b.file.basename) - collisionIndex(a.file.basename);
   if (byCollision !== 0) return byCollision;
 
-  return b.file.path.localeCompare(a.file.path);
+  return b.file.path < a.file.path ? -1 : b.file.path > a.file.path ? 1 : 0;
 }
 
 export function sortEntries(entries: JournalEntry[]): JournalEntry[] {
   return [...entries].sort(compareEntries);
 }
 
-/** Inserts into an already sorted list and returns the insertion index. */
+/**
+ * Inserts into an already sorted list and returns the insertion index. If an
+ * entry with the same path is already present (e.g. its timestamp was
+ * edited), that stale copy is removed first so the list never accumulates
+ * duplicate paths.
+ */
 export function insertSorted(list: JournalEntry[], entry: JournalEntry): number {
+  removeByPath(list, entry.file.path);
+
   let low = 0;
   let high = list.length;
 
@@ -69,14 +80,24 @@ export function sliceBefore(
 /**
  * Position-based paging: the next `limit` entries after the entry at
  * `lastPath`. Unlike date-based paging this cannot skip entries that share a
- * timestamp with the cursor. An unknown cursor yields the first page, because
- * `findIndex` returns -1 and -1 + 1 === 0.
+ * timestamp with the cursor.
+ *
+ * A `null` cursor means "first page" and returns it. A non-null cursor whose
+ * entry is no longer in the list (deleted, renamed, or removed by sync while
+ * the caller was scrolled down) returns `null` rather than silently falling
+ * back to the first page — treating a lost cursor as page 1 would make
+ * infinite scroll re-append entries the caller already rendered and never
+ * advance. Callers must treat `null` as "re-anchor", not "empty page".
  */
 export function pageAfter(
   list: JournalEntry[],
   lastPath: string | null,
   limit: number,
-): JournalEntry[] {
-  const start = lastPath === null ? 0 : list.findIndex((e) => e.file.path === lastPath) + 1;
-  return list.slice(start, start + limit);
+): JournalEntry[] | null {
+  if (lastPath === null) return list.slice(0, limit);
+
+  const index = list.findIndex((e) => e.file.path === lastPath);
+  if (index === -1) return null;
+
+  return list.slice(index + 1, index + 1 + limit);
 }
