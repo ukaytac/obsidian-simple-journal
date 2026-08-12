@@ -46,4 +46,64 @@ describe("resolveEntryDate", () => {
     const result = resolveEntryDate({ basename: "some-note", ctime: Number.NaN });
     expect(Number.isNaN(result.getTime())).toBe(false);
   });
+
+  describe("date-only created values", () => {
+    it("treats a full date-only string as local midnight, not UTC midnight", () => {
+      const result = resolveEntryDate({ ...base, created: "2026-08-12" });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(7);
+      expect(result.getDate()).toBe(12);
+      expect(result.getHours()).toBe(0);
+    });
+
+    it("treats a year-month string as local midnight on the 1st", () => {
+      const result = resolveEntryDate({ ...base, created: "2026-08" });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(7);
+      expect(result.getDate()).toBe(1);
+      expect(result.getHours()).toBe(0);
+    });
+
+    it("treats a bare year string as local midnight on Jan 1st", () => {
+      const result = resolveEntryDate({ ...base, created: "2026" });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(0);
+      expect(result.getDate()).toBe(1);
+      expect(result.getHours()).toBe(0);
+    });
+
+    it("treats a date-only Date instance at UTC midnight as local midnight", () => {
+      const result = resolveEntryDate({ ...base, created: new Date(Date.UTC(2026, 7, 12)) });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(7);
+      expect(result.getDate()).toBe(12);
+      expect(result.getHours()).toBe(0);
+    });
+
+    it("falls back to the filename when the date-only string is impossible", () => {
+      const result = resolveEntryDate({ ...base, created: "2026-02-30" });
+      expect(result.getTime()).toBe(filenameDate.getTime());
+    });
+
+    it("leaves ISO strings that carry a time unaffected", () => {
+      const result = resolveEntryDate({ ...base, created: "2026-08-12T09:00:00" });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(7);
+      expect(result.getDate()).toBe(12);
+      expect(result.getHours()).toBe(9);
+    });
+
+    it("leaves the YAML space-separated time form unaffected", () => {
+      const result = resolveEntryDate({ ...base, created: "2026-08-12 09:00:00" });
+      expect(result.getFullYear()).toBe(2026);
+      expect(result.getMonth()).toBe(7);
+      expect(result.getDate()).toBe(12);
+      expect(result.getHours()).toBe(9);
+    });
+
+    it("leaves Date instances that carry a non-midnight time unaffected", () => {
+      const result = resolveEntryDate({ ...base, created: createdDate });
+      expect(result.getTime()).toBe(createdDate.getTime());
+    });
+  });
 });
