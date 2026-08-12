@@ -1,0 +1,184 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import type { App, TFile } from "obsidian";
+import { createFakeApp } from "./obsidian-mock";
+import { EntryRepository } from "../src/journal/entryRepository";
+
+function setup() {
+  const fake = createFakeApp();
+  const repo = new EntryRepository(fake as unknown as App, () => "Journal");
+  return { fake, repo };
+}
+
+const body = "\nToday I realized something.\n";
+
+describe("isEntryFile", () => {
+  it("accepts markdown files under the journal folder", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    expect(repo.isEntryFile(file)).toBe(true);
+  });
+
+  it("rejects files outside the journal folder", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Daily Notes/2026-08-12.md", "");
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+
+  it("rejects a folder whose name merely starts with the journal folder name", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journalling/note.md", "");
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+
+  it("rejects non-markdown files", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/photo.png", "");
+    file.extension = "png";
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+});
+
+describe("listEntries", () => {
+  it("returns entries newest first across days", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-11-21-10-00.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-09-34-21.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+
+    expect(repo.listEntries().map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-12-09-34-21",
+      "2026-08-11-21-10-00",
+    ]);
+  });
+
+  it("uses the created property over the filename", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.metadataCache.frontmatter.set(file.path, {
+      created: new Date(2026, 7, 1, 8, 0, 0).toISOString(),
+    });
+
+    expect(repo.listEntries()[0].created.getTime()).toBe(new Date(2026, 7, 1, 8, 0, 0).getTime());
+  });
+
+  it("keeps entries whose created property is malformed", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.metadataCache.frontmatter.set(file.path, { created: "garbage" });
+
+    expect(repo.listEntries()).toHaveLength(1);
+    expect(repo.listEntries()[0].created.getTime()).toBe(
+      new Date(2026, 7, 12, 22, 41, 52).getTime(),
+    );
+  });
+
+  it("ignores files outside the journal folder", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.vault.addFile("Inbox/idea.md", "");
+    expect(repo.listEntries()).toHaveLength(1);
+  });
+});
+
+describe("createEntry", () => {
+  it("writes to the nested year and month folder", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("creates the folder hierarchy", async () => {
+    const { fake, repo } = setup();
+    await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect([...fake.vault.folders]).toEqual(["Journal", "Journal/2026", "Journal/2026/08"]);
+  });
+
+  it("writes only a created property and no heading", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    const data = fake.vault.contents.get(file.path) ?? "";
+
+    expect(data.startsWith("---\ncreated: 2026-08-12T22:41:52")).toBe(true);
+    expect(data).not.toContain("#");
+    expect(data.trimEnd().endsWith("---")).toBe(true);
+  });
+
+  it("suffixes a second entry created in the same second", async () => {
+    const { repo } = setup();
+    const at = new Date(2026, 7, 12, 22, 41, 52);
+    const first = await repo.createEntry(at);
+    const second = await repo.createEntry(at);
+    const third = await repo.createEntry(at);
+
+    expect(first.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+    expect(second.path).toBe("Journal/2026/08/2026-08-12-22-41-52-2.md");
+    expect(third.path).toBe("Journal/2026/08/2026-08-12-22-41-52-3.md");
+  });
+
+  it("never overwrites an existing file", async () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "PRECIOUS");
+    await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-12-22-41-52.md")).toBe("PRECIOUS");
+  });
+});
+
+describe("readBody and writeBody", () => {
+  it("reads the body without the frontmatter", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
+    );
+    expect(await repo.readBody(file)).toBe(body);
+  });
+
+  it("preserves arbitrary frontmatter when writing", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
+    );
+
+    await repo.writeBody(file, "\nRewritten.\n");
+    const data = fake.vault.contents.get(file.path) ?? "";
+
+    expect(data).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n\nRewritten.\n`,
+    );
+  });
+
+  it("round-trips unicode and Turkish characters", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
+    );
+    const text = "\nİstanbul'da yağmur yağıyordu — ışıklar süzülüyordu. 🌧️\n";
+
+    await repo.writeBody(file, text);
+    expect(await repo.readBody(file)).toBe(text);
+  });
+
+  it("round-trips wikilinks and markdown formatting", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
+    );
+    const text = "\nSee [[Some Note|alias]] and **bold** and `code`.\n\n- item\n";
+
+    await repo.writeBody(file, text);
+    expect(await repo.readBody(file)).toBe(text);
+  });
+});
+
+describe("deleteEntry", () => {
+  it("uses the file manager so Obsidian's trash setting is respected", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    await repo.deleteEntry(file as TFile);
+    expect(fake.fileManager.trashed.map((f) => f.path)).toEqual([file.path]);
+  });
+});
