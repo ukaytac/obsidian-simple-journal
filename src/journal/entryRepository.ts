@@ -18,12 +18,14 @@ export class EntryRepository {
   ) {}
 
   private get root(): string {
-    return this.getFolder().replace(/^\/+|\/+$/g, "");
+    const trimmed = this.getFolder().trim().replace(/^\/+|\/+$/g, "");
+    return trimmed || "Journal";
   }
 
   isEntryFile(file: TFile): boolean {
     if (file.extension !== "md") return false;
-    return file.path.startsWith(`${this.root}/`);
+    const prefix = `${this.root}/`.toLowerCase();
+    return file.path.toLowerCase().startsWith(prefix);
   }
 
   /** Builds the entry record for a file, or null if the file is not an entry. */
@@ -66,7 +68,7 @@ export class EntryRepository {
     await this.ensureFolder(folder);
 
     const stem = formatEntryFilename(at);
-    const contents = `---\ncreated: ${formatCreatedProperty(at)}\n---\n\n`;
+    const contents = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n\n`;
 
     for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS; attempt++) {
       const name = attempt === 1 ? stem : `${stem}-${attempt}`;
@@ -99,7 +101,14 @@ export class EntryRepository {
         throw new Error(`Journal Entries: ${current} exists but is not a folder`);
       }
 
-      await this.app.vault.createFolder(current);
+      try {
+        await this.app.vault.createFolder(current);
+      } catch (error) {
+        // Lost a race against another writer (Sync, Templater, ...) creating
+        // the same folder. If it now exists, proceed rather than losing the
+        // entry the user is about to write; otherwise the failure is real.
+        if (!this.app.vault.getFolderByPath(current)) throw error;
+      }
     }
   }
 

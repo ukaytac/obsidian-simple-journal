@@ -36,6 +36,27 @@ describe("isEntryFile", () => {
     file.extension = "png";
     expect(repo.isEntryFile(file)).toBe(false);
   });
+
+  it("matches the journal folder case-insensitively", () => {
+    const fake = createFakeApp();
+    const repo = new EntryRepository(fake as unknown as App, () => "journal");
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    expect(repo.isEntryFile(file)).toBe(true);
+  });
+
+  it("still rejects a folder whose name merely starts with the journal folder name, case-insensitively", () => {
+    const fake = createFakeApp();
+    const repo = new EntryRepository(fake as unknown as App, () => "journal");
+    const file = fake.vault.addFile("Journalling/note.md", "");
+    expect(repo.isEntryFile(file)).toBe(false);
+  });
+
+  it("falls back to Journal when the folder setting is empty", () => {
+    const fake = createFakeApp();
+    const repo = new EntryRepository(fake as unknown as App, () => "");
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    expect(repo.isEntryFile(file)).toBe(true);
+  });
 });
 
 describe("listEntries", () => {
@@ -99,7 +120,7 @@ describe("createEntry", () => {
     const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
     const data = fake.vault.contents.get(file.path) ?? "";
 
-    expect(data.startsWith("---\ncreated: 2026-08-12T22:41:52")).toBe(true);
+    expect(data.startsWith('---\ncreated: "2026-08-12T22:41:52')).toBe(true);
     expect(data).not.toContain("#");
     expect(data.trimEnd().endsWith("---")).toBe(true);
   });
@@ -121,6 +142,33 @@ describe("createEntry", () => {
     fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "PRECIOUS");
     await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
     expect(fake.vault.contents.get("Journal/2026/08/2026-08-12-22-41-52.md")).toBe("PRECIOUS");
+  });
+
+  it("falls back to Journal when the folder setting is empty", async () => {
+    const fake = createFakeApp();
+    const repo = new EntryRepository(fake as unknown as App, () => "");
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("survives another writer creating the same folder concurrently", async () => {
+    const { fake, repo } = setup();
+    const originalCreateFolder = fake.vault.createFolder.bind(fake.vault);
+    let calls = 0;
+
+    fake.vault.createFolder = async (path: string) => {
+      calls += 1;
+      if (path === "Journal" && calls === 1) {
+        // Simulate another writer (Sync, Templater, ...) winning the race:
+        // the folder exists on disk by the time our createFolder call fails.
+        fake.vault.folders.add(path);
+        throw new Error("Folder already exists.");
+      }
+      return originalCreateFolder(path);
+    };
+
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
   });
 });
 

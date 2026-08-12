@@ -85,6 +85,13 @@ export class FakeVault {
     return null;
   }
 
+  getFolderByPath(path: string): TFolder | null {
+    if (!this.folders.has(path)) return null;
+    const folder = new TFolder();
+    folder.path = path;
+    return folder;
+  }
+
   async createFolder(path: string): Promise<void> {
     if (this.folders.has(path)) throw new Error("Folder already exists.");
     this.folders.add(path);
