@@ -4,6 +4,6 @@
   "version": "0.1.0",
   "minAppVersion": "1.7.2",
   "description": "A continuous, reverse-chronological journal where every entry is its own Markdown note.",
-  "author": "",
+  "author": "Utku Aytaç",
   "isDesktopOnly": false
 }
