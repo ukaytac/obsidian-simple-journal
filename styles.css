@@ -21,8 +21,11 @@
      this keeps the entry at least one line tall instead of invisible. A
      plain length, not `calc(var(--line-height-normal) * 1em)`: that calc
      silently breaks if a theme redefines --line-height-normal with its own
-     unit (e.g. "1.5em"), making the whole expression invalid. */
-  min-height: 2em;
+     unit (e.g. "1.5em"), making the whole expression invalid. 2em overshot
+     a one-line entry's true ~1.x-line height (scrollHeight includes the
+     padding box, not just content); 1.5em keeps the safety net without the
+     extra dead space. */
+  min-height: 1.5em;
 }
 
 .journal-timeline .journal-entry-textarea:focus {

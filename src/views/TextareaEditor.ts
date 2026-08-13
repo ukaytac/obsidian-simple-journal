@@ -25,10 +25,20 @@ export class TextareaEditor implements EntryEditor {
   private lastHeight = 0;
 
   /**
+   * The textarea's `clientWidth` as of the last successful measure.
+   * `remeasure()` compares against this: `onResize()` fires for width
+   * changes too (dragging the pane divider, opening a sidebar), which can
+   * change how the same text wraps without the editor ever having been
+   * hidden — so `needsResize` alone would miss it.
+   */
+  private lastWidth = 0;
+
+  /**
    * True when a resize bailed out because the textarea was hidden
    * (`offsetParent` null or a mis-measured `scrollHeight`) and hasn't been
    * corrected since. Cleared once a resize actually measures and applies a
-   * height. `remeasure()` is a no-op unless this is set.
+   * height. `remeasure()` also proceeds on a width change even when this
+   * is false (see `lastWidth`).
    */
   private needsResize = false;
 
@@ -52,6 +62,7 @@ export class TextareaEditor implements EntryEditor {
     textarea.rows = 1;
     this.lastValue = value;
     this.lastHeight = 0;
+    this.lastWidth = 0;
     this.needsResize = false;
 
     textarea.addEventListener("input", (event) => {
@@ -119,7 +130,12 @@ export class TextareaEditor implements EntryEditor {
   }
 
   remeasure(): void {
-    if (!this.needsResize) return;
+    const textarea = this.textarea;
+    if (!textarea) return;
+    // Cheap on the common case: a single width read per call, batched with
+    // every other mounted editor's read by the browser, versus a full
+    // write-read-write cycle on all of them for every frame of a resize.
+    if (!this.needsResize && textarea.clientWidth === this.lastWidth) return;
     this.resize();
   }
 
@@ -195,6 +211,7 @@ export class TextareaEditor implements EntryEditor {
 
     this.needsResize = false;
     this.lastHeight = scrollHeight;
+    this.lastWidth = textarea.clientWidth;
     textarea.style.height = `${scrollHeight}px`;
   }
 }

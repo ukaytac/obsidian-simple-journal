@@ -180,4 +180,23 @@ describe("TextareaEditor value and lifecycle", () => {
 
     popout.window.close();
   });
+
+  it("hasFocus() returns false when the editor is not focused", () => {
+    const { editor } = mountEditor("hello");
+    expect(editor.hasFocus()).toBe(false);
+  });
+
+  it("setValue() after mount() updates the value and getValue() reflects it", () => {
+    const { editor, textarea } = mountEditor("hello");
+
+    editor.setValue("changed from another pane");
+
+    expect(textarea.value).toBe("changed from another pane");
+    expect(editor.getValue()).toBe("changed from another pane");
+  });
+
+  it("remeasure() on an unmounted editor does not throw", () => {
+    const editor = new TextareaEditor();
+    expect(() => editor.remeasure()).not.toThrow();
+  });
 });

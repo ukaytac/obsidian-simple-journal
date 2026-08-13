@@ -50,13 +50,15 @@ export interface EntryEditor {
    */
   flush(): void;
   /**
-   * "You may be visible again — re-measure if you need to." A no-op unless
-   * a previous resize bailed out because the editor was hidden (e.g. its
-   * leaf was `display: none` in a background tab while an external
-   * `setValue` arrived). `ItemView` inherits `onResize()` (`@since 0.9.7`),
-   * which Obsidian calls when a leaf becomes visible again; the view is
-   * expected to call `remeasure()` from there so a stale height left by a
-   * background-tab edit is corrected once the tab is switched back to.
+   * "You may need to re-measure." A no-op unless a previous resize bailed
+   * out because the editor was hidden (e.g. its leaf was `display: none` in
+   * a background tab while an external `setValue` arrived), or the
+   * editor's width has changed since its last successful measure (e.g. the
+   * pane divider was dragged, or a sidebar opened/closed, causing the same
+   * text to re-wrap). `ItemView` inherits `onResize()` (`@since 0.9.7`),
+   * which Obsidian calls for both a leaf becoming visible and a size
+   * change; the view is expected to call `remeasure()` on every mounted
+   * editor from there.
    */
   remeasure(): void;
   destroy(): void;
