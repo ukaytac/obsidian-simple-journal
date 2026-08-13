@@ -3094,7 +3094,22 @@ Replace `appendEntry`:
 
 Error handling for `save` is added in Task 18.
 
-- [ ] **Step 6: Destroy editors in `clearTimeline`**
+- [ ] **Step 6: Re-measure editors when the leaf becomes visible**
+
+An editor mounted or updated while its tab is in the background cannot measure
+its own height — a hidden element reports `scrollHeight` of 0. Those editors set
+an internal flag and wait for `remeasure()`. Obsidian calls `onResize()` when a
+leaf becomes visible, which is the hook that releases them.
+
+```ts
+  onResize(): void {
+    for (const rendered of this.rendered.values()) {
+      rendered.editor?.remeasure();
+    }
+  }
+```
+
+- [ ] **Step 7: Destroy editors in `clearTimeline`**
 
 ```ts
   private clearTimeline(): void {
@@ -3113,7 +3128,7 @@ Error handling for `save` is added in Task 18.
   }
 ```
 
-- [ ] **Step 7: Build and verify by hand**
+- [ ] **Step 8: Build and verify by hand**
 
 Run: `npm run build`, reload Obsidian, run **Open journal**.
 
@@ -3125,7 +3140,7 @@ Expected, with the 300-entry vault from Task 12:
 - scrolling far down and back up does not throw, and the entries scrolled past still show their text
 - the developer console shows at most `MAX_MOUNTED_EDITORS` mounted `.journal-entry-embed` elements
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/views/JournalView.ts src/main.ts
