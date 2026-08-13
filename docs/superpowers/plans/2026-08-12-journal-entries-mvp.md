@@ -3434,11 +3434,23 @@ Add to `onOpen()`, before `await this.reload()`:
     this.removeEmptyDayGroups();
   }
 
+  /**
+   * Removes day groups that no longer hold an entry.
+   *
+   * The `dayGroups` map must lose the key in the same pass. Leaving it behind
+   * means `ensureDayGroup` later hands back a detached container, and every
+   * entry written on that day renders into nothing — visible as an entry that
+   * silently fails to appear.
+   */
   private removeEmptyDayGroups(): void {
     for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
       if (dayEl.querySelector(".journal-entry")) continue;
+
+      const key = dayEl.dataset.day;
+      if (key) this.dayGroups.delete(key);
       dayEl.remove();
     }
+
     this.rebuildMonthHeaders();
   }
 
