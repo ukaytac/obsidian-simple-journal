@@ -115,27 +115,45 @@ export class JournalView extends ItemView {
     this.timelineEl.empty();
   }
 
-  /** Appends the next page below what is already rendered. Returns false when exhausted. */
-  private async loadNextPage(): Promise<boolean> {
+  /**
+   * Appends the next page below what is already rendered.
+   *
+   * `"busy"` and `"exhausted"` must stay distinct: a caller that reads
+   * `"busy"` as `"exhausted"` would tear down the sentinel/observer on a
+   * load that is merely in flight, killing infinite scroll for the rest of
+   * the view's life. Unreachable today (see the guard below), but the
+   * distinction matters the moment this gains a real await.
+   */
+  private async loadNextPage(): Promise<"loaded" | "exhausted" | "busy"> {
     // No-op today: everything below runs synchronously (no `await` in this
     // try block), so JS's run-to-completion semantics already serialize
     // calls before this guard would ever see `loading === true`. Kept
     // anyway — the moment this gains a real await (e.g. Task 13 mounting an
     // editor on the append path), concurrent callers become possible and
     // this guard becomes load-bearing.
-    if (this.loading) return false;
+    if (this.loading) return "busy";
     this.loading = true;
+    // Captured before any work, mirroring renderStatic: a concurrent
+    // reload() bumps this. Checked below, before the mutation that commits
+    // this page as loaded, so a reload() landing mid-call (impossible today
+    // with no await in this function, but not once Task 13 adds one to the
+    // append path) can't resume into a cleared timeline and leave paging
+    // anchored on a page that was appended nowhere real.
+    const generation = this.generation;
 
     try {
       const page = this.nextPage();
-      if (page.length === 0) return false;
+      if (page.length === 0) return "exhausted";
 
       for (const entry of page) {
+        if (generation !== this.generation) return "exhausted";
         this.appendEntry(entry);
       }
 
+      if (generation !== this.generation) return "exhausted";
+
       this.lastLoadedPath = page[page.length - 1].file.path;
-      return true;
+      return "loaded";
     } finally {
       this.loading = false;
     }
@@ -184,9 +202,22 @@ export class JournalView extends ItemView {
       }
     }
 
-    // Nothing currently rendered survives in the index. Start from the top.
-    this.lastLoadedPath = null;
-    return pageAfter(this.index, null, PAGE_SIZE) ?? [];
+    // Nothing currently rendered survives in the index — e.g. the journal
+    // folder itself was renamed while scrolled down, which mutates every
+    // live TFile.path in place, so every rendered path and every cursor
+    // misses at once. Appending page one here would land it below the stale
+    // nodes, which are still in the DOM and still in `this.rendered`
+    // (removing them is a later task) — rebuild the whole timeline instead.
+    //
+    // Deferred rather than called directly: this method runs inside
+    // loadNextPage's locked section (`this.loading` is still true), and
+    // reload() itself awaits loadNextPage() to load page one. Calling
+    // reload() synchronously here would reenter that lock, see "busy", skip
+    // loading page one, and install a sentinel over an empty timeline.
+    // queueMicrotask defers it until after this call (and its `finally`,
+    // which clears the lock) has returned.
+    queueMicrotask(() => void this.reload());
+    return [];
   }
 
   /**
@@ -195,11 +226,21 @@ export class JournalView extends ItemView {
    * preserved without any manual correction.
    */
   private installSentinel(): void {
-    this.sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
+    const sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
+    this.sentinelEl = sentinelEl;
     this.forcedReobserve = false;
     this.burstCount = 0;
 
-    this.observer = new IntersectionObserver(
+    // Constructed from the sentinel's own window rather than the plugin's
+    // global scope, so this still works when the leaf has been dragged into
+    // an Obsidian popout window — a separate browsing context with its own
+    // IntersectionObserver realm. In the main window `sentinelEl.win ===
+    // window`, so this is behaviour-identical there. `win` is typed as a
+    // bare `Window`, which doesn't carry constructor globals like
+    // IntersectionObserver — hence the cast.
+    const win = sentinelEl.win as Window & typeof globalThis;
+
+    this.observer = new win.IntersectionObserver(
       (entries) => {
         // Cleared here, unconditionally, whenever the callback fires — not
         // inside onSentinelVisible. A forced re-observe (see below) can come
@@ -220,7 +261,7 @@ export class JournalView extends ItemView {
       },
     );
 
-    this.observer.observe(this.sentinelEl);
+    this.observer.observe(sentinelEl);
   }
 
   /**
@@ -238,16 +279,25 @@ export class JournalView extends ItemView {
     const generation = this.generation;
     this.burstCount = isBurstContinuation ? this.burstCount + 1 : 1;
 
-    const loaded = await this.loadNextPage();
+    const result = await this.loadNextPage();
     // A concurrent reload() (e.g. from the settings tab's debounced
-    // refreshJournal) may have already torn down this observer/sentinel and
-    // installed new ones while loadNextPage was in flight. this.sentinelEl
-    // and this.observer are instance fields, not a captured snapshot, so
-    // touching them here without this check could re-append or disconnect
-    // state that belongs to the new generation, not this one.
+    // refreshJournal, or the rebuild `nextPage` queues on a lost cursor) may
+    // have already torn down this observer/sentinel and installed new ones
+    // while loadNextPage was in flight. this.sentinelEl and this.observer
+    // are instance fields, not a captured snapshot, so touching them here
+    // without this check could re-append or disconnect state that belongs
+    // to the new generation, not this one.
     if (generation !== this.generation) return;
 
-    if (!loaded) {
+    // "busy" means a load was already in flight when this call started —
+    // not that paging is exhausted. Reading it as exhausted would tear down
+    // a perfectly live observer/sentinel out from under an in-flight load.
+    // Unreachable today (loadNextPage's guard never trips without a real
+    // await inside it), but do nothing here rather than assume either
+    // outcome.
+    if (result === "busy") return;
+
+    if (result === "exhausted") {
       this.teardownSentinel();
       return;
     }
