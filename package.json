@@ -8,7 +8,8 @@
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:tz": "TZ=America/New_York vitest run"
+    "test:tz": "TZ=America/New_York vitest run",
+    "sync": "bash scripts/sync-to-vault.sh"
   },
   "keywords": [
     "obsidian",
