@@ -18,8 +18,11 @@
   font-weight: var(--font-weight);
   line-height: var(--line-height-normal);
   /* If a resize is ever skipped or mis-measured (see TextareaEditor.resize),
-     this keeps the entry at least one line tall instead of invisible. */
-  min-height: calc(var(--line-height-normal) * 1em);
+     this keeps the entry at least one line tall instead of invisible. A
+     plain length, not `calc(var(--line-height-normal) * 1em)`: that calc
+     silently breaks if a theme redefines --line-height-normal with its own
+     unit (e.g. "1.5em"), making the whole expression invalid. */
+  min-height: 2em;
 }
 
 .journal-timeline .journal-entry-textarea:focus {

@@ -18,6 +18,12 @@ export interface EntryEditor {
    * absorb an edit made from another pane. A `setValue` call that arrives
    * before `mount` is buffered and applied as part of mounting rather than
    * being dropped.
+   *
+   * A second `mount` call tears down any editor this instance already
+   * holds first — but does so without flushing it, so any unflushed text
+   * in that prior editor is discarded. Not reachable today (nothing
+   * remounts a live `EntryEditor`), but a future caller that does must
+   * `flush()` first.
    */
   mount(el: HTMLElement, file: TFile | null, initialValue: string): void;
   /**
@@ -43,6 +49,16 @@ export interface EntryEditor {
    * so an in-flight edit is not lost to teardown.
    */
   flush(): void;
+  /**
+   * "You may be visible again — re-measure if you need to." A no-op unless
+   * a previous resize bailed out because the editor was hidden (e.g. its
+   * leaf was `display: none` in a background tab while an external
+   * `setValue` arrived). `ItemView` inherits `onResize()` (`@since 0.9.7`),
+   * which Obsidian calls when a leaf becomes visible again; the view is
+   * expected to call `remeasure()` from there so a stale height left by a
+   * background-tab edit is corrected once the tab is switched back to.
+   */
+  remeasure(): void;
   destroy(): void;
   /**
    * Checked after `mount`. Implemented only by editors that can fail at mount

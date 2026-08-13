@@ -24,6 +24,14 @@ export class TextareaEditor implements EntryEditor {
   /** The height (px) last written to the textarea, to skip redundant resizes. */
   private lastHeight = 0;
 
+  /**
+   * True when a resize bailed out because the textarea was hidden
+   * (`offsetParent` null or a mis-measured `scrollHeight`) and hasn't been
+   * corrected since. Cleared once a resize actually measures and applies a
+   * height. `remeasure()` is a no-op unless this is set.
+   */
+  private needsResize = false;
+
   mount(el: HTMLElement, _file: TFile | null, initialValue: string): void {
     // Idempotent: a second mount() tears down any previous textarea instead
     // of appending a duplicate and orphaning the old one with its listeners
@@ -44,15 +52,19 @@ export class TextareaEditor implements EntryEditor {
     textarea.rows = 1;
     this.lastValue = value;
     this.lastHeight = 0;
+    this.needsResize = false;
 
     textarea.addEventListener("input", (event) => {
+      const previousValue = this.lastValue;
       this.lastValue = textarea.value;
-      this.resize(event as InputEvent);
+      this.resize(event as InputEvent, previousValue);
       this.changeCallback?.(textarea.value);
     });
-    // A resize skipped while hidden (see resize()) is recovered here: when
-    // the entry is scrolled back into view and focused, it is laid out
-    // again and remeasures correctly.
+    // A resize skipped while merely scrolled out of view is recovered here:
+    // focusing the entry means it's laid out again and remeasures
+    // correctly. (A resize skipped because the whole leaf was hidden, e.g.
+    // a background tab, is recovered via remeasure() instead — focus never
+    // fires there until the tab is switched back to and the entry clicked.)
     textarea.addEventListener("focus", () => this.resize());
     textarea.addEventListener("blur", () => this.blurCallback?.());
 
@@ -98,7 +110,17 @@ export class TextareaEditor implements EntryEditor {
   }
 
   flush(): void {
+    // Before mount() runs, lastValue is just its "" initializer, not real
+    // content (unless a setValue() buffered a pendingValue). Committing it
+    // would let a "flush all" write an empty entry over real text that
+    // simply hasn't been mounted yet.
+    if (!this.textarea && this.pendingValue === null) return;
     this.changeCallback?.(this.textarea?.value ?? this.lastValue);
+  }
+
+  remeasure(): void {
+    if (!this.needsResize) return;
+    this.resize();
   }
 
   destroy(): void {
@@ -112,29 +134,49 @@ export class TextareaEditor implements EntryEditor {
 
   /**
    * Resizes the textarea to fit its content. `event` is the triggering
-   * input event, if any; its `inputType` lets a plain insertion skip work
-   * that a deletion cannot (see below).
+   * input event, if any, and `previousValue` is the textarea's value just
+   * before that event; together they let a fast path skip work that a
+   * shrink cannot (see below). Called with neither from setValue() and the
+   * focus handler, which always take the slow, accurate path.
    */
-  private resize(event?: InputEvent): void {
+  private resize(event?: InputEvent, previousValue?: string): void {
     const textarea = this.textarea;
     if (!textarea) return;
 
-    // A hidden element (e.g. this entry is scrolled out of view while an
-    // external edit calls setValue on it) reports scrollHeight 0. Resizing
-    // now would collapse the box to zero height with overflow: hidden and
-    // resize: none, leaving it invisible; bail out and let the next input
-    // or focus event (wired in mount()) retry once it is laid out again.
-    if (!textarea.offsetParent) return;
+    // Hidden (`display: none`, e.g. this leaf is a background tab) or
+    // detached. Resizing now would read scrollHeight 0 and collapse the box
+    // to zero height with overflow: hidden and resize: none, leaving it
+    // invisible; bail out and flag it so remeasure() can retry once the
+    // leaf is visible again (input/focus won't fire on a hidden textarea).
+    if (!textarea.offsetParent) {
+      this.needsResize = true;
+      return;
+    }
 
-    // Most keystrokes insert text without changing the line count. A
-    // deletion can shrink the content below the box's current height
-    // without triggering overflow, so scrollHeight alone can't be trusted
-    // to detect a shrink — but it reliably reports "no change" for a
-    // non-deleting keystroke when it still matches what's already applied.
-    // In that case the box is already the right size: skip both style
-    // writes below, and the layout each would force.
-    const isDeletion = event?.inputType?.startsWith("delete") ?? false;
-    if (!isDeletion && this.lastHeight > 0 && textarea.scrollHeight === this.lastHeight) {
+    // Most keystrokes insert text without changing the line count, and for
+    // those scrollHeight reliably reports "no change" when it still matches
+    // what's already applied — skipping the resize entirely below is safe.
+    // But scrollHeight can't be trusted to detect a *shrink*: a box taller
+    // than its content just reports its own height back, with no overflow
+    // to reveal that the content now needs less room. So the fast path is
+    // only for an edit whose value provably cannot have shrunk — a real
+    // input event (an absent event, or one with no inputType, defaults to
+    // the slow path) whose length and newline count are both non-decreasing
+    // from the value just before it. That covers growth-only insertions,
+    // plain deletions (excluded: length drops), a multi-line paste into
+    // short content, and IME composition, while still forcing the slow
+    // path for: setValue()/focus (no event) shrinking external edits,
+    // historyUndo that removes text, and typing or pasting over a
+    // multi-line selection (both can net-decrease length even though the
+    // inputType itself is "insert*").
+    const canSkipIfUnchanged =
+      event !== undefined &&
+      event.inputType !== undefined &&
+      previousValue !== undefined &&
+      textarea.value.length >= previousValue.length &&
+      countNewlines(textarea.value) >= countNewlines(previousValue);
+
+    if (canSkipIfUnchanged && this.lastHeight > 0 && textarea.scrollHeight === this.lastHeight) {
       return;
     }
 
@@ -145,9 +187,22 @@ export class TextareaEditor implements EntryEditor {
     // height back, masking a shrink (e.g. after deleting a paragraph).
     textarea.style.height = "auto";
     const scrollHeight = textarea.scrollHeight;
-    if (scrollHeight <= 0) return; // not laid out despite offsetParent; retry later
+    if (scrollHeight <= 0) {
+      // Not laid out despite offsetParent (e.g. mid-layout); flag for retry.
+      this.needsResize = true;
+      return;
+    }
 
+    this.needsResize = false;
     this.lastHeight = scrollHeight;
     textarea.style.height = `${scrollHeight}px`;
   }
+}
+
+function countNewlines(value: string): number {
+  let count = 0;
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) === 10) count++;
+  }
+  return count;
 }

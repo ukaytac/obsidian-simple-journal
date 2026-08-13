@@ -10,12 +10,17 @@
     "test:watch": "vitest",
     "test:tz": "TZ=America/New_York vitest run"
   },
-  "keywords": ["obsidian", "journal"],
+  "keywords": [
+    "obsidian",
+    "journal"
+  ],
   "license": "MIT",
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^20.11.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.0",
+    "jsdom": "^29.1.1",
     "obsidian": "latest",
     "tslib": "^2.6.0",
     "typescript": "^5.4.0",
