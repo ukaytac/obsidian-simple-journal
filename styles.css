@@ -1,8 +1,72 @@
-/* Journal Entries — all colors and metrics come from Obsidian CSS variables. */
+/* Journal Entries — all colors and metrics come from Obsidian CSS variables.
+   This is a writing surface: no cards, borders, shadows, or gradients. */
+
+.journal-view {
+  overflow-y: auto;
+}
+
 .journal-timeline {
-  padding: var(--size-4-6) var(--size-4-8);
+  padding: var(--size-4-6) var(--size-4-8) 40vh;
   max-width: var(--file-line-width);
   margin: 0 auto;
+}
+
+.journal-month-header {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin: var(--size-4-12) 0 var(--size-4-4);
+}
+
+.journal-month-header:first-child {
+  margin-top: 0;
+}
+
+.journal-day-header {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: var(--size-4-8) 0 var(--size-4-3);
+}
+
+.journal-entry {
+  margin-bottom: var(--size-4-6);
+}
+
+.journal-entry-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-1);
+}
+
+.journal-entry-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-entry-body {
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-body > :first-child {
+  margin-top: 0;
+}
+
+.journal-entry-body > :last-child {
+  margin-bottom: 0;
+}
+
+.journal-empty {
+  color: var(--text-faint);
+  text-align: center;
+  padding: var(--size-4-12) 0;
 }
 
 .journal-timeline .journal-entry-textarea {
