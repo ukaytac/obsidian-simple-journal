@@ -1,12 +1,13 @@
 import { Component, ItemView, MarkdownRenderer, WorkspaceLeaf } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
+import { pageAfter } from "../services/entryIndex";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 
-/** Entries rendered per `reload()`. Interim bound until the paging task lands. */
-const INITIAL_PAGE_SIZE = 200;
+/** Entries rendered per page. */
+const PAGE_SIZE = 40;
 
 /** One entry as it currently exists in the DOM. */
 interface RenderedEntry {
@@ -31,6 +32,11 @@ export class JournalView extends ItemView {
    * element it no longer owns.
    */
   private generation = 0;
+  private sentinelEl: HTMLElement | null = null;
+  private observer: IntersectionObserver | null = null;
+  private index: JournalEntry[] = [];
+  private lastLoadedPath: string | null = null;
+  private loading = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -63,26 +69,24 @@ export class JournalView extends ItemView {
     this.contentEl.empty();
   }
 
-  /**
-   * Discards and rebuilds the whole timeline.
-   *
-   * Interim: bounded to the newest `INITIAL_PAGE_SIZE` entries via
-   * `getEntries({ limit })` rather than `listEntries()`, so this stays cheap
-   * on a large vault. The paging task supersedes this with incremental
-   * loading of older entries.
-   */
+  /** Discards and rebuilds the timeline, rendering only the first page. */
   async reload(): Promise<void> {
     this.clearTimeline();
 
-    const entries = this.plugin.repository.getEntries({ limit: INITIAL_PAGE_SIZE });
-    for (const entry of entries) {
-      this.appendEntry(entry);
+    this.index = this.plugin.repository.listEntries();
+    this.lastLoadedPath = null;
+
+    if (this.index.length === 0) {
+      this.renderEmptyState();
+      return;
     }
 
-    if (entries.length === 0) this.renderEmptyState();
+    await this.loadNextPage();
+    this.installSentinel();
   }
 
   private clearTimeline(): void {
+    this.teardownSentinel();
     this.generation++;
     for (const rendered of this.rendered.values()) {
       rendered.renderComponent?.unload();
@@ -91,6 +95,99 @@ export class JournalView extends ItemView {
     this.dayGroups.clear();
     this.lastRenderedMonth = null;
     this.timelineEl.empty();
+  }
+
+  /** Appends the next page below what is already rendered. Returns false when exhausted. */
+  private async loadNextPage(): Promise<boolean> {
+    if (this.loading) return false;
+    this.loading = true;
+
+    try {
+      const page = this.nextPage();
+      if (page.length === 0) return false;
+
+      for (const entry of page) {
+        this.appendEntry(entry);
+      }
+
+      this.lastLoadedPath = page[page.length - 1].file.path;
+      return true;
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /**
+   * The next page below what is rendered.
+   *
+   * `pageAfter` returns null when its cursor is no longer in the index — the
+   * cursor entry was deleted or renamed since it was recorded. Re-anchor on the
+   * oldest rendered entry that still exists, rather than silently handing back
+   * page one and re-appending entries that are already on screen.
+   */
+  private nextPage(): JournalEntry[] {
+    if (this.lastLoadedPath === null) {
+      return pageAfter(this.index, null, PAGE_SIZE) ?? [];
+    }
+
+    const direct = pageAfter(this.index, this.lastLoadedPath, PAGE_SIZE);
+    if (direct !== null) return direct;
+
+    // `this.rendered` is insertion-ordered newest first, so reversing walks
+    // upward from the bottom of the timeline — closest to the lost cursor.
+    for (const path of [...this.rendered.keys()].reverse()) {
+      const page = pageAfter(this.index, path, PAGE_SIZE);
+      if (page === null) continue;
+
+      this.lastLoadedPath = path;
+      return page;
+    }
+
+    // Nothing currently rendered survives in the index. Start from the top.
+    this.lastLoadedPath = null;
+    return pageAfter(this.index, null, PAGE_SIZE) ?? [];
+  }
+
+  /**
+   * Watches an element at the bottom of the timeline. Because older entries are
+   * appended below, the content above them never moves and scroll position is
+   * preserved without any manual correction.
+   */
+  private installSentinel(): void {
+    this.sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
+
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        void this.onSentinelVisible();
+      },
+      {
+        root: this.contentEl,
+        // Start loading before the sentinel is actually on screen.
+        rootMargin: "600px 0px",
+      },
+    );
+
+    this.observer.observe(this.sentinelEl);
+  }
+
+  private async onSentinelVisible(): Promise<void> {
+    const loaded = await this.loadNextPage();
+
+    if (loaded) {
+      // Keep the sentinel below the newly appended entries.
+      if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+      return;
+    }
+
+    this.teardownSentinel();
+  }
+
+  private teardownSentinel(): void {
+    this.observer?.disconnect();
+    this.observer = null;
+    this.sentinelEl?.remove();
+    this.sentinelEl = null;
   }
 
   private renderEmptyState(): void {

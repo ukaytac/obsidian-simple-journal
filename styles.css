@@ -70,6 +70,10 @@
   margin-bottom: 0;
 }
 
+.journal-sentinel {
+  height: 1px;
+}
+
 .journal-empty {
   color: var(--text-faint);
   text-align: center;
