@@ -4,3 +4,21 @@
   max-width: var(--file-line-width);
   margin: 0 auto;
 }
+
+.journal-entry-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  padding: 0;
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
