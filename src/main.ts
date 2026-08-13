@@ -37,6 +37,76 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Go to today",
       callback: () => void this.goToToday(),
     });
+
+    this.registerProbeCommand();
+  }
+
+  /**
+   * TEMPORARY — Task 8 spike. Probes the internal embedded-editor registry so
+   * its real shape can be recorded in docs/editor-embed-api.md before the
+   * editor layer is built on it. Removed once the spike is done.
+   */
+  private registerProbeCommand(): void {
+    this.addCommand({
+      id: "probe-embed-api",
+      name: "DEBUG: probe embedded editor API",
+      callback: () => {
+        const registry = (
+          this.app as unknown as {
+            embedRegistry?: { embedByExtension?: Record<string, unknown> };
+          }
+        ).embedRegistry?.embedByExtension;
+
+        console.log("--- Journal Entries embed probe ---");
+        console.log("obsidian version:", (this.app as unknown as { appId?: string }).appId ?? "?");
+        console.log("embedRegistry present:", Boolean(registry));
+        console.log("extensions:", registry ? Object.keys(registry) : "none");
+        console.log("md creator type:", typeof registry?.md);
+
+        const file = this.app.workspace.getActiveFile();
+        if (!file) {
+          console.log("NO ACTIVE FILE — open a markdown note first, then run this again.");
+          return;
+        }
+        if (typeof registry?.md !== "function") {
+          console.log("NO md CREATOR — the internal API is absent on this version.");
+          return;
+        }
+
+        const host = document.createElement("div");
+        host.style.cssText = "position:fixed;bottom:0;right:0;width:400px;height:200px;z-index:9999;background:var(--background-primary);border:1px solid var(--background-modifier-border)";
+        document.body.appendChild(host);
+
+        const creator = registry.md as (
+          context: unknown,
+          file: unknown,
+          subpath: string,
+        ) => Record<string, unknown>;
+
+        try {
+          const embed = creator(
+            { app: this.app, containerEl: host, showInline: true, depth: 0 },
+            file,
+            "",
+          );
+
+          console.log("embed own keys:", Object.keys(embed));
+          console.log(
+            "embed prototype keys:",
+            Object.getOwnPropertyNames(Object.getPrototypeOf(embed)),
+          );
+          console.log("embed object:", embed);
+
+          const globals = window as unknown as Record<string, unknown>;
+          globals.__journalEmbed = embed;
+          globals.__journalEmbedHost = host;
+          console.log("Saved as window.__journalEmbed and window.__journalEmbedHost");
+        } catch (error) {
+          console.error("creator() threw:", error);
+          host.remove();
+        }
+      },
+    });
   }
 
   onunload(): void {
