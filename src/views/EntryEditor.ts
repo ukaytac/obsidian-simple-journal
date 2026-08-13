@@ -6,8 +6,27 @@ import type { App, TFile } from "obsidian";
  * swapped for the fallback — or for a future public API — in one place.
  */
 export interface EntryEditor {
-  /** Renders the editor into `el` for `file`. `file` is null for an uncommitted composer. */
+  /**
+   * Renders the editor into `el` for `file`. `file` is null for an
+   * uncommitted composer.
+   *
+   * `initialValue` is the construction-time content: it seeds the editor
+   * without being treated as an edit (no `onChange` callback fires for it).
+   * This is the path the internal embedded editor requires — it is
+   * constructed with its content and must not report a spurious change.
+   * Use `setValue` for every value the editor receives after mount, e.g. to
+   * absorb an edit made from another pane. A `setValue` call that arrives
+   * before `mount` is buffered and applied as part of mounting rather than
+   * being dropped.
+   */
   mount(el: HTMLElement, file: TFile | null, initialValue: string): void;
+  /**
+   * The editor's current text. Stays truthful even after `destroy()`: a
+   * focused element removed from the DOM never fires `blur` in Chromium, so
+   * `destroy()` cannot rely on that to capture the last value, and callers
+   * that read this at teardown (e.g. to flush a pending debounced save)
+   * must not see it collapse to `""`.
+   */
   getValue(): string;
   setValue(value: string): void;
   focus(): void;
@@ -17,6 +36,13 @@ export interface EntryEditor {
   onChange(callback: (value: string) => void): void;
   /** Called when the editor loses focus. */
   onBlur(callback: () => void): void;
+  /**
+   * Commits whatever text this editor currently holds, as if the user had
+   * just triggered a change, without waiting for a debounce or an event
+   * from the editing surface itself. Callers invoke this before `destroy()`
+   * so an in-flight edit is not lost to teardown.
+   */
+  flush(): void;
   destroy(): void;
   /**
    * Checked after `mount`. Implemented only by editors that can fail at mount
@@ -28,7 +54,16 @@ export interface EntryEditor {
 
 export type EntryEditorFactory = {
   create(): EntryEditor;
-  /** True when the internal API was unavailable and the fallback is in use. */
+  /**
+   * True when the internal API was unavailable at the single load-time
+   * probe (`hasEmbeddedEditorApi`, checked once when the factory is
+   * created) and every editor this factory creates is therefore a
+   * `TextareaEditor`. It does not reflect per-entry fallbacks: an
+   * individual editor's `isUsable()` can still fail after a successful
+   * load-time probe, in which case that one entry falls back while this
+   * flag remains false. Do not use it to decide whether any particular
+   * mounted editor is the fallback.
+   */
   usingFallback: boolean;
 };
 
