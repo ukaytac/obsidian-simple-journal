@@ -9,6 +9,15 @@ export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 /** Entries rendered per page. */
 const PAGE_SIZE = 40;
 
+/**
+ * Cap on consecutive pages loaded in one burst without a genuine scroll
+ * event in between (see `onSentinelVisible`). Bounds the cascade that a
+ * short-entry vault can trigger — each appended page may still leave the
+ * sentinel inside `rootMargin`, which would otherwise keep loading forever
+ * without ever letting go of the main thread's event loop.
+ */
+const MAX_BURST_PAGES = 10;
+
 /** One entry as it currently exists in the DOM. */
 interface RenderedEntry {
   entry: JournalEntry;
@@ -37,6 +46,15 @@ export class JournalView extends ItemView {
   private index: JournalEntry[] = [];
   private lastLoadedPath: string | null = null;
   private loading = false;
+  /**
+   * True while `onSentinelVisible` is processing a callback that it itself
+   * triggered (via `unobserve`/`observe`) to force a fresh intersection
+   * check, rather than one delivered for a genuine scroll. Distinguishes the
+   * two so `burstCount` only bounds the former.
+   */
+  private forcedReobserve = false;
+  /** Consecutive pages loaded in the current forced-reobserve burst. */
+  private burstCount = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -99,6 +117,12 @@ export class JournalView extends ItemView {
 
   /** Appends the next page below what is already rendered. Returns false when exhausted. */
   private async loadNextPage(): Promise<boolean> {
+    // No-op today: everything below runs synchronously (no `await` in this
+    // try block), so JS's run-to-completion semantics already serialize
+    // calls before this guard would ever see `loading === true`. Kept
+    // anyway — the moment this gains a real await (e.g. Task 13 mounting an
+    // editor on the append path), concurrent callers become possible and
+    // this guard becomes load-bearing.
     if (this.loading) return false;
     this.loading = true;
 
@@ -133,14 +157,31 @@ export class JournalView extends ItemView {
     const direct = pageAfter(this.index, this.lastLoadedPath, PAGE_SIZE);
     if (direct !== null) return direct;
 
-    // `this.rendered` is insertion-ordered newest first, so reversing walks
-    // upward from the bottom of the timeline — closest to the lost cursor.
-    for (const path of [...this.rendered.keys()].reverse()) {
-      const page = pageAfter(this.index, path, PAGE_SIZE);
-      if (page === null) continue;
+    // The cursor is gone. Re-anchor on whichever currently-rendered entry
+    // sits furthest down `this.index` — by definition the oldest
+    // still-present rendered entry — rather than relying on `this.rendered`'s
+    // insertion order. Insertion order happens to be newest-first today
+    // because only `appendEntry` ever populates it, but Task 14 can insert a
+    // newer entry into the map after older ones are already there (a vault
+    // change re-inserting an entry at its correct position), which would
+    // break an order-based re-anchor silently.
+    let furthestPath: string | null = null;
+    let furthestIndex = -1;
 
-      this.lastLoadedPath = path;
-      return page;
+    for (const path of this.rendered.keys()) {
+      const index = this.index.findIndex((e) => e.file.path === path);
+      if (index > furthestIndex) {
+        furthestIndex = index;
+        furthestPath = path;
+      }
+    }
+
+    if (furthestPath !== null) {
+      const page = pageAfter(this.index, furthestPath, PAGE_SIZE);
+      if (page !== null) {
+        this.lastLoadedPath = furthestPath;
+        return page;
+      }
     }
 
     // Nothing currently rendered survives in the index. Start from the top.
@@ -155,11 +196,22 @@ export class JournalView extends ItemView {
    */
   private installSentinel(): void {
     this.sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
+    this.forcedReobserve = false;
+    this.burstCount = 0;
 
     this.observer = new IntersectionObserver(
       (entries) => {
+        // Cleared here, unconditionally, whenever the callback fires — not
+        // inside onSentinelVisible. A forced re-observe (see below) can come
+        // back non-intersecting, in which case onSentinelVisible is never
+        // called; clearing the flag only on the path that calls it would
+        // leave it stuck true, corrupting the burst count on the next
+        // genuine scroll.
+        const isBurstContinuation = this.forcedReobserve;
+        this.forcedReobserve = false;
+
         if (!entries.some((e) => e.isIntersecting)) return;
-        void this.onSentinelVisible();
+        void this.onSentinelVisible(isBurstContinuation);
       },
       {
         root: this.contentEl,
@@ -171,16 +223,50 @@ export class JournalView extends ItemView {
     this.observer.observe(this.sentinelEl);
   }
 
-  private async onSentinelVisible(): Promise<void> {
-    const loaded = await this.loadNextPage();
+  /**
+   * With the observer's default threshold ([0]), the callback only fires on
+   * an enter/exit transition. An appended page that still leaves the
+   * sentinel inside `rootMargin` (easy with PAGE_SIZE short entries) stays
+   * continuously intersecting, so no further transition ever occurs and
+   * loading silently stalls. `unobserve`/`observe` below forces a fresh
+   * delivery, re-evaluating the sentinel's current state — if it is still
+   * intersecting the next page loads immediately, cascading until the
+   * sentinel is genuinely off-screen, the index is exhausted, or
+   * `MAX_BURST_PAGES` is hit.
+   */
+  private async onSentinelVisible(isBurstContinuation: boolean): Promise<void> {
+    const generation = this.generation;
+    this.burstCount = isBurstContinuation ? this.burstCount + 1 : 1;
 
-    if (loaded) {
-      // Keep the sentinel below the newly appended entries.
-      if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+    const loaded = await this.loadNextPage();
+    // A concurrent reload() (e.g. from the settings tab's debounced
+    // refreshJournal) may have already torn down this observer/sentinel and
+    // installed new ones while loadNextPage was in flight. this.sentinelEl
+    // and this.observer are instance fields, not a captured snapshot, so
+    // touching them here without this check could re-append or disconnect
+    // state that belongs to the new generation, not this one.
+    if (generation !== this.generation) return;
+
+    if (!loaded) {
+      this.teardownSentinel();
       return;
     }
 
-    this.teardownSentinel();
+    // Keep the sentinel below the newly appended entries.
+    if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+
+    if (this.burstCount >= MAX_BURST_PAGES) {
+      // Bound hit: stop forcing further checks. The sentinel is still
+      // observed, so a genuine scroll (a real transition, not one we forced)
+      // resumes the cascade.
+      return;
+    }
+
+    if (this.observer && this.sentinelEl) {
+      this.forcedReobserve = true;
+      this.observer.unobserve(this.sentinelEl);
+      this.observer.observe(this.sentinelEl);
+    }
   }
 
   private teardownSentinel(): void {
@@ -188,6 +274,8 @@ export class JournalView extends ItemView {
     this.observer = null;
     this.sentinelEl?.remove();
     this.sentinelEl = null;
+    this.forcedReobserve = false;
+    this.burstCount = 0;
   }
 
   private renderEmptyState(): void {
