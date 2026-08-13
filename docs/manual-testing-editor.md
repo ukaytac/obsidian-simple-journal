@@ -29,6 +29,15 @@ Obsidian window instead, using a fresh entry with a few lines of text.
       that's near a line wrap. The box resizes correctly as composition
       grows/shrinks the pre-edit text, and again once the candidate commits.
 
+## Width changes
+
+- [ ] **Divider drag re-wraps text.** With an entry whose text wraps across
+      several lines, drag the split divider to narrow the journal pane, or open
+      the right sidebar. The entry grows taller as the text re-wraps — no lines
+      are clipped below a stale height. Widen it again and the box shrinks back.
+      Nothing automated can cover this: it depends on `onResize()` firing for a
+      size change rather than a visibility change.
+
 ## Background-tab recovery
 
 - [ ] **Mounting while the tab is in the background, then switching back.**
