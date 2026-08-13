@@ -2205,12 +2205,22 @@ export class ObsidianEmbedEditor implements EntryEditor {
   }
 
   getValue(): string {
-    return this.readValue();
+    // Stays truthful after destroy(), so a teardown flush never writes an
+    // empty body over the user's text.
+    return this.embed ? this.readValue() : this.lastValue;
   }
 
   setValue(value: string): void {
     this.embed?.editMode?.set?.(value, false);
     this.lastValue = value;
+  }
+
+  /** Commits whatever the editor currently holds, before teardown. */
+  flush(): void {
+    const value = this.getValue();
+    if (value === this.lastValue && this.embed) return;
+    this.lastValue = value;
+    this.changeCallback?.(value);
   }
 
   focus(): void {
@@ -2236,6 +2246,9 @@ export class ObsidianEmbedEditor implements EntryEditor {
       window.clearInterval(this.pollHandle);
       this.pollHandle = null;
     }
+    // Capture the text before the embed goes away — getValue() falls back to
+    // this once `embed` is null.
+    this.lastValue = this.getValue();
     if (this.embed) this.teardownEmbed(this.embed);
     this.embed = null;
     this.containerEl?.remove();
@@ -3058,7 +3071,16 @@ Replace `appendEntry`:
     }, 500);
   }
 
+  /**
+   * Writes any pending edit immediately. Called before an editor is destroyed
+   * and when the view closes, so nothing sitting inside the debounce window is
+   * lost. `editor.flush()` commits what the editor holds; `getValue()` stays
+   * truthful even after `destroy()`, so this cannot write an empty body over
+   * real text.
+   */
   private async flushSave(rendered: RenderedEntry): Promise<void> {
+    rendered.editor?.flush();
+
     if (rendered.saveHandle === null) return;
     window.clearTimeout(rendered.saveHandle);
     rendered.saveHandle = null;
