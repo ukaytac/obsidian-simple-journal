@@ -226,6 +226,12 @@ export class JournalView extends ItemView {
    * preserved without any manual correction.
    */
   private installSentinel(): void {
+    // Never leave a previous observer connected. Two overlapping reloads would
+    // otherwise orphan the first sentinel, and its observer would keep firing
+    // against a timeline it no longer owns. Reachable once Task 13 puts a real
+    // await inside loadNextPage.
+    this.teardownSentinel();
+
     const sentinelEl = this.timelineEl.createDiv({ cls: "journal-sentinel" });
     this.sentinelEl = sentinelEl;
     this.forcedReobserve = false;
