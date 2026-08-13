@@ -199,6 +199,12 @@ export class JournalView extends ItemView {
   /** Read-only rendering of an entry, used when no editor is mounted for it. */
   private async renderStatic(rendered: RenderedEntry): Promise<void> {
     const generation = this.generation;
+    // Bail before creating any Component if a reload() already ran (e.g. a
+    // future caller that awaits renderStatic before this resumes). Checked
+    // here, first, so a bail can never leave a loaded Component attached to
+    // a RenderedEntry that this.rendered no longer references — nothing
+    // downstream would unload it.
+    if (generation !== this.generation) return;
 
     rendered.renderComponent?.unload();
     rendered.bodyEl.empty();
@@ -206,12 +212,6 @@ export class JournalView extends ItemView {
     const component = new Component();
     component.load();
     rendered.renderComponent = component;
-
-    // A reload() (this view's own, or one triggered concurrently by
-    // main.ts's refreshJournal) may already have discarded this entry's
-    // element by the time control returns here. Bail rather than kick off
-    // vault I/O whose result would only be thrown away.
-    if (generation !== this.generation) return;
 
     const body = await this.plugin.repository.readBody(rendered.entry.file);
     // Re-check: the reload may instead have landed while readBody was in
