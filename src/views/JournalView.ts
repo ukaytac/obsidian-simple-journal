@@ -5,6 +5,9 @@ import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 
+/** Entries rendered per `reload()`. Interim bound until the paging task lands. */
+const INITIAL_PAGE_SIZE = 200;
+
 /** One entry as it currently exists in the DOM. */
 interface RenderedEntry {
   entry: JournalEntry;
@@ -17,7 +20,17 @@ interface RenderedEntry {
 export class JournalView extends ItemView {
   private timelineEl!: HTMLElement;
   private rendered = new Map<string, RenderedEntry>();
+  /** Day-group `.journal-day-entries` containers, keyed by `dayKey`, so lookup is O(1). */
+  private dayGroups = new Map<string, HTMLElement>();
   private lastRenderedMonth: string | null = null;
+  /**
+   * Bumped every time the timeline is discarded. `renderStatic` captures it
+   * before doing any async work and bails if it has since changed, so a
+   * render outlived by a `reload()` (which can be triggered mid-flight by
+   * `refreshJournal`, or by the view closing) never lands in a detached
+   * element it no longer owns.
+   */
+  private generation = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -50,11 +63,18 @@ export class JournalView extends ItemView {
     this.contentEl.empty();
   }
 
-  /** Discards and rebuilds the whole timeline. */
+  /**
+   * Discards and rebuilds the whole timeline.
+   *
+   * Interim: bounded to the newest `INITIAL_PAGE_SIZE` entries via
+   * `getEntries({ limit })` rather than `listEntries()`, so this stays cheap
+   * on a large vault. The paging task supersedes this with incremental
+   * loading of older entries.
+   */
   async reload(): Promise<void> {
     this.clearTimeline();
 
-    const entries = this.plugin.repository.listEntries();
+    const entries = this.plugin.repository.getEntries({ limit: INITIAL_PAGE_SIZE });
     for (const entry of entries) {
       this.appendEntry(entry);
     }
@@ -63,10 +83,12 @@ export class JournalView extends ItemView {
   }
 
   private clearTimeline(): void {
+    this.generation++;
     for (const rendered of this.rendered.values()) {
       rendered.renderComponent?.unload();
     }
     this.rendered.clear();
+    this.dayGroups.clear();
     this.lastRenderedMonth = null;
     this.timelineEl.empty();
   }
@@ -89,21 +111,26 @@ export class JournalView extends ItemView {
 
   /**
    * Returns the day group for this date, creating it — and its month header
-   * when the month changes — if it does not exist yet.
+   * when the month changes — if it does not exist yet. Looked up in the
+   * `dayGroups` map rather than via `querySelector`, which would otherwise
+   * re-scan an ever-growing subtree on every call.
    */
   private ensureDayGroup(date: Date, position: "append" | "prepend"): HTMLElement {
     const key = dayKey(date);
-    const existing = this.timelineEl.querySelector<HTMLElement>(
-      `.journal-day[data-day="${key}"] .journal-day-entries`,
-    );
+    const existing = this.dayGroups.get(key);
     if (existing) return existing;
 
-    const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+    // Derived from dayKey (zero-padded "YYYY-MM") so this always matches the
+    // month key rebuildMonthHeaders computes from the same dayKey string —
+    // using getMonth() here instead would produce an unpadded, zero-based
+    // value ("2026-7") that never equals rebuildMonthHeaders's ("2026-08").
+    const monthKey = key.slice(0, 7);
 
     const dayEl = createDiv({ cls: "journal-day" });
     dayEl.dataset.day = key;
     dayEl.createDiv({ cls: "journal-day-header", text: formatDayHeader(date) });
     const entriesEl = dayEl.createDiv({ cls: "journal-day-entries" });
+    this.dayGroups.set(key, entriesEl);
 
     if (position === "append") {
       if (monthKey !== this.lastRenderedMonth) {
@@ -138,10 +165,11 @@ export class JournalView extends ItemView {
       const day = dayEl.dataset.day;
       if (!day) continue;
 
-      const [year, month] = day.split("-");
-      const monthKey = `${year}-${month}`;
+      // Same "YYYY-MM" slice ensureDayGroup uses, so the two paths agree.
+      const monthKey = day.slice(0, 7);
       if (monthKey === previousMonth) continue;
 
+      const [year, month] = monthKey.split("-");
       const header = createDiv({
         cls: "journal-month-header",
         text: formatMonthHeader(new Date(Number(year), Number(month) - 1, 1)),
@@ -160,13 +188,18 @@ export class JournalView extends ItemView {
     const headerEl = el.createDiv({ cls: "journal-entry-header" });
     headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
 
-    const bodyEl = el.createDiv({ cls: "journal-entry-body" });
+    // markdown-rendered matches Obsidian's own preview scope, so lists,
+    // code fences, blockquotes, tables and callouts pick up its styling
+    // (and whatever a theme layers on top of it) instead of browser defaults.
+    const bodyEl = el.createDiv({ cls: "journal-entry-body markdown-rendered" });
 
     return { entry, el, bodyEl, renderComponent: null };
   }
 
   /** Read-only rendering of an entry, used when no editor is mounted for it. */
   private async renderStatic(rendered: RenderedEntry): Promise<void> {
+    const generation = this.generation;
+
     rendered.renderComponent?.unload();
     rendered.bodyEl.empty();
 
@@ -174,11 +207,26 @@ export class JournalView extends ItemView {
     component.load();
     rendered.renderComponent = component;
 
+    // A reload() (this view's own, or one triggered concurrently by
+    // main.ts's refreshJournal) may already have discarded this entry's
+    // element by the time control returns here. Bail rather than kick off
+    // vault I/O whose result would only be thrown away.
+    if (generation !== this.generation) return;
+
     const body = await this.plugin.repository.readBody(rendered.entry.file);
+    // Re-check: the reload may instead have landed while readBody was in
+    // flight. Bail rather than render into a detached bodyEl that no
+    // longer belongs to the visible timeline.
+    if (generation !== this.generation) return;
+
+    // Strips only the blank line Task 3's create template leaves after the
+    // frontmatter, not indentation on the first real content line — unlike
+    // a plain trim(), which would also eat a leading indented code block.
+    const strippedBody = body.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
 
     await MarkdownRenderer.render(
       this.app,
-      body.trim(),
+      strippedBody,
       rendered.bodyEl,
       rendered.entry.file.path,
       component,
@@ -191,6 +239,9 @@ export class JournalView extends ItemView {
   }
 
   scrollToTop(): void {
-    this.contentEl.scrollTo({ top: 0, behavior: "smooth" });
+    // Instant, not smooth: this can be invoked ("Go to today") from deep in
+    // a long timeline, where an animated scroll would traverse the entire
+    // height and ignores prefers-reduced-motion.
+    this.contentEl.scrollTo({ top: 0 });
   }
 }

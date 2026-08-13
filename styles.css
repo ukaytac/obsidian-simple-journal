@@ -6,7 +6,7 @@
 }
 
 .journal-timeline {
-  padding: var(--size-4-6) var(--size-4-8) 40vh;
+  padding: var(--size-4-6) var(--size-4-8) min(40vh, 20rem);
   max-width: var(--file-line-width);
   margin: 0 auto;
 }
@@ -48,11 +48,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Typography (font, size, line-height) comes from the markdown-rendered
+   class on the element itself — see JournalView.createEntryEl — so it is
+   not duplicated here and cannot drift from it. */
 .journal-entry-body {
   color: var(--text-normal);
-  font-family: var(--font-text);
-  font-size: var(--font-text-size);
-  line-height: var(--line-height-normal);
 }
 
 .journal-entry-body > :first-child {
