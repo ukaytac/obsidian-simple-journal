@@ -3597,6 +3597,46 @@ git commit -m "feat: react to external vault changes without update loops"
 
 The capture flow. No filename, title, folder, or date is ever requested, and an abandoned composer leaves nothing behind.
 
+### Corrections to the snippets below
+
+They were written before four mechanisms landed, and before one design tension
+was noticed. The prose here wins wherever it disagrees with the code that follows.
+
+**The composer cannot mount the embedded editor, because it has no file yet.**
+`ObsidianEmbedEditor.mount` needs a `TFile` to hand the embed registry; given
+null it bails and reports `isUsable() === false`, so the per-entry fallback would
+silently make the composer a plain textarea — losing live preview and `[[`
+autocomplete on the one surface where the user does their actual writing.
+
+Creating the file up front would fix it but is ruled out by `CLAUDE.md`: "Prefer
+not to create an empty Markdown file merely because an empty composer became
+visible." So: the composer opens as a `TextareaEditor`, and on the first
+meaningful keystroke the file is created and the real editor is swapped in,
+seeded with what was typed, focused, caret at the end. This is acceptable
+precisely because the fidelity that matters — live preview, autocomplete — has
+nothing to act on in an empty document, so the swap happens at the moment it
+starts to matter and not before. Reuse the `replaceWithFallback` machinery in
+reverse; it already preserves text across a swap.
+
+**The other corrections:**
+
+- `writeBody` takes the body **without** the leading separator newline. The
+  snippet's `` `\n${value.trimStart()}` `` would write a blank first line.
+- Set `rendered.savedBody` from `editor.getValue()` immediately after the first
+  write, or the next flush sees a difference and writes again.
+- `mountOrder` is no longer pushed to directly — the viewport observer owns it.
+  The committed entry must be `observe`d so it joins the mount window normally.
+- `ensureTodayGroup` must populate and read the `dayGroups` map rather than
+  running a `querySelector`, and must delete nothing the map still holds.
+- Composer commit mutates the timeline, so it belongs inside
+  `enqueueTimelineMutation` like every other mutation, and must respect the
+  `closed` flag and the `generation` counter.
+- `createEntry` then `writeBody` is two writes for one new entry. Prefer passing
+  the initial body to `createEntry` so a new entry costs one write and emits one
+  `modify`.
+- Mark the self-write before the create, not only before the body write, or the
+  vault event for the new file races the index update.
+
 **Files:**
 - Modify: `src/views/JournalView.ts`, `styles.css`
 
