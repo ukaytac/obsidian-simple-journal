@@ -4,7 +4,7 @@ import type { JournalChange } from "../src/services/journalService";
 import { decideChangeAction, type RenderedState } from "../src/views/applyChange";
 
 function state(overrides: Partial<RenderedState> = {}): RenderedState {
-  return { exists: false, focused: false, hasPendingSave: false, fileStillExists: false, ...overrides };
+  return { exists: false, focused: false, dirty: false, fileStillExists: false, ...overrides };
 }
 
 const entry = { file: { path: "Journal/2026/08/2026-08-12-22-41-52.md" } } as unknown as JournalEntry;
@@ -17,7 +17,7 @@ describe("decideChangeAction: loop/clobber suppression (Important 2)", () => {
     });
   });
 
-  it("never touches an editor with an unflushed local edit, even when unfocused", () => {
+  it("never touches an editor whose text is dirty (differs from savedBody), even when unfocused", () => {
     // This is the crux of Important 2: without this check, an external
     // change would clobber the in-flight edit via setValue, and the
     // already-scheduled save (bound to the stale pre-clobber value) would
@@ -25,14 +25,23 @@ describe("decideChangeAction: loop/clobber suppression (Important 2)", () => {
     // leaving the editor's displayed text diverged from disk.
     const change: JournalChange = { kind: "content", entry };
     expect(
-      decideChangeAction(change, state({ exists: true, focused: false, hasPendingSave: true })),
+      decideChangeAction(change, state({ exists: true, focused: false, dirty: true })),
     ).toEqual({ type: "noop" });
   });
 
-  it("refreshes when unfocused and nothing is pending", () => {
+  it("refreshes when unfocused and not dirty", () => {
+    // Including the case a debounce timer is still conceptually "armed" at
+    // the `JournalView` level (a type-then-revert within the 500ms window
+    // leaves a save scheduled over a value that already matches disk again):
+    // this function only ever sees the resolved `dirty` boolean, defined
+    // directly on value equality rather than on timer state, so that case is
+    // indistinguishable here from "never had a pending edit at all" — both
+    // correctly fall through to a refresh instead of needlessly withholding
+    // one. See `JournalView.renderedStateFor`'s doc for where that
+    // resolution actually happens.
     const change: JournalChange = { kind: "content", entry };
     expect(
-      decideChangeAction(change, state({ exists: true, focused: false, hasPendingSave: false })),
+      decideChangeAction(change, state({ exists: true, focused: false, dirty: false })),
     ).toEqual({ type: "refresh" });
   });
 });
@@ -48,10 +57,10 @@ describe("decideChangeAction: content falls back to insert", () => {
     expect(decideChangeAction(change, state({ exists: false }))).toEqual({ type: "insert" });
   });
 
-  it("focus/pending-save state is irrelevant when nothing exists yet to protect", () => {
+  it("focus/dirty state is irrelevant when nothing exists yet to protect", () => {
     const change: JournalChange = { kind: "content", entry };
     expect(
-      decideChangeAction(change, state({ exists: false, focused: true, hasPendingSave: true })),
+      decideChangeAction(change, state({ exists: false, focused: true, dirty: true })),
     ).toEqual({ type: "insert" });
   });
 });

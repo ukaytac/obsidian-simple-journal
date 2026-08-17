@@ -28,3 +28,22 @@ unconditionally rather than depending on the answer. Confirm the real behaviour:
 - [ ] Repeat the first case while an entry is mid-edit (typing, not yet saved).
       The in-flight text is not lost — it's flushed to disk at the entry's new
       location before the timeline reloads.
+
+## First entry in a previously empty journal (Task 14)
+
+`insertEntryInPlace` (the path an "added" change from `JournalService` takes,
+including the one the new-entry composer will use once Task 15 lands) is not
+covered by any unit test — it's inline DOM/`IntersectionObserver` logic in
+`JournalView`, not extracted behind the pure `decideChangeAction` seam the way
+the loop-suppression and repositioning decisions are. Confirm by hand:
+
+- [ ] **Open the journal on a vault with zero entries.** The "No journal
+      entries yet" message appears.
+- [ ] **Create the first entry** (by hand, or via the command once it creates
+      files) while that view stays open. The empty-state message disappears,
+      the entry appears with the full live editor mounted — not static,
+      dead-looking text — and typing into it works immediately.
+- [ ] **Create a second entry** shortly after. It appears above the first,
+      also with a live editor, confirming the mount/paging observers set up
+      on the empty timeline are still working normally rather than only
+      working once by accident.

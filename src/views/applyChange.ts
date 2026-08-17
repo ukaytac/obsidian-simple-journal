@@ -11,8 +11,21 @@ export interface RenderedState {
   exists: boolean;
   /** True if the rendered entry's editor currently holds keyboard focus. */
   focused: boolean;
-  /** True if a debounced local save is currently pending (unflushed). */
-  hasPendingSave: boolean;
+  /**
+   * True if the editor's current text differs from `savedBody` — the body
+   * last known to be on disk. This is the state a "pending save" actually
+   * needs to mean, and is deliberately NOT "is a debounced save timer
+   * currently armed": `scheduleSave` re-arms on every keystroke regardless
+   * of whether the net value changed, so a type-then-revert within the
+   * debounce window leaves a timer armed over a value that already matches
+   * disk again — bailing on that would withhold a perfectly safe refresh
+   * for no reason. Conversely, a save whose write just failed clears its
+   * timer immediately (before the write is even attempted) while the
+   * editor's text still doesn't match what's on disk — a timer-based check
+   * would wrongly treat that as safe to overwrite. Comparing the values
+   * directly gets both right.
+   */
+  dirty: boolean;
   /**
    * True if the rendered entry's underlying file object still resolves, BY
    * IDENTITY (not merely by path — see `decideChangeAction`'s doc on
@@ -70,15 +83,15 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       // same-timestamp rename).
       if (!state.exists) return { type: "insert" };
       // Loop/clobber suppression: never touch an editor the user is
-      // actively focused in, AND never touch one with a local edit still
-      // sitting in the debounce window. The second case matters even though
-      // the editor isn't focused: without it, `setValue`-ing the external
-      // body over the in-flight edit would both discard that edit AND get
-      // silently overwritten again moments later when the stale,
+      // actively focused in, AND never touch one whose text is "dirty" —
+      // differs from what's known to be on disk. The second case matters
+      // even though the editor isn't focused: without it, `setValue`-ing the
+      // external body over an in-flight edit would both discard that edit
+      // AND get silently overwritten again moments later when the stale,
       // already-scheduled save fires with its stale captured value — losing
       // both the local edit and the external change, and leaving the
       // editor's on-screen text diverged from what actually lands on disk.
-      if (state.focused || state.hasPendingSave) return { type: "noop" };
+      if (state.focused || state.dirty) return { type: "noop" };
       return { type: "refresh" };
   }
 }

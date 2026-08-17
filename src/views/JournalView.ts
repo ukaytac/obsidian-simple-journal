@@ -202,7 +202,22 @@ export class JournalView extends ItemView {
     return result;
   }
 
-  /** The actual body of `reload()`, run only inside `enqueueTimelineMutation`. */
+  /**
+   * The actual body of `reload()`, run only inside `enqueueTimelineMutation`.
+   *
+   * Both observers are installed BEFORE the empty-index check, not only in
+   * the non-empty branch. An empty journal is not a dead end: the very next
+   * thing to happen to it is normally the first entry ever being created
+   * (Task 15's composer, or an "added" change from `JournalService` for a
+   * file created by hand) arriving via `insertEntryInPlace`, and that path
+   * has no other route to `mountObserver`/`sentinelEl` — it never calls
+   * `installMountObserver`/`installSentinel` itself. Skipping this here
+   * left `mountObserver` null, so `insertEntryInPlace`'s
+   * `this.mountObserver?.observe(...)` silently no-op'd, `intersecting`
+   * stayed stuck at its `false` default forever, and `mountEditor` bailed to
+   * static on every attempt — a new user's very first journal entry would
+   * render as permanently dead static text.
+   */
   private async reloadNow(): Promise<void> {
     // REQUIRED guard: see `closed`'s doc. A vault-event-triggered reload can
     // land after the view has already closed; bail before touching anything
@@ -213,13 +228,20 @@ export class JournalView extends ItemView {
 
     this.index = this.plugin.journal.getEntries();
     this.lastLoadedPath = null;
+    this.installMountObserver();
 
     if (this.index.length === 0) {
       this.renderEmptyState();
+      // Still installed even though there's nothing to page yet: the
+      // sentinel's own initial IntersectionObserver callback finds the
+      // first page empty and tears itself back down immediately (see
+      // `onSentinelVisible`), which is the correct end state here anyway —
+      // this only matters so a *later* full reload isn't the sole way back
+      // into a paging-capable state.
+      this.installSentinel();
       return;
     }
 
-    this.installMountObserver();
     await this.loadNextPage();
     this.installSentinel();
   }
@@ -1186,16 +1208,28 @@ export class JournalView extends ItemView {
    * delete-then-recreate at the same path within one debounce window would
    * otherwise read as "still exists" (something resolves at that path) and
    * flush this stale editor's held text into the NEW, unrelated file.
+   *
+   * `dirty` compares the editor's current value against `savedBody`
+   * directly, not `rendered.saveHandle !== null`: a debounce timer being
+   * armed doesn't mean the value it will eventually save is actually
+   * different from disk (a type-then-revert within the 500ms window still
+   * leaves a timer armed over an unchanged value), and a timer being
+   * disarmed doesn't mean nothing needs protecting (`scheduleSave` clears
+   * `saveHandle` the instant its timeout fires, before the write it kicks
+   * off has even resolved — so a write that's still in flight, or one that
+   * already failed, both read as "no pending save" despite the editor still
+   * holding text `savedBody` doesn't match). `false` when nothing is
+   * mounted: a statically-rendered entry has no live editor to be dirty.
    */
   private renderedStateFor(rendered: RenderedEntry | undefined): RenderedState {
     if (!rendered) {
-      return { exists: false, focused: false, hasPendingSave: false, fileStillExists: false };
+      return { exists: false, focused: false, dirty: false, fileStillExists: false };
     }
 
     return {
       exists: true,
       focused: rendered.editor?.hasFocus() ?? false,
-      hasPendingSave: rendered.saveHandle !== null,
+      dirty: rendered.editor ? rendered.editor.getValue() !== rendered.savedBody : false,
       fileStillExists:
         this.app.vault.getAbstractFileByPath(rendered.entry.file.path) === rendered.entry.file,
     };
@@ -1283,6 +1317,14 @@ export class JournalView extends ItemView {
     const loadedCount = this.rendered.size;
     if (position < 0) return;
     if (position >= loadedCount && this.sentinelEl) return;
+
+    // The empty-state message (`renderEmptyState`) is only ever present when
+    // nothing is rendered yet, so this is a cheap no-op on every insert past
+    // the first. Removed here rather than left for the next full reload:
+    // this is the ONLY path that inserts into a timeline that was rendered
+    // empty (a genuine full reload already clears everything, including this
+    // element, via `clearTimeline`).
+    this.timelineEl.querySelector(".journal-empty")?.remove();
 
     const group = this.ensureDayGroup(entry.created, "prepend");
     const rendered = this.createEntryEl(entry);
