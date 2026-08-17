@@ -5,6 +5,7 @@ import { compareEntries, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import { decideChangeAction, type RenderedState } from "./applyChange";
+import { isMeaningful, resolveComposerContent } from "./composerCommit";
 import type { EntryEditor } from "./EntryEditor";
 import { saveIfChanged } from "./entrySave";
 import { enforceMountLimit as runEnforceMountLimit, type MountState } from "./mountWindow";
@@ -1515,7 +1516,7 @@ export class JournalView extends ItemView {
       return;
     }
 
-    if (value.trim().length === 0) return;
+    if (!isMeaningful(value)) return;
 
     this.composer = null;
     await this.enqueueTimelineMutation(() => this.commitComposer(rendered));
@@ -1536,6 +1537,20 @@ export class JournalView extends ItemView {
     const generation = this.generation;
     const created = rendered.entry.created;
     const valueAtCreate = rendered.editor?.getValue() ?? "";
+
+    // Re-check meaningfulness: this task was only just enqueued onto the
+    // timeline-mutation chain by the keystroke that triggered it, and may
+    // have sat behind another in-flight mutation (a reload, an applyChanges
+    // batch) for a little while before actually running. The user can have
+    // deleted everything typed in the meantime — committing an empty file
+    // here would violate "Lazy Creation" just as much as committing one for
+    // a composer that was never touched at all.
+    if (!isMeaningful(valueAtCreate)) {
+      if (!this.closed && generation === this.generation && this.composer === null) {
+        this.composer = rendered;
+      }
+      return;
+    }
 
     let file: TFile;
     try {
@@ -1567,22 +1582,40 @@ export class JournalView extends ItemView {
       return;
     }
 
-    // Anything typed while createEntry() was in flight landed in the
-    // composer's still-mounted textarea, not on disk yet.
-    const latestValue = rendered.editor?.getValue() ?? valueAtCreate;
-
     rendered.entry = { file, created };
     rendered.el.dataset.path = file.path;
     rendered.el.removeClass("journal-entry-composer");
     this.rendered.set(file.path, rendered);
-    // savedBody starts matching exactly what createEntry just wrote; save()
-    // below (only called if typing outran the create) brings it up to date
-    // with `latestValue`, succeed or fail, before anything reads it further.
+    // savedBody starts matching exactly what createEntry just wrote;
+    // resolveComposerContent's own persist (only invoked if typing outran
+    // the create) brings it up to date, succeed or fail, before anything
+    // reads it further.
     rendered.savedBody = valueAtCreate;
 
-    if (latestValue !== valueAtCreate) {
-      await this.save(rendered, latestValue);
-      if (this.closed || generation !== this.generation) return;
+    // Delegates the "did a keystroke land while I was awaiting something?"
+    // sequencing to a pure, independently-tested function (composerCommit.ts):
+    // a keystroke can land in the composer's still-mounted textarea both
+    // while createEntry() was in flight above AND while commitPersist below
+    // is — re-reading only once, before the first await, is exactly the bug
+    // where a fast typist's last few characters get seeded stale into the
+    // real editor and then flushed right back out over what was just
+    // written.
+    const plan = await resolveComposerContent(
+      valueAtCreate,
+      () => rendered.editor?.getValue() ?? valueAtCreate,
+      (value) => this.commitPersist(rendered, value),
+    );
+    if (this.closed || generation !== this.generation) return;
+
+    // A keystroke landing during that persist takes onComposerInput's
+    // "ordinary edit" branch (rendered.entry.file is already set by then)
+    // and arms rendered.saveHandle over a value `plan.seed` already
+    // supersedes — discard it; mounting below with `plan.seed` and, if
+    // `plan.needsSave`, scheduling a fresh save for it is what actually
+    // persists it now.
+    if (rendered.saveHandle !== null) {
+      window.clearTimeout(rendered.saveHandle);
+      rendered.saveHandle = null;
     }
 
     const oldEditor = rendered.editor;
@@ -1590,16 +1623,25 @@ export class JournalView extends ItemView {
     oldEditor?.destroy();
     rendered.bodyEl.empty();
 
-    // Seeded from `latestValue` (in memory), not a fresh disk read: the
-    // point of capturing it above is that it may be ahead of whatever
-    // `save()` above managed to persist (e.g. it failed), and the visible
-    // editor must never show less than what the user actually typed.
-    const editor = this.mountUsableEditor(rendered, latestValue);
+    // Seeded from `plan.seed` (in memory), not a fresh disk read: the
+    // visible editor must never show less than what the user actually
+    // typed, regardless of what made it to disk.
+    const editor = this.mountUsableEditor(rendered, plan.seed);
     rendered.editor = editor;
     // Known true: this is the composer, which startNewEntry always scrolls
     // to. Nothing else sets this for a fresh mount outside mountEditor's own
     // observer-driven path, which this deliberately bypasses (see below).
     rendered.intersecting = true;
+
+    if (plan.needsSave) {
+      this.scheduleSave(rendered, plan.seed);
+    } else {
+      // Nothing pending: normalize `savedBody` through the same code path
+      // `mountEditor` uses (`editor.getValue()`, not the raw string) — the
+      // two must agree by construction, not by the coincidence that a plain
+      // textarea's value happens not to need normalizing.
+      rendered.savedBody = editor.getValue();
+    }
 
     this.mountOrder.push(file.path);
     this.enforceMountLimit();
@@ -1611,6 +1653,19 @@ export class JournalView extends ItemView {
   }
 
   /**
+   * `resolveComposerContent`'s `persist` dependency: writes `value` via the
+   * ordinary `save()` path (so it goes through the same self-write marking
+   * and error handling/Notice as every other save) and reports back what's
+   * now actually confirmed on disk — `value` on success, unchanged on
+   * failure — mirroring `saveIfChanged`'s own return contract, which
+   * `save()` already implements via `rendered.savedBody`.
+   */
+  private async commitPersist(rendered: RenderedEntry, value: string): Promise<string> {
+    await this.save(rendered, value);
+    return rendered.savedBody;
+  }
+
+  /**
    * Removes an abandoned empty composer. Only ever applies before the file
    * exists — a committed entry is never auto-deleted, however empty it
    * becomes; deletion is always an explicit user action (see CLAUDE.md's
@@ -1618,12 +1673,20 @@ export class JournalView extends ItemView {
    */
   private discardEmptyComposer(rendered: RenderedEntry): void {
     if (this.composer !== rendered) return;
-    if ((rendered.editor?.getValue() ?? "").trim().length > 0) return;
+    if (isMeaningful(rendered.editor?.getValue() ?? "")) return;
 
     rendered.editor?.destroy();
     rendered.el.remove();
     this.composer = null;
     this.removeEmptyDayGroups();
+
+    // removeEmptyDayGroups() can leave the timeline completely empty (this
+    // was the only entry in the only rendered day group) — reload()'s own
+    // empty-state message only ever renders on a fresh load, so without
+    // this, abandoning the very first entry in an otherwise-empty journal
+    // would leave a blank pane with no way back to the message short of a
+    // manual reload.
+    if (this.rendered.size === 0) this.renderEmptyState();
   }
 
   scrollToTop(): void {
