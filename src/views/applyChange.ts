@@ -1,0 +1,84 @@
+import type { JournalChange } from "../services/journalService";
+
+/**
+ * Per-path state `decideChangeAction` needs, resolved on demand by the
+ * caller. Kept separate from `JournalView`'s own `RenderedEntry` so this
+ * stays exercisable with fabricated state — same shape as `mountWindow.ts`'s
+ * `MountState`/`stateOf` and `entrySave.ts`'s injected `write`/`onError`.
+ */
+export interface RenderedState {
+  /** True if this path currently has a rendered entry (mounted or static). */
+  exists: boolean;
+  /** True if the rendered entry's editor currently holds keyboard focus. */
+  focused: boolean;
+  /** True if a debounced local save is currently pending (unflushed). */
+  hasPendingSave: boolean;
+  /**
+   * True if the rendered entry's underlying file object still resolves, BY
+   * IDENTITY (not merely by path — see `decideChangeAction`'s doc on
+   * "remove"/"reposition"), somewhere in the current vault state. Only
+   * consulted for "removed" and "moved".
+   */
+  fileStillExists: boolean;
+}
+
+export type ChangeAction =
+  | { type: "noop" }
+  | { type: "insert" }
+  | { type: "refresh" }
+  | { type: "remove"; flush: boolean }
+  | { type: "reposition"; flush: boolean }
+  | { type: "reloadView" };
+
+/**
+ * Pure decision logic behind `JournalView.applyChangesNow`. Exercised
+ * directly with fabricated `RenderedState`, rather than only through a live
+ * `JournalView` (which needs a DOM, `IntersectionObserver`s, and Obsidian
+ * internals this test environment doesn't provide).
+ */
+export function decideChangeAction(change: JournalChange, state: RenderedState): ChangeAction {
+  switch (change.kind) {
+    case "reload":
+      return { type: "reloadView" };
+
+    case "added":
+      return { type: "insert" };
+
+    case "removed":
+      // Nothing rendered at this path (e.g. a delete of a path that was
+      // never an entry, or the renameSource half of a rename that never
+      // had a rendering to begin with): nothing to do.
+      if (!state.exists) return { type: "noop" };
+      // `fileStillExists` distinguishes a genuine deletion (flushing would
+      // just fail and surface a confusing "failed to save" notice for an
+      // intentional deletion) from the stale old-path half of a rename or a
+      // move out of the journal folder (the file is still there, just
+      // elsewhere — flush first so a mid-debounce edit isn't lost).
+      return { type: "remove", flush: state.fileStillExists };
+
+    case "moved":
+      // Nothing rendered under this path yet: still insert it fresh, same
+      // as "added" — reachable when a rename also changes the resolved
+      // `created` (the old rendering, if any, was already torn down by this
+      // same batch's "removed" for the old path).
+      if (!state.exists) return { type: "insert" };
+      return { type: "reposition", flush: state.fileStillExists };
+
+    case "content":
+      // Same reasoning as "moved": nothing rendered yet, insert fresh
+      // rather than silently dropping the change (reachable after a
+      // same-timestamp rename).
+      if (!state.exists) return { type: "insert" };
+      // Loop/clobber suppression: never touch an editor the user is
+      // actively focused in, AND never touch one with a local edit still
+      // sitting in the debounce window. The second case matters even though
+      // the editor isn't focused: without it, `setValue`-ing the external
+      // body over the in-flight edit would both discard that edit AND get
+      // silently overwritten again moments later when the stale,
+      // already-scheduled save fires with its stale captured value — losing
+      // both the local edit and the external change, and leaving the
+      // editor's on-screen text diverged from what actually lands on disk.
+      if (state.focused || state.hasPendingSave) return { type: "noop" };
+      return { type: "refresh" };
+  }
+}

@@ -133,6 +133,17 @@ export class EntryRepository {
     return normalizeNfc(file.path).startsWith(this.resolveFolder().prefix);
   }
 
+  /**
+   * The configured journal folder, resolved to its real on-disk casing (see
+   * `resolveFolder`). Exposed so callers outside this class — currently only
+   * `JournalService`, to recognize a rename of the journal folder itself, or
+   * of one of its ancestors — can reason about the journal root without
+   * duplicating this class's casing-resolution logic.
+   */
+  rootPath(): string {
+    return this.resolveFolder().resolved;
+  }
+
   /** Builds the entry record for a file, or null if the file is not an entry. */
   entryFor(file: TFile): JournalEntry | null {
     if (!this.isEntryFile(file)) return null;

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App } from "obsidian";
-import { createFakeApp } from "./obsidian-mock";
+import { createFakeApp, TFolder } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService, type JournalChange } from "../src/services/journalService";
 
@@ -12,11 +12,33 @@ function setup() {
   return { fake, repository, service };
 }
 
-/** Collects every change the service emits, in order. */
+/** Same as `setup()`, but with a configurable journal folder path. */
+function setupWithFolder(folder: string) {
+  const fake = createFakeApp();
+  const repository = new EntryRepository(fake as unknown as App, () => folder);
+  const service = new JournalService(fake as unknown as App, repository);
+  return { fake, repository, service };
+}
+
+function folderAt(path: string): TFolder {
+  const folder = new TFolder();
+  folder.path = path;
+  folder.name = path.split("/").pop() ?? path;
+  return folder;
+}
+
+/** Collects every change the service emits, in order, flattened across batches. */
 function collectChanges(service: JournalService): JournalChange[] {
   const changes: JournalChange[] = [];
-  service.onChange((change) => changes.push(change));
+  service.onChange((batch) => changes.push(...batch));
   return changes;
+}
+
+/** Collects each batch (array) the service emits, without flattening. */
+function collectBatches(service: JournalService): JournalChange[][] {
+  const batches: JournalChange[][] = [];
+  service.onChange((batch) => batches.push(batch));
+  return batches;
 }
 
 const AUG12 = "Journal/2026/08/2026-08-12-22-41-52.md";
@@ -408,6 +430,170 @@ describe("JournalService: unload", () => {
 
     expect(changes).toHaveLength(0);
   });
+
+  it("actually unregisters its vault/metadata-cache event handlers, not merely its own listener set", () => {
+    // If `registerEvent`'s unregistration were a no-op (as it used to be:
+    // the mock previously never called back into `Events.on`'s returned
+    // ref at all), `JournalService.onunload` clearing its own `listeners`
+    // set would still make this test pass for the wrong reason — nothing
+    // would prove the underlying vault event handler itself stopped
+    // running. Here, a real (still-registered) handler firing would queue
+    // a pending upsert and, given a still-running debounce timer, mutate
+    // the index — which is exactly what this asserts does NOT happen.
+    const { fake, service } = setup();
+    service.load();
+    service.unload();
+
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(300);
+
+    expect(service.getEntries()).toHaveLength(0);
+  });
+
+  it("clears the self-write map, so a stale mark cannot leak past the component's own lifetime", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+    service.markSelfWrite(file.path);
+
+    service.unload();
+    service.load(); // simulate reuse in the same test run, e.g. a settings-driven reload cycle
+
+    const changes = collectChanges(service);
+    fake.vault.trigger("modify", file);
+    vi.advanceTimersByTime(300);
+
+    // Had the mark survived unload, this modify would be wrongly swallowed.
+    expect(changes).toEqual([{ kind: "content", entry: expect.objectContaining({ file }) }]);
+  });
+});
+
+describe("JournalService: self-write eviction (Minor 6)", () => {
+  it("sweeps an expired mark rather than leaving it in the map forever", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+
+    service.markSelfWrite(file.path);
+    vi.advanceTimersByTime(2001); // past the 2000ms self-write TTL
+
+    // A second, unrelated self-write elsewhere must not accidentally revive
+    // or interact with the first, already-expired mark: sweeping happens
+    // inside `markSelfWrite` itself. Exercised indirectly: if the first
+    // mark were never swept, it would still be consumable (if this test's
+    // TTL math were wrong) — the real assertion is functional, below.
+    const other = fake.vault.addFile("Journal/2026/08/2026-08-12-09-00-00.md", "");
+    service.markSelfWrite(other.path);
+
+    const changes = collectChanges(service);
+    fake.vault.trigger("modify", file); // the ORIGINAL, expired mark
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([{ kind: "content", entry: expect.objectContaining({ file }) }]);
+  });
+});
+
+describe("JournalService: folder rename (Important 4)", () => {
+  it("rebuilds and emits a sole 'reload' when the configured journal folder itself is renamed", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+    const rebuildSpy = vi.spyOn(service, "rebuild");
+
+    fake.vault.trigger("rename", folderAt("JournalRenamed"), "Journal");
+    vi.advanceTimersByTime(300);
+
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual([{ kind: "reload" }]);
+  });
+
+  it("also triggers on a rename of an ancestor folder that contains the journal folder", () => {
+    const { fake, service } = setupWithFolder("Root/Journal");
+    fake.vault.addFile("Root/Journal/2026/08/2026-08-12-22-41-52.md", "");
+    service.load();
+    const changes = collectChanges(service);
+    const rebuildSpy = vi.spyOn(service, "rebuild");
+
+    // The journal folder's own name never changes; its ancestor does.
+    fake.vault.trigger("rename", folderAt("Root-Renamed"), "Root");
+    vi.advanceTimersByTime(300);
+
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual([{ kind: "reload" }]);
+  });
+
+  it("also triggers on a rename of a subfolder contained by the journal folder", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+    const rebuildSpy = vi.spyOn(service, "rebuild");
+
+    fake.vault.trigger("rename", folderAt("Journal/2026-renamed"), "Journal/2026");
+    vi.advanceTimersByTime(300);
+
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual([{ kind: "reload" }]);
+  });
+
+  it("does not reload for a rename of a folder unrelated to the journal folder", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+    const rebuildSpy = vi.spyOn(service, "rebuild");
+
+    fake.vault.trigger("rename", folderAt("InboxRenamed"), "Inbox");
+    vi.advanceTimersByTime(300);
+
+    expect(rebuildSpy).not.toHaveBeenCalled();
+    expect(changes).toHaveLength(0);
+  });
+
+  it("supersedes any other pending per-file change queued in the same debounce window", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+
+    // A modify queued moments before the folder rename, still within the
+    // same 300ms debounce window.
+    fake.vault.trigger("modify", file);
+    fake.vault.trigger("rename", folderAt("JournalRenamed"), "Journal");
+    vi.advanceTimersByTime(300);
+
+    // Only the reload — the rebuild it triggers already reflects whatever
+    // the modify would have reported, so re-emitting "content" for it too
+    // would be redundant, and its path may no longer resolve sensibly.
+    expect(changes).toEqual([{ kind: "reload" }]);
+  });
+});
+
+describe("JournalService: batching (Minor 5's precondition)", () => {
+  it("delivers every change from one flush in a single batch, not one callback per change", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    const toDelete = fake.vault.addFile(AUG11, "");
+    service.load();
+    const batches = collectBatches(service);
+
+    const a = fake.vault.addFile("Journal/2026/08/2026-08-12-01-00-00.md", "");
+    const b = fake.vault.addFile("Journal/2026/08/2026-08-12-02-00-00.md", "");
+    fake.vault.trigger("create", a);
+    fake.vault.trigger("create", b);
+    fake.vault.files.delete(toDelete.path);
+    fake.vault.trigger("delete", toDelete);
+
+    vi.advanceTimersByTime(300);
+
+    // One flush, one callback invocation, carrying every change from it —
+    // exactly what lets a listener (JournalView) batch its own expensive
+    // per-flush bookkeeping instead of repeating it per change.
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(3);
+  });
 });
 
 describe("JournalService: onChange unsubscribe", () => {
@@ -417,8 +603,8 @@ describe("JournalService: onChange unsubscribe", () => {
 
     const a: JournalChange[] = [];
     const b: JournalChange[] = [];
-    const unsubA = service.onChange((c) => a.push(c));
-    service.onChange((c) => b.push(c));
+    const unsubA = service.onChange((batch) => a.push(...batch));
+    service.onChange((batch) => b.push(...batch));
 
     unsubA();
 

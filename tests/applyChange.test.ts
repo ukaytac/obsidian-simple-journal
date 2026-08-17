@@ -1,0 +1,123 @@
+import { describe, expect, it } from "vitest";
+import type { JournalEntry } from "../src/journal/entry";
+import type { JournalChange } from "../src/services/journalService";
+import { decideChangeAction, type RenderedState } from "../src/views/applyChange";
+
+function state(overrides: Partial<RenderedState> = {}): RenderedState {
+  return { exists: false, focused: false, hasPendingSave: false, fileStillExists: false, ...overrides };
+}
+
+const entry = { file: { path: "Journal/2026/08/2026-08-12-22-41-52.md" } } as unknown as JournalEntry;
+
+describe("decideChangeAction: loop/clobber suppression (Important 2)", () => {
+  it("never touches a focused editor", () => {
+    const change: JournalChange = { kind: "content", entry };
+    expect(decideChangeAction(change, state({ exists: true, focused: true }))).toEqual({
+      type: "noop",
+    });
+  });
+
+  it("never touches an editor with an unflushed local edit, even when unfocused", () => {
+    // This is the crux of Important 2: without this check, an external
+    // change would clobber the in-flight edit via setValue, and the
+    // already-scheduled save (bound to the stale pre-clobber value) would
+    // then clobber the external change right back — losing both, and
+    // leaving the editor's displayed text diverged from disk.
+    const change: JournalChange = { kind: "content", entry };
+    expect(
+      decideChangeAction(change, state({ exists: true, focused: false, hasPendingSave: true })),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("refreshes when unfocused and nothing is pending", () => {
+    const change: JournalChange = { kind: "content", entry };
+    expect(
+      decideChangeAction(change, state({ exists: true, focused: false, hasPendingSave: false })),
+    ).toEqual({ type: "refresh" });
+  });
+});
+
+describe("decideChangeAction: content falls back to insert", () => {
+  it("inserts a fresh rendering when nothing is rendered at this path yet", () => {
+    // Reachable right after a same-timestamp rename: the old rendering was
+    // already torn down by this same batch's "removed", but nothing was
+    // ever rendered at the entry's (new) path — silently dropping this
+    // would leave the entry missing from the timeline until the next
+    // full reload.
+    const change: JournalChange = { kind: "content", entry };
+    expect(decideChangeAction(change, state({ exists: false }))).toEqual({ type: "insert" });
+  });
+
+  it("focus/pending-save state is irrelevant when nothing exists yet to protect", () => {
+    const change: JournalChange = { kind: "content", entry };
+    expect(
+      decideChangeAction(change, state({ exists: false, focused: true, hasPendingSave: true })),
+    ).toEqual({ type: "insert" });
+  });
+});
+
+describe("decideChangeAction: ordering reposition ('moved')", () => {
+  it("repositions an existing rendering, flushing first when the file still exists", () => {
+    const change: JournalChange = { kind: "moved", entry };
+    expect(
+      decideChangeAction(change, state({ exists: true, fileStillExists: true })),
+    ).toEqual({ type: "reposition", flush: true });
+  });
+
+  it("repositions without flushing when the file no longer exists", () => {
+    const change: JournalChange = { kind: "moved", entry };
+    expect(
+      decideChangeAction(change, state({ exists: true, fileStillExists: false })),
+    ).toEqual({ type: "reposition", flush: false });
+  });
+
+  it("falls back to a plain insert when nothing is rendered under this path yet", () => {
+    const change: JournalChange = { kind: "moved", entry };
+    expect(decideChangeAction(change, state({ exists: false }))).toEqual({ type: "insert" });
+  });
+
+  it("a focused editor is still repositioned — 'moved' never suppresses on focus", () => {
+    // Unlike "content", CLAUDE.md requires the timeline to reposition an
+    // entry whose `created` changed regardless of focus; only whether a
+    // pending edit needs flushing first is a live concern here.
+    const change: JournalChange = { kind: "moved", entry };
+    expect(
+      decideChangeAction(change, state({ exists: true, focused: true, fileStillExists: true })),
+    ).toEqual({ type: "reposition", flush: true });
+  });
+});
+
+describe("decideChangeAction: deletion branch", () => {
+  it("does nothing when nothing is rendered at the removed path", () => {
+    const change: JournalChange = { kind: "removed", path: "Journal/gone.md" };
+    expect(decideChangeAction(change, state({ exists: false }))).toEqual({ type: "noop" });
+  });
+
+  it("removes without flushing a genuine deletion (file no longer resolves anywhere)", () => {
+    const change: JournalChange = { kind: "removed", path: "Journal/gone.md" };
+    expect(
+      decideChangeAction(change, state({ exists: true, fileStillExists: false })),
+    ).toEqual({ type: "remove", flush: false });
+  });
+
+  it("removes WITH a flush when the file still resolves elsewhere (a rename's stale old path)", () => {
+    const change: JournalChange = { kind: "removed", path: "Journal/old-path.md" };
+    expect(
+      decideChangeAction(change, state({ exists: true, fileStillExists: true })),
+    ).toEqual({ type: "remove", flush: true });
+  });
+});
+
+describe("decideChangeAction: added and reload", () => {
+  it("always inserts for 'added', regardless of state", () => {
+    const change: JournalChange = { kind: "added", entry };
+    expect(decideChangeAction(change, state({ exists: true, focused: true }))).toEqual({
+      type: "insert",
+    });
+  });
+
+  it("always reloads the whole view for 'reload', regardless of state", () => {
+    const change: JournalChange = { kind: "reload" };
+    expect(decideChangeAction(change, state())).toEqual({ type: "reloadView" });
+  });
+});

@@ -41,16 +41,36 @@ export class Notice {
   constructor(public message: string) {}
 }
 
+/** An `EventRef`-shaped handle a mock `Events` emitter hands back from `on()`. */
+export interface FakeEventRef {
+  unregister: () => void;
+}
+
 export class Component {
+  private registeredEvents: FakeEventRef[] = [];
+
   onload(): void {}
   onunload(): void {}
   load(): void {
     this.onload();
   }
+  /**
+   * Unloads AND actually unregisters every event handed to `registerEvent`,
+   * mirroring real Obsidian: a `Component` that never receives another
+   * event after `unload()` is exactly the guarantee `JournalService` (and
+   * every other `registerEvent` caller) depends on. A no-op here would let
+   * a test pass purely because `JournalService.onunload` also clears its
+   * own `listeners` set, without ever proving the vault/metadata-cache
+   * listeners themselves stopped firing.
+   */
   unload(): void {
     this.onunload();
+    for (const ref of this.registeredEvents) ref.unregister();
+    this.registeredEvents = [];
   }
-  registerEvent(): void {}
+  registerEvent(ref: FakeEventRef): void {
+    this.registeredEvents.push(ref);
+  }
 }
 
 export function debounce<T extends unknown[]>(fn: (...args: T) => void): (...args: T) => void {
@@ -65,19 +85,28 @@ function parentPath(path: string): string {
 /**
  * Minimal stand-in for Obsidian's `Events` base class: synchronous `on`
  * (matching the real Vault/MetadataCache, which fire listeners inline, not
- * queued) plus a test-only `trigger` to fire a named event by hand. `on`
- * returns an opaque ref only so call sites that store it type-check; nothing
- * in this mock ever unregisters by ref (the mock's `Component.registerEvent`
- * is a no-op), matching every other simplification in this file.
+ * queued) plus a test-only `trigger` to fire a named event by hand. The
+ * returned ref's `unregister` actually removes the listener — matching real
+ * Obsidian's `Component.registerEvent`/`unload` contract closely enough to
+ * let a test prove a `Component` genuinely stops receiving events after
+ * `unload()`, not merely that its own bookkeeping was cleared.
  */
 class FakeEvents {
   private listeners = new Map<string, Array<(...args: any[]) => void>>();
 
-  on(name: string, callback: (...args: any[]) => void): { name: string } {
+  on(name: string, callback: (...args: any[]) => void): FakeEventRef {
     const list = this.listeners.get(name) ?? [];
     list.push(callback);
     this.listeners.set(name, list);
-    return { name };
+
+    return {
+      unregister: () => {
+        const current = this.listeners.get(name);
+        if (!current) return;
+        const index = current.indexOf(callback);
+        if (index >= 0) current.splice(index, 1);
+      },
+    };
   }
 
   trigger(name: string, ...args: any[]): void {
