@@ -3835,6 +3835,28 @@ git commit -m "feat: add new entry composer with lazy file creation"
 
 Minimal, non-permanent affordances: one hover button per entry, and a context menu.
 
+### Corrections to the snippets below
+
+**Do not replace `createEntryEl` wholesale.** The snippet builds a
+`RenderedEntry` literal from an older shape; the real type has since gained
+`savedBody`, `opToken`, `intersecting` and more, and the body element gained the
+`markdown-rendered` class that every Obsidian and community-theme rule for
+rendered Markdown is scoped to. Copying the literal in would silently drop all of
+it — the dirty-check that stops scrolling from rewriting files, the token that
+closes the render/mount race, and the entry's typography. Add the actions button
+to the existing function instead, and leave the rest of it alone.
+
+Two further points:
+
+- The delete path must respect the mount window and the save pipeline: clear any
+  pending `saveHandle`, unobserve the element, remove it from `mountOrder`, and
+  delete its `dayGroups` key if it was the last entry of its day. `Task 14`'s
+  `removeRenderedEntry` already does this correctly — route deletion through it
+  rather than tearing the DOM down by hand.
+- Deleting a file emits a vault event that the journal service is now listening
+  for, so the timeline updates through the normal external-change path. Do not
+  also remove the entry directly, or the two paths race.
+
 **Files:**
 - Modify: `src/views/JournalView.ts`, `styles.css`
 
@@ -3991,6 +4013,33 @@ git commit -m "feat: add hover and context menu entry actions"
 ## Task 17: Save failure handling
 
 Writes can fail. When they do, the text must stay on screen and the failure must be visible.
+
+### This task is now much smaller than the snippets suggest
+
+Most of it already landed, because a later review found the missing error
+handling was breaking teardown rather than merely going unreported:
+
+- `save()` already delegates to `saveIfChanged` in `src/views/entrySave.ts`,
+  which owns the equality guard, the try/catch and the failure callback, and
+  never rejects.
+- `clearTimeline` already flushes every pending save through `Promise.allSettled`
+  before destroying editors, and `onClose` awaits it.
+- `markSelfWrite` is already called, deliberately, **inside** the write callback
+  rather than unconditionally, so a skipped no-op save cannot swallow a genuine
+  external edit.
+
+**So do not apply Step 1 or Step 2 as written — both would regress work.** Step
+1's `save()` drops `savedBody` and `saveIfChanged` entirely, which reinstates the
+bug where scrolling past unedited entries rewrites every file. Step 2's `onClose`
+loop replaces the `allSettled` flush with a sequential one that stops at the
+first rejection, leaving the timeline half-destroyed.
+
+What genuinely remains is the **visible, persistent failure marker**: today a
+failed write only shows a transient `Notice`, which the user may miss entirely
+and which says nothing about *which* entry failed. Take `showSaveError` and
+`clearSaveError` and their CSS from the snippets, and wire them to
+`saveIfChanged`'s existing error callback and success path. Nothing else in the
+save pipeline should change.
 
 **Files:**
 - Modify: `src/views/JournalView.ts`, `styles.css`
