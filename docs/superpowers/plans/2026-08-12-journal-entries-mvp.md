@@ -3117,13 +3117,6 @@ Replace `appendEntry`:
 
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
     await this.plugin.repository.writeBody(rendered.entry.file, value);
-
-    // REQUIRED. The embedded editor cannot distinguish this plugin's own write
-    // landing on disk from a user edit, and would otherwise re-apply the
-    // just-written body over characters typed since — silently deleting them
-    // mid-sentence. This call is the provenance signal that suppresses that one
-    // echo. Omitting it reintroduces the bug.
-    rendered.editor?.notifyWritten(value);
   }
 ```
 
