@@ -63,6 +63,29 @@ function parentPath(path: string): string {
 }
 
 /**
+ * Minimal stand-in for Obsidian's `Events` base class: synchronous `on`
+ * (matching the real Vault/MetadataCache, which fire listeners inline, not
+ * queued) plus a test-only `trigger` to fire a named event by hand. `on`
+ * returns an opaque ref only so call sites that store it type-check; nothing
+ * in this mock ever unregisters by ref (the mock's `Component.registerEvent`
+ * is a no-op), matching every other simplification in this file.
+ */
+class FakeEvents {
+  private listeners = new Map<string, Array<(...args: any[]) => void>>();
+
+  on(name: string, callback: (...args: any[]) => void): { name: string } {
+    const list = this.listeners.get(name) ?? [];
+    list.push(callback);
+    this.listeners.set(name, list);
+    return { name };
+  }
+
+  trigger(name: string, ...args: any[]): void {
+    for (const callback of this.listeners.get(name) ?? []) callback(...args);
+  }
+}
+
+/**
  * In-memory vault. Files are stored as path -> contents. `folders` is the
  * single source of truth for folder existence — exact, path-keyed, so
  * `getAbstractFileByPath` stays an O(1) lookup like the real vault's path
@@ -70,7 +93,7 @@ function parentPath(path: string): string {
  * directory, the same way a real vault never has a file without its parent
  * folders also existing.
  */
-export class FakeVault {
+export class FakeVault extends FakeEvents {
   files = new Map<string, TFile>();
   contents = new Map<string, string>();
   folders = new Set<string>();
@@ -175,7 +198,7 @@ export class FakeVault {
 }
 
 /** In-memory metadata cache. Frontmatter is supplied per path by the test. */
-export class FakeMetadataCache {
+export class FakeMetadataCache extends FakeEvents {
   frontmatter = new Map<string, Record<string, unknown>>();
 
   getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {

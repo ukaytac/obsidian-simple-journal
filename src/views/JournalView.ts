@@ -1,7 +1,8 @@
 import { Component, ItemView, MarkdownRenderer, Notice, Platform, WorkspaceLeaf } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
-import { pageAfter } from "../services/entryIndex";
+import { compareEntries, pageAfter } from "../services/entryIndex";
+import type { JournalChange } from "../services/journalService";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import type { EntryEditor } from "./EntryEditor";
 import { saveIfChanged } from "./entrySave";
@@ -114,6 +115,19 @@ export class JournalView extends ItemView {
   private mountOrder: string[] = [];
   /** Serializes `reload()`/`onClose()`; see `enqueueTimelineMutation`. */
   private timelineMutationChain: Promise<unknown> = Promise.resolve();
+  /**
+   * Set once, synchronously, at the top of `onClose`. Before `JournalService`
+   * existed, nothing could enqueue a timeline mutation after `onClose`: the
+   * only deferred caller was `nextPage`'s `queueMicrotask`, which drains long
+   * before a human closes a tab. A vault-event handler breaks that — it can
+   * call `reload()` (or, via `applyChange`, mutate the timeline directly)
+   * from an arbitrary async callback that can land at any time, including
+   * after the view has closed. Checked at the top of `reloadNow` and
+   * `applyChange` so neither can rebuild/mutate into a `timelineEl` this view
+   * no longer owns, which would otherwise leak every mounted editor (and, for
+   * `ObsidianEmbedEditor`, its 250ms poll) for the rest of the session.
+   */
+  private closed = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -138,10 +152,18 @@ export class JournalView extends ItemView {
     this.contentEl.empty();
     this.contentEl.addClass("journal-view");
     this.timelineEl = this.contentEl.createDiv({ cls: "journal-timeline" });
+    // ItemView.register runs this unsubscribe when the view closes, so no
+    // change can reach `applyChange` once torn down, short of the race
+    // `closed` itself guards against.
+    this.register(this.plugin.journal.onChange((change) => void this.applyChange(change)));
     await this.reload();
   }
 
   async onClose(): Promise<void> {
+    // Set synchronously, before anything else: a vault-event handler firing
+    // between now and the actual teardown below must see this immediately,
+    // not after an await hands control back to it first.
+    this.closed = true;
     await this.enqueueTimelineMutation(() => this.clearTimeline());
     this.contentEl.empty();
   }
@@ -181,9 +203,14 @@ export class JournalView extends ItemView {
 
   /** The actual body of `reload()`, run only inside `enqueueTimelineMutation`. */
   private async reloadNow(): Promise<void> {
+    // REQUIRED guard: see `closed`'s doc. A vault-event-triggered reload can
+    // land after the view has already closed; bail before touching anything
+    // rather than rebuild a timeline nothing will ever tear back down.
+    if (this.closed) return;
+
     await this.clearTimeline();
 
-    this.index = this.plugin.repository.listEntries();
+    this.index = this.plugin.journal.getEntries();
     this.lastLoadedPath = null;
 
     if (this.index.length === 0) {
@@ -999,12 +1026,25 @@ export class JournalView extends ItemView {
    * (same shape as `mountWindow.ts`'s `stateOf`/`onEvict`) so both are
    * covered by `tests/entrySave.test.ts` directly, without needing a live
    * `JournalView`.
+   *
+   * `markSelfWrite` is called from inside the `write` callback — i.e. only
+   * when `saveIfChanged` has actually decided a write is happening — rather
+   * than unconditionally before calling `saveIfChanged`. Marking it
+   * unconditionally would also mark the (very common) no-op case where
+   * scrolling an unedited entry in and out of the mount window flushes
+   * nothing: that mark would then never be consumed by a real `modify`/
+   * `changed` event (none is coming) and would sit in `JournalService` for
+   * its full TTL, able to wrongly swallow a genuinely external edit to the
+   * same path that happens to land in that window.
    */
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
     rendered.savedBody = await saveIfChanged(
       value,
       rendered.savedBody,
-      (v) => this.plugin.repository.writeBody(rendered.entry.file, v),
+      (v) => {
+        this.plugin.journal.markSelfWrite(rendered.entry.file.path);
+        return this.plugin.repository.writeBody(rendered.entry.file, v);
+      },
       (error) => {
         console.error("Journal Entries: failed to save an entry", rendered.entry.file.path, error);
         new Notice(
@@ -1012,6 +1052,205 @@ export class JournalView extends ItemView {
         );
       },
     );
+  }
+
+  /**
+   * Applies one index change from `JournalService` to the DOM, if it affects
+   * a loaded entry. Registered in `onOpen` via `this.register(...)`, so
+   * `ItemView` unsubscribes it automatically when the view closes.
+   */
+  private async applyChange(change: JournalChange): Promise<void> {
+    // REQUIRED guard: see `closed`'s doc. `JournalService`'s vault-event
+    // listeners can fire between `onClose` setting this and the view
+    // actually finishing teardown (or, in principle, right after — nothing
+    // upstream promises event delivery stops the instant `onClose` starts).
+    if (this.closed) return;
+
+    switch (change.kind) {
+      case "removed": {
+        const rendered = this.rendered.get(change.path);
+        // `change.path` can be a genuine deletion OR the OLD half of a
+        // rename (`JournalService.applyRenameSource` emits "removed"
+        // unconditionally for that path, precisely so this stale rendering
+        // gets cleaned up — see its doc). The two need different treatment:
+        // a true deletion has nothing left to flush to; a rename's old path
+        // still has the same file, just at a new path, reachable through
+        // `rendered.entry.file` (Obsidian mutates that TFile in place, so
+        // its `.path` already reads the NEW location by the time this
+        // runs). Distinguish them by asking the vault whether that file
+        // still resolves anywhere at all, rather than by path.
+        if (rendered && this.app.vault.getAbstractFileByPath(rendered.entry.file.path)) {
+          // Still exists somewhere — flush before tearing down, so an edit
+          // that was mid-debounce at the moment of the rename/move isn't
+          // lost. A genuine deletion skips this: the file is truly gone,
+          // and attempting to write to it would just surface a confusing
+          // "failed to save" notice for an intentional deletion.
+          await this.flushSave(rendered);
+          if (this.closed) return;
+        }
+        this.removeRenderedEntry(change.path);
+        break;
+      }
+
+      case "content": {
+        const rendered = this.rendered.get(change.entry.file.path);
+        if (!rendered) {
+          // Nothing rendered under this exact path yet — reachable right
+          // after a rename with an unchanged `created` time: the OLD
+          // rendering was already torn down by this same flush batch's
+          // "removed" (see above), but this entry's `.file.path` is a path
+          // nothing has ever been rendered at. Fall back to the same
+          // insert-if-in-range logic "added"/"moved" already use, or the
+          // entry would silently vanish from the timeline until the next
+          // full reload.
+          this.insertEntryInPlace(change.entry);
+          return;
+        }
+        // Never clobber what the user is typing.
+        if (rendered.editor?.hasFocus()) return;
+        void this.refreshEntryContent(rendered);
+        break;
+      }
+
+      case "moved": {
+        const path = change.entry.file.path;
+        const rendered = this.rendered.get(path);
+        // The file itself still exists — unlike a genuine "removed",
+        // silently discarding a pending edit here would lose real text for
+        // no reason. Flush it to disk (under whichever path
+        // `rendered.entry.file` now resolves to) before tearing the old
+        // rendering down, so a `created` property edited in another pane
+        // while this entry is mid-edit repositions it without losing the
+        // in-flight keystrokes.
+        if (rendered) await this.flushSave(rendered);
+        if (this.closed) return;
+        this.removeRenderedEntry(path);
+        this.insertEntryInPlace(change.entry);
+        break;
+      }
+
+      case "added": {
+        this.insertEntryInPlace(change.entry);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Tears down one rendered entry's editor/DOM and forgets it. Used for a
+   * genuine deletion, the stale old-path half of a rename, and — after an
+   * explicit flush — as half of repositioning a "moved" entry. Any pending
+   * edit worth keeping has already been flushed by the caller (`applyChange`)
+   * before this runs; this method itself never flushes, so it stays safe to
+   * call unconditionally even when the underlying file is genuinely gone.
+   */
+  private removeRenderedEntry(path: string): void {
+    const rendered = this.rendered.get(path);
+    if (!rendered) return;
+
+    if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+    rendered.editor?.destroy();
+    rendered.renderComponent?.unload();
+    rendered.el.remove();
+
+    this.rendered.delete(path);
+    const mountIndex = this.mountOrder.indexOf(path);
+    if (mountIndex >= 0) this.mountOrder.splice(mountIndex, 1);
+
+    this.removeEmptyDayGroups();
+  }
+
+  /**
+   * Removes day groups that no longer hold an entry.
+   *
+   * The `dayGroups` map must lose the key in the same pass. Leaving it
+   * behind means `ensureDayGroup` later hands back a detached container, and
+   * every entry written on that day renders into nothing — visible as an
+   * entry that silently fails to appear.
+   */
+  private removeEmptyDayGroups(): void {
+    for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
+      if (dayEl.querySelector(".journal-entry")) continue;
+
+      const key = dayEl.dataset.day;
+      if (key) this.dayGroups.delete(key);
+      dayEl.remove();
+    }
+
+    this.rebuildMonthHeaders();
+  }
+
+  /**
+   * Inserts an entry at its correct reverse-chronological position, but only
+   * if it belongs inside the range currently loaded. Entries older than
+   * everything loaded are left to normal paging (they'll appear once the
+   * user scrolls that far, `pageAfter` reading them out of the same shared
+   * index this just inserted into).
+   *
+   * Rendered statically and handed to `mountObserver`, exactly like
+   * `appendEntry` — not mounted directly. `mountEditor` bails to a static
+   * render whenever `rendered.intersecting` is false, and that flag is only
+   * ever set by `mountObserver`'s own callback; mounting here directly
+   * without first `observe()`-ing the element would leave `intersecting`
+   * stuck at its `false` default forever, so `mountEditor` would always bail,
+   * and the entry would never become eligible for the viewport-driven
+   * unmount that keeps the mounted set bounded.
+   */
+  private insertEntryInPlace(entry: JournalEntry): void {
+    if (this.rendered.has(entry.file.path)) return;
+
+    const position = this.index.indexOf(entry);
+    const loadedCount = this.rendered.size;
+    if (position < 0) return;
+    if (position > loadedCount && this.sentinelEl) return;
+
+    const group = this.ensureDayGroup(entry.created, "prepend");
+    const rendered = this.createEntryEl(entry);
+
+    // Find the first already-rendered sibling that is older than this entry.
+    const siblings = Array.from(group.querySelectorAll<HTMLElement>(".journal-entry"));
+    const olderSibling = siblings.find((el) => {
+      const siblingEntry = this.rendered.get(el.dataset.path ?? "");
+      return siblingEntry ? compareEntries(entry, siblingEntry.entry) < 0 : false;
+    });
+
+    if (olderSibling) group.insertBefore(rendered.el, olderSibling);
+    else group.appendChild(rendered.el);
+
+    this.rendered.set(entry.file.path, rendered);
+    void this.renderStatic(rendered);
+    this.mountObserver?.observe(rendered.el);
+  }
+
+  /**
+   * Reloads one entry's text from disk without remounting its editor. Used
+   * when an entry changes from another pane while this view has it
+   * statically rendered or mounted-but-unfocused (`applyChange`'s "content"
+   * case already skips a focused editor entirely).
+   *
+   * REQUIRED: `savedBody` must be updated in the same breath as `setValue`,
+   * seeded from `editor.getValue()` rather than from `body`. `save()` skips
+   * the write when the value to save matches `savedBody`; install the
+   * external body without advancing `savedBody` and the next flush (e.g. the
+   * next time this entry scrolls out of the mount window) sees a difference,
+   * writes the external content straight back, and re-fires `modify` — the
+   * reload loop this whole design exists to prevent. Seeding from
+   * `getValue()` rather than `body` matters for the same reason
+   * `mountEditor` does: the editor may normalize line endings on load (e.g.
+   * CRLF -> LF), so the value stored here must come from the same code path
+   * the dirty-check in `save()` reads back, not from the raw disk read.
+   */
+  private async refreshEntryContent(rendered: RenderedEntry): Promise<void> {
+    const body = await this.plugin.repository.readBody(rendered.entry.file);
+
+    if (rendered.editor) {
+      if (rendered.editor.getValue() === body) return;
+      rendered.editor.setValue(body);
+      rendered.savedBody = rendered.editor.getValue();
+      return;
+    }
+
+    await this.renderStatic(rendered);
   }
 
   /**

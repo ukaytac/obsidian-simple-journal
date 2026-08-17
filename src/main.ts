@@ -1,5 +1,6 @@
 import { Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
+import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
 import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
@@ -9,12 +10,18 @@ export default class JournalEntriesPlugin extends Plugin {
   settings: JournalSettings = { ...DEFAULT_SETTINGS };
   repository!: EntryRepository;
   editorFactory!: EntryEditorFactory;
+  journal!: JournalService;
 
   async onload(): Promise<void> {
     await this.loadSettings();
 
     this.repository = new EntryRepository(this.app, () => this.settings.journalFolder);
     this.editorFactory = createEntryEditorFactory(this.app);
+
+    this.journal = new JournalService(this.app, this.repository);
+    // Ties the service's lifecycle to the plugin: its vault/metadata-cache
+    // event registrations are released automatically on unload.
+    this.addChild(this.journal);
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));
@@ -91,6 +98,7 @@ export default class JournalEntriesPlugin extends Plugin {
   }
 
   refreshJournal(): void {
+    this.journal.rebuild();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
       // A deferred leaf's view is a DeferredView, not a JournalView — its
       // onOpen rebuilds it when it loads, so it needs no refresh here. Skip
