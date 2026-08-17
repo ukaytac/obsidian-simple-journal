@@ -140,6 +140,17 @@ i.e. past 60 entries on desktop or 25 on mobile).
       moment they re-enter `MOUNT_ROOT_MARGIN` — and their text is byte-for-byte
       what it was before you scrolled away (nothing was lost or duplicated
       across the unmount → static → remount round trip).
+- [ ] **Scrolling past unedited entries touches zero files.** Note the
+      current modification time (in the file explorer, or your OS's file
+      info) of twenty or so consecutive entries you have not edited this
+      session. Scroll past all of them — enough to mount and then unmount
+      each one via `mountObserver` — without typing anything. Confirm not
+      one of their modification times changed. This is the check that would
+      catch a regression of the spurious-write bug (`savedBody` no longer
+      matching what the editor's `getValue()` reports as unchanged, e.g. a
+      line-ending mismatch on a CRLF file): the seeding wiring lives in
+      `mountEditor`/`save()`, which no automated test can reach without a
+      real `JournalView`.
 - [ ] **A focused editor keeps focus and its text when scrolled out of view.**
       Click into an entry near the top and place the cursor mid-sentence.
       Without clicking away (so the entry keeps keyboard focus), scroll it

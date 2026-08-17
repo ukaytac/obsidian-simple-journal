@@ -739,8 +739,18 @@ export class JournalView extends ItemView {
       return;
     }
 
-    rendered.savedBody = body;
     const editor = this.mountUsableEditor(rendered, body);
+
+    // Seeded from the editor's own getValue(), not the raw disk read
+    // (`body`): getValue() goes through whatever normalization the editor
+    // applies on load (e.g. ObsidianEmbedEditor's CodeMirror document
+    // normalizes CRLF to \n), and save()'s later dirty-check compares
+    // against this exact same code path. Seeding from `body` instead would
+    // compare two independently-sourced strings that can differ even when
+    // nothing changed — a CRLF-line-ending file would then rewrite (and
+    // silently reformat) on every unmount, reinstating the spurious-write
+    // bug this field exists to prevent.
+    rendered.savedBody = editor.getValue();
 
     rendered.editor = editor;
     this.mountOrder.push(rendered.entry.file.path);
@@ -960,6 +970,14 @@ export class JournalView extends ItemView {
    * lost. `editor.flush()` commits what the editor holds; `getValue()` stays
    * truthful even after `destroy()`, so this cannot write an empty body over
    * real text.
+   *
+   * Bails without calling `save()` if there is no editor at all — a state
+   * believed unreachable today (every `destroy()` is preceded synchronously
+   * by a `flushSave` that nulls `saveHandle`, and nothing else can interleave
+   * with that synchronous sequence), but `?? ""` here would not merely be a
+   * redundant fallback if it ever were reached: with `savedBody` now holding
+   * the entry's real text, `""` reads as a genuine (and different) value,
+   * and `save()` would write the entry empty instead of leaving it alone.
    */
   private async flushSave(rendered: RenderedEntry): Promise<void> {
     rendered.editor?.flush();
@@ -967,7 +985,9 @@ export class JournalView extends ItemView {
     if (rendered.saveHandle === null) return;
     window.clearTimeout(rendered.saveHandle);
     rendered.saveHandle = null;
-    await this.save(rendered, rendered.editor?.getValue() ?? "");
+
+    if (!rendered.editor) return;
+    await this.save(rendered, rendered.editor.getValue());
   }
 
   /**
