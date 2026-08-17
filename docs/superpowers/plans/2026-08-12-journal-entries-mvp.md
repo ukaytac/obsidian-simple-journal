@@ -2994,6 +2994,13 @@ Replace `appendEntry`:
   private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
     const editor = this.plugin.editorFactory.create();
     editor.onChange((value) => this.scheduleSave(rendered, value));
+
+    // REQUIRED. An embedded editor can also fail *after* a successful mount —
+    // its file is deleted, or the internal API changes shape under it. When
+    // that happens it stops reporting changes, and without this the user goes
+    // on typing into a surface whose text is never committed.
+    editor.onUnusable(() => void this.replaceWithFallback(rendered));
+
     editor.mount(rendered.bodyEl, rendered.entry.file, body);
 
     if (editor.isUsable?.() === false) {
@@ -3011,6 +3018,27 @@ Replace `appendEntry`:
     }
 
     return editor;
+  }
+
+  /**
+   * Swaps a failed embedded editor for the plain-text fallback, preserving
+   * whatever text it still holds. `getValue()` stays truthful after `destroy()`,
+   * so nothing the user typed is lost across the swap.
+   */
+  private async replaceWithFallback(rendered: RenderedEntry): Promise<void> {
+    const failed = rendered.editor;
+    if (!failed) return;
+
+    const text = failed.getValue();
+    failed.destroy();
+    rendered.bodyEl.empty();
+
+    const fallback = new TextareaEditor();
+    fallback.onChange((value) => this.scheduleSave(rendered, value));
+    fallback.mount(rendered.bodyEl, rendered.entry.file, text);
+    rendered.editor = fallback;
+
+    new Notice("Journal Entries: switched this entry to plain text editing.");
   }
 
   /**
@@ -3089,6 +3117,13 @@ Replace `appendEntry`:
 
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
     await this.plugin.repository.writeBody(rendered.entry.file, value);
+
+    // REQUIRED. The embedded editor cannot distinguish this plugin's own write
+    // landing on disk from a user edit, and would otherwise re-apply the
+    // just-written body over characters typed since — silently deleting them
+    // mid-sentence. This call is the provenance signal that suppresses that one
+    // echo. Omitting it reintroduces the bug.
+    rendered.editor?.notifyWritten(value);
   }
 ```
 
