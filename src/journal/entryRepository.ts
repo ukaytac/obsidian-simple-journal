@@ -1,7 +1,7 @@
 import { App, TFile, TFolder } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
-import { replaceBody, splitFrontmatter } from "./markdownDoc";
+import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
 import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../utils/dates";
 
@@ -219,14 +219,39 @@ export class EntryRepository {
     }
   }
 
-  /** The entry text, without its frontmatter block. */
+  /**
+   * The entry text, without its frontmatter block and without the blank-line
+   * separator that conventionally follows it. A conventional file —
+   * `---\n...\n---\n\ntext` — has that blank line only to separate the
+   * frontmatter from the text, not as part of the text itself, so this
+   * strips exactly that one newline before handing the body to callers (the
+   * editor, lazy-creation "is this empty?" checks, etc.). A file with no
+   * frontmatter at all has no separator to strip: the whole document is the
+   * body, untouched. See `stripSeparator` for the exact rule.
+   *
+   * A brand-new entry (`createEntry`'s `---\n...\n---\n\n` template) therefore
+   * reads back as `""`, not `"\n"`.
+   */
   async readBody(file: TFile): Promise<string> {
-    return splitFrontmatter(await this.app.vault.read(file)).body;
+    const { frontmatter, body } = splitFrontmatter(await this.app.vault.read(file));
+    return stripSeparator(frontmatter, body);
   }
 
-  /** Replaces the entry text. Frontmatter is preserved exactly. */
+  /**
+   * Replaces the entry text. Frontmatter is preserved exactly, and the
+   * blank-line separator `readBody` stripped is restored before the write —
+   * in whichever newline flavour (`\n`/`\r\n`) the file's frontmatter already
+   * uses, so a CRLF file is never converted. If the file being written to
+   * currently lacks that blank line (in particular, one written by an
+   * older build of this plugin before this fix, or a file the last save left
+   * in that shape), this *adds* it: that's intended, not a bug — it restores
+   * the Obsidian convention rather than perpetuating a deviation from it.
+   */
   async writeBody(file: TFile, body: string): Promise<void> {
-    await this.app.vault.process(file, (data) => replaceBody(data, body));
+    await this.app.vault.process(file, (data) => {
+      const { frontmatter } = splitFrontmatter(data);
+      return replaceBody(data, restoreSeparator(frontmatter, body));
+    });
   }
 
   async deleteEntry(file: TFile): Promise<void> {

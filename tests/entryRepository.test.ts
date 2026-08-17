@@ -9,7 +9,14 @@ function setup() {
   return { fake, repo };
 }
 
+// The raw suffix a conventional file has after its frontmatter block: the
+// blank-line separator, then the entry text. Used to build file contents
+// below (that's what `splitFrontmatter` itself sees on disk).
 const body = "\nToday I realized something.\n";
+// What `EntryRepository.readBody` actually returns for that same file: the
+// separator is not content, so it's stripped. Derived rather than
+// hand-typed so it can never silently drift from `body`.
+const strippedBody = body.slice(1);
 
 describe("isEntryFile", () => {
   it("accepts markdown files under the journal folder", () => {
@@ -234,13 +241,13 @@ describe("createEntry", () => {
 });
 
 describe("readBody and writeBody", () => {
-  it("reads the body without the frontmatter", async () => {
+  it("reads the body without the frontmatter or its blank-line separator", async () => {
     const { fake, repo } = setup();
     const file = fake.vault.addFile(
       "Journal/2026/08/2026-08-12-22-41-52.md",
       `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
     );
-    expect(await repo.readBody(file)).toBe(body);
+    expect(await repo.readBody(file)).toBe(strippedBody);
   });
 
   it("preserves arbitrary frontmatter when writing", async () => {
@@ -250,12 +257,82 @@ describe("readBody and writeBody", () => {
       `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
     );
 
-    await repo.writeBody(file, "\nRewritten.\n");
+    // "Rewritten.\n", not "\nRewritten.\n": callers now pass the separator-free
+    // convention readBody returns, and writeBody restores the separator itself.
+    await repo.writeBody(file, "Rewritten.\n");
     const data = fake.vault.contents.get(file.path) ?? "";
 
     expect(data).toBe(
       `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n\nRewritten.\n`,
     );
+  });
+
+  it("round-trips an unchanged body byte-identically for a canonical file", async () => {
+    const { fake, repo } = setup();
+    const original = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nToday I realized something.\n`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    const readBack = await repo.readBody(file);
+    expect(readBack).toBe("Today I realized something.\n");
+
+    await repo.writeBody(file, readBack);
+    expect(fake.vault.contents.get(file.path)).toBe(original);
+  });
+
+  it("preserves two blank lines after the frontmatter (only one is the separator)", async () => {
+    const { fake, repo } = setup();
+    const original = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\n\nToday I realized something.\n`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    const readBack = await repo.readBody(file);
+    expect(readBack).toBe("\nToday I realized something.\n");
+
+    await repo.writeBody(file, readBack);
+    expect(fake.vault.contents.get(file.path)).toBe(original);
+  });
+
+  it("adds the conventional blank line back on save when the file has none (intended normalization, not a bug)", async () => {
+    const { fake, repo } = setup();
+    // No blank line between the closing delimiter and the text — the shape
+    // this plugin wrote before this fix.
+    const noBlankLine = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\nToday I realized something.\n`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", noBlankLine);
+
+    const readBack = await repo.readBody(file);
+    expect(readBack).toBe("Today I realized something.\n");
+
+    await repo.writeBody(file, readBack);
+
+    // The next save restores the Obsidian convention rather than
+    // perpetuating the deviation from it.
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nToday I realized something.\n`,
+    );
+  });
+
+  it("does not convert CRLF line endings", async () => {
+    const { fake, repo } = setup();
+    const original = "---\r\ncreated: 2026-08-12T22:41:52+03:00\r\n---\r\n\r\nToday I realized something.\r\n";
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    const readBack = await repo.readBody(file);
+    expect(readBack).toBe("Today I realized something.\r\n");
+    expect(readBack).not.toContain("\r\n\r\n");
+
+    await repo.writeBody(file, readBack);
+    expect(fake.vault.contents.get(file.path)).toBe(original);
+  });
+
+  it("leaves a file with no frontmatter at all unaffected in both directions", async () => {
+    const { fake, repo } = setup();
+    const original = "Just some text, no frontmatter.\n";
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    const readBack = await repo.readBody(file);
+    expect(readBack).toBe(original);
+
+    await repo.writeBody(file, "New text, still no frontmatter.\n");
+    expect(fake.vault.contents.get(file.path)).toBe("New text, still no frontmatter.\n");
   });
 
   it("round-trips unicode and Turkish characters", async () => {

@@ -1,5 +1,5 @@
 import type { App, TFile } from "obsidian";
-import { replaceBody, splitFrontmatter } from "../journal/markdownDoc";
+import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../journal/markdownDoc";
 import type { EntryEditor } from "./EntryEditor";
 
 /**
@@ -19,24 +19,39 @@ import type { EntryEditor } from "./EntryEditor";
  *
  * `editMode.get()` returns the embed's *entire* buffer, frontmatter and all,
  * and `editMode.set(value, clearHistory)` replaces that entire buffer. But
- * `EntryEditor`'s contract is body-only. The naive fix — install a body-only
- * buffer once at mount — was tried in the spike and rejected: it leaves the
- * buffer without frontmatter, so any write that slipped through would
- * destroy `created`, and the embed reloading its full-document buffer from
- * disk (see "self-reload" below) would silently turn the "body-only" buffer
- * back into a full document with frontmatter inside it.
+ * `EntryEditor`'s contract is body-only — and, matching `EntryRepository`'s
+ * convention, body-only means *without* the blank-line separator between the
+ * frontmatter block and the text either: `getValue()`/`setValue()`/`mount()`'s
+ * `initialValue` and every `onChange` report all exclude it, exactly like
+ * `EntryRepository.readBody`/`writeBody`. JournalView passes values between
+ * the two with no translation of its own, so this editor and the repository
+ * must agree on the shape or a mount-time "sync the buffer" write silently
+ * deletes the separator on every mount — the same data loss this whole
+ * boundary exists to prevent.
+ *
+ * The naive fix — install a body-only buffer once at mount — was tried in the
+ * spike and rejected: it leaves the buffer without frontmatter, so any write
+ * that slipped through would destroy `created`, and the embed reloading its
+ * full-document buffer from disk (see "self-reload" below) would silently
+ * turn the "body-only" buffer back into a full document with frontmatter
+ * inside it.
  *
  * So instead the embed is left to keep the full document it loads for
  * itself, and every `EntryEditor` method translates at the boundary:
  *
- *   - `getValue()`      -> `splitFrontmatter(editMode.get()).body`
- *   - `setValue(body)`  -> `editMode.set(replaceBody(editMode.get(), body), false)`
+ *   - `getValue()`      -> `stripSeparator(frontmatter, splitFrontmatter(editMode.get()).body)`
+ *   - `setValue(body)`  -> `editMode.set(replaceBody(editMode.get(), restoreSeparator(frontmatter, body)), false)`
  *
  * This keeps the embed's buffer in the shape it expects (nothing fights it),
- * and keeps every `EntryEditor` consumer body-only. `replaceBody` round-trips
- * correctly even when there is no frontmatter block at all (a user-stripped
- * file): `splitFrontmatter` reports an empty frontmatter string, and
- * `replaceBody` then returns the body unchanged.
+ * and keeps every `EntryEditor` consumer body-only, separator-free. The
+ * delicate frontmatter-guard bookkeeping below (`mountedFrontmatter`,
+ * `lastRawBody`) stays entirely in the raw, byte-exact convention throughout —
+ * only `readBody()`'s return value and `writeBody()`'s parameter cross the
+ * translation, at the very edge. `replaceBody` round-trips correctly even
+ * when there is no frontmatter block at all (a user-stripped file):
+ * `splitFrontmatter` reports an empty frontmatter string, `stripSeparator`/
+ * `restoreSeparator` are no-ops for an empty frontmatter, and `replaceBody`
+ * then returns the body unchanged.
  *
  * ## Self-reload: why onFileChanged is neutralised too
  *
@@ -154,11 +169,23 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private usable = false;
 
   /**
-   * Mirrors the current body on every read/write. `getValue()` falls back to
-   * this after `destroy()`, same as `TextareaEditor.lastValue` — a caller
-   * flushing a pending save at teardown must not see this collapse to `""`.
+   * Mirrors the current body — in the public, separator-stripped convention —
+   * on every read/write. `getValue()` falls back to this after `destroy()`,
+   * same as `TextareaEditor.lastValue` — a caller flushing a pending save at
+   * teardown must not see this collapse to `""`.
    */
   private lastBody = "";
+
+  /**
+   * The raw (separator-included) counterpart of `lastBody`, as it stood at
+   * the last successful, non-bailed `readBody()`. Used only by `readBody`'s
+   * own frontmatter-guard heuristic below, which reasons about the embed's
+   * actual buffer contents (a suffix relationship after a thematic-break
+   * collision) — that reasoning must stay in the same raw convention
+   * `mountedFrontmatter` and `splitFrontmatter` already use, independent of
+   * whatever translation the public `lastBody` gets at the boundary.
+   */
+  private lastRawBody = "";
 
   /** A setValue() that arrived before mount(); applied once mount() runs. */
   private pendingValue: string | null = null;
@@ -253,8 +280,15 @@ export class ObsidianEmbedEditor implements EntryEditor {
         return;
       }
 
-      const { frontmatter, body: loadedBody } = splitFrontmatter(loadedRaw);
+      const { frontmatter, body: loadedRawBody } = splitFrontmatter(loadedRaw);
       this.mountedFrontmatter = frontmatter;
+      this.lastRawBody = loadedRawBody;
+
+      // Public (separator-stripped) counterpart of what the embed actually
+      // loaded, so this compares against `initialValue`/`pendingValue` — both
+      // already separator-free, per this editor's contract — in the same
+      // convention rather than always finding a spurious mismatch.
+      const loadedBody = stripSeparator(frontmatter, loadedRawBody);
 
       // The embed loads the file itself, so its buffer already holds the
       // right content — do NOT blindly setValue(initialValue) here, which
@@ -270,6 +304,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       if (loadedBody !== seedValue) {
         this.writeBody(seedValue);
         this.lastBody = seedValue;
+        this.lastRawBody = restoreSeparator(frontmatter, seedValue);
       } else {
         this.lastBody = loadedBody;
       }
@@ -349,11 +384,20 @@ export class ObsidianEmbedEditor implements EntryEditor {
     }
   }
 
+  /**
+   * Returns the current body in the public, separator-stripped convention.
+   * The frontmatter-guard bookkeeping below (`mountedFrontmatter`,
+   * `lastRawBody`) stays entirely in the raw, byte-exact convention — the
+   * translation to public happens only in the single `return` at the very
+   * end (and the two bail branches return the already-public `this.lastBody`
+   * unchanged). This keeps the delicate suffix/length comparisons below
+   * self-consistent regardless of what convention callers expect.
+   */
   private readBody(): string {
     const raw = this.readRaw();
     if (raw === null) return this.lastBody;
 
-    const { frontmatter, body } = splitFrontmatter(raw);
+    const { frontmatter, body: rawBody } = splitFrontmatter(raw);
 
     if (this.mountedFrontmatter) {
       // See mountedFrontmatter's doc: bail ONLY when the block has
@@ -369,8 +413,8 @@ export class ObsidianEmbedEditor implements EntryEditor {
       }
       if (
         frontmatter.length > this.mountedFrontmatter.length &&
-        body !== this.lastBody &&
-        this.lastBody.endsWith(body)
+        rawBody !== this.lastRawBody &&
+        this.lastRawBody.endsWith(rawBody)
       ) {
         // The closing "---" was deleted, but the body happens to contain
         // its OWN "---" (a thematic break) further down — splitFrontmatter
@@ -401,14 +445,21 @@ export class ObsidianEmbedEditor implements EntryEditor {
     }
 
     this.mountedFrontmatter = frontmatter;
-    return body;
+    this.lastRawBody = rawBody;
+    return stripSeparator(frontmatter, rawBody);
   }
 
-  /** Translates a body-only value into a full-document set(), per the boundary contract above. */
+  /**
+   * Translates a public, separator-stripped body into a full-document
+   * `set()`, per the boundary contract above: the separator is restored (in
+   * whichever newline flavour the buffer's own frontmatter already ends in)
+   * before handing the result to `replaceBody`.
+   */
   private writeBody(body: string): void {
     try {
       const raw = this.embed?.editMode?.get?.() ?? "";
-      this.embed?.editMode?.set?.(replaceBody(raw, body), false);
+      const { frontmatter } = splitFrontmatter(raw);
+      this.embed?.editMode?.set?.(replaceBody(raw, restoreSeparator(frontmatter, body)), false);
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to write", error);
       // Consistent with readRaw(): a set() that starts throwing leaves this

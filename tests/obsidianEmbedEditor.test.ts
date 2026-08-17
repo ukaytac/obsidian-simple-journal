@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 import type { App, TFile } from "obsidian";
 import { ObsidianEmbedEditor } from "../src/views/ObsidianEmbedEditor";
-import { replaceBody, splitFrontmatter } from "../src/journal/markdownDoc";
+import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
 
 /**
  * Same rationale as tests/textareaEditor.test.ts: plain jsdom has neither
@@ -193,11 +193,12 @@ function fakeApp(mdCreator: unknown = undefined): App {
 
 const SEEDED_DOC =
   '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n---\n\nORIGINAL BODY.\n';
-// Derived, not hand-typed: splitFrontmatter's body includes the blank line
-// after the closing delimiter (see tests/markdownDoc.test.ts), so a
-// hand-typed constant here would silently drift from what the translation
-// layer actually produces.
-const SEEDED_BODY = splitFrontmatter(SEEDED_DOC).body;
+// Derived, not hand-typed: EntryEditor's contract is body-only AND
+// separator-free (matching EntryRepository.readBody/writeBody — see this
+// file's top-of-file doc comment), so a hand-typed constant here would
+// silently drift from what the translation layer actually produces.
+const SEEDED_FRONTMATTER = splitFrontmatter(SEEDED_DOC).frontmatter;
+const SEEDED_BODY = stripSeparator(SEEDED_FRONTMATTER, splitFrontmatter(SEEDED_DOC).body);
 
 function fakeFile(): TFile {
   return { path: "Journal/2026/01/entry.md" } as unknown as TFile;
@@ -359,8 +360,10 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
     const newBody = "DIFFERENT SEED.\n";
     editor.mount(container, fakeFile(), newBody);
 
-    // Frontmatter survives the correction; only the body changed.
-    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, newBody));
+    // Frontmatter survives the correction; only the body changed. The
+    // separator restoreSeparator adds back is what makes this the canonical
+    // "blank line then text" shape, not just frontmatter-then-text.
+    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, restoreSeparator(SEEDED_FRONTMATTER, newBody)));
     expect(editor.getValue()).toBe(newBody);
   });
 
@@ -373,7 +376,7 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
     const newBody = "REPLACED BODY.\n";
     editor.setValue(newBody);
 
-    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, newBody));
+    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, restoreSeparator(SEEDED_FRONTMATTER, newBody)));
     expect(editor.getValue()).toBe(newBody);
   });
 
@@ -463,7 +466,8 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     // while it's still visible on screen.
     const RULE_DOC =
       '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n---\n\nBefore the rule.\n\n---\n\nAfter the rule.\n';
-    const ruleBody = splitFrontmatter(RULE_DOC).body;
+    const { frontmatter: ruleFrontmatter, body: ruleRawBody } = splitFrontmatter(RULE_DOC);
+    const ruleBody = stripSeparator(ruleFrontmatter, ruleRawBody);
 
     const { creator, setDoc } = fakeEmbedCreator(RULE_DOC);
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
@@ -725,7 +729,8 @@ describe("ObsidianEmbedEditor: lifecycle", () => {
     // creator hands back a brand-new embed, exactly as it would for any
     // fresh creator(context, file, subpath) call.
     const secondDoc = '---\ncreated: "2026-02-02T00:00:00+03:00"\n---\n\nSECOND.\n';
-    const secondBody = splitFrontmatter(secondDoc).body;
+    const { frontmatter: secondFrontmatter, body: secondRawBody } = splitFrontmatter(secondDoc);
+    const secondBody = stripSeparator(secondFrontmatter, secondRawBody);
     factory.setNextDoc(secondDoc);
     editor.mount(container, fakeFile(), secondBody);
 
