@@ -101,6 +101,7 @@ function fakeEmbedCreator(
     set: vi.fn((value: string) => {
       doc = value;
     }),
+    dispatch: vi.fn(),
   };
 
   const embed: Record<string, unknown> = {
@@ -122,7 +123,16 @@ function fakeEmbedCreator(
           return doc;
         },
         set: (value: string, _clearHistory: boolean) => spies.set(value),
-        cm: { focus: vi.fn(), requestMeasure: vi.fn() },
+        cm: {
+          focus: vi.fn(),
+          requestMeasure: vi.fn(),
+          // Real CM6's `state.doc.length` is the document's current character
+          // count; this fake just tracks `doc`, so `.length` matches it.
+          get state() {
+            return { doc: { length: doc.length } };
+          },
+          dispatch: spies.dispatch,
+        },
       };
 
       if (!opts.noEditorDom && hostContainerEl) {
@@ -774,6 +784,46 @@ describe("ObsidianEmbedEditor: lifecycle", () => {
     expect(factory.created[0].spies.unload).toHaveBeenCalled();
     expect(changes).toEqual([]); // discard-without-flush: no onChange for the first embed
     expect(editor.getValue()).toBe(secondBody);
+  });
+});
+
+describe("ObsidianEmbedEditor: focus()", () => {
+  it("focus('end') dispatches a selection at the document's current length", () => {
+    // Exercises the composer-swap handover (JournalView.commitComposer):
+    // the caret must land after whatever text the entry was seeded with,
+    // not at the document's start (CM6's default after a fresh load/set()).
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    editor.focus("end");
+
+    const cm = (embed as unknown as { editMode: { cm: { focus: () => void; dispatch: (t: unknown) => void } } })
+      .editMode.cm;
+    expect(cm.focus).toHaveBeenCalled();
+    expect(cm.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: SEEDED_DOC.length, head: SEEDED_DOC.length },
+    });
+  });
+
+  it("plain focus() (no caret argument) only focuses, without dispatching a selection", () => {
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    editor.focus();
+
+    const cm = (embed as unknown as { editMode: { cm: { focus: () => void; dispatch: (t: unknown) => void } } })
+      .editMode.cm;
+    expect(cm.focus).toHaveBeenCalled();
+    expect(cm.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("focus('end') before any mount() does not throw", () => {
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp()));
+    expect(() => editor.focus("end")).not.toThrow();
   });
 });
 

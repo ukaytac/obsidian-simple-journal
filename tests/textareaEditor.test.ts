@@ -199,4 +199,26 @@ describe("TextareaEditor value and lifecycle", () => {
     const editor = new TextareaEditor();
     expect(() => editor.remeasure()).not.toThrow();
   });
+
+  it("focus('end') moves the caret to the end of the current text", () => {
+    // Exercises the composer-swap handover (JournalView.commitComposer):
+    // the real editor is seeded with whatever the user already typed, and
+    // the caret must land after it, not at the start of the document.
+    const { editor, textarea } = mountEditor("already typed this");
+    editor.focus("end");
+
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.selectionStart).toBe("already typed this".length);
+    expect(textarea.selectionEnd).toBe("already typed this".length);
+  });
+
+  it("plain focus() (no caret argument) does not move an existing selection", () => {
+    const { editor, textarea } = mountEditor("hello world");
+    textarea.setSelectionRange(2, 2);
+
+    editor.focus();
+
+    expect(textarea.selectionStart).toBe(2);
+    expect(textarea.selectionEnd).toBe(2);
+  });
 });

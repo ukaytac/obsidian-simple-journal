@@ -176,15 +176,21 @@ export class EntryRepository {
   }
 
   /**
-   * Creates an entry file for `at`. Never overwrites: a name taken by an entry
+   * Creates an entry file for `at`, optionally seeded with `body` (in the
+   * same separator-free convention as `readBody`/`writeBody`). Passing the
+   * body here rather than following up with a separate `writeBody` call
+   * keeps a brand-new entry to one write and one `modify` event, which
+   * matters for the composer's lazy-creation flow (the first meaningful
+   * keystroke commits the file). Never overwrites: a name taken by an entry
    * written in the same second gets a numeric suffix.
    */
-  async createEntry(at: Date): Promise<TFile> {
+  async createEntry(at: Date, body = ""): Promise<TFile> {
     const folder = entryFolderPath(this.resolveFolder().resolved, at);
     await this.ensureFolder(folder);
 
     const stem = formatEntryFilename(at);
-    const contents = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n\n`;
+    const frontmatter = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n`;
+    const contents = frontmatter + restoreSeparator(frontmatter, body);
 
     for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS; attempt++) {
       const name = attempt === 1 ? stem : `${stem}-${attempt}`;

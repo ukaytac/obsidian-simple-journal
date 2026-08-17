@@ -1,4 +1,4 @@
-import { Component, ItemView, MarkdownRenderer, Notice, Platform, WorkspaceLeaf } from "obsidian";
+import { Component, ItemView, MarkdownRenderer, Notice, Platform, type TFile, WorkspaceLeaf } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
 import { compareEntries, pageAfter } from "../services/entryIndex";
@@ -129,6 +129,13 @@ export class JournalView extends ItemView {
    * `ObsidianEmbedEditor`, its 250ms poll) for the rest of the session.
    */
   private closed = false;
+  /**
+   * The uncommitted composer opened by `startNewEntry`, if one is currently
+   * open. Has no file until the user types something meaningful (see
+   * `onComposerInput`/`commitComposer`) — never present in `this.rendered`
+   * until it does. At most one composer exists at a time.
+   */
+  private composer: RenderedEntry | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -272,6 +279,20 @@ export class JournalView extends ItemView {
   private async clearTimeline(): Promise<void> {
     this.teardownSentinel();
     this.teardownMountObserver();
+
+    // An open, uncommitted composer has no entry in `this.rendered` for the
+    // flush-and-destroy loop below to reach. Without this, a reload (or the
+    // view closing) while the composer is still open would leak its
+    // TextareaEditor and DOM, and leave `this.composer` pointing at a
+    // detached element for the rest of the session. Done synchronously,
+    // before the loop's only await, so `discardEmptyComposer`/
+    // `commitComposer` — which both re-check `this.composer === rendered` —
+    // see this as already torn down regardless of when they happen to run.
+    if (this.composer) {
+      this.composer.editor?.destroy();
+      this.composer = null;
+    }
+
     this.generation++;
 
     const renderedEntries = Array.from(this.rendered.values());
@@ -669,7 +690,10 @@ export class JournalView extends ItemView {
 
   private createEntryEl(entry: JournalEntry): RenderedEntry {
     const el = createDiv({ cls: "journal-entry" });
-    el.dataset.path = entry.file.path;
+    // `entry.file` is null for an uncommitted composer (see `openComposer`);
+    // `data-path` is simply left unset until `commitComposer` gives it a
+    // real file. Every other caller always has a real file here.
+    if (entry.file) el.dataset.path = entry.file.path;
 
     const headerEl = el.createDiv({ cls: "journal-entry-header" });
     headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
@@ -1388,9 +1412,218 @@ export class JournalView extends ItemView {
     }
   }
 
-  /** Replaced with real behaviour in Task 15. */
+  /**
+   * Opens an empty composer at the top of today's entries and focuses it —
+   * or, if one is already open, just refocuses it. No file is created until
+   * the user types something meaningful (see `onComposerInput`).
+   *
+   * The synchronous check above `enqueueTimelineMutation` is only a
+   * fast path for the common case (an existing composer, typing already in
+   * progress): `openComposer` re-checks the same condition itself once its
+   * turn in the chain actually arrives, which is what actually matters for
+   * correctness — two "New journal entry" invocations landing before either
+   * has run still only ever open one composer, because the second
+   * `openComposer` runs strictly after the first (same serialized chain as
+   * every other timeline mutation) and finds `this.composer` already set.
+   */
   async startNewEntry(): Promise<void> {
+    if (this.composer) {
+      this.composer.editor?.focus();
+      this.scrollToTop();
+      return;
+    }
+
+    await this.enqueueTimelineMutation(() => this.openComposer());
+  }
+
+  private async openComposer(): Promise<void> {
+    if (this.closed) return;
+
+    if (this.composer) {
+      // A concurrent invocation (see startNewEntry's doc) already opened one.
+      this.composer.editor?.focus();
+      this.scrollToTop();
+      return;
+    }
+
+    const now = new Date();
+
+    // Same reasoning as insertEntryInPlace: the empty-state message is only
+    // ever present when nothing is rendered yet, and this is the only other
+    // path (besides that one) that can insert into a timeline rendered empty.
+    this.timelineEl.querySelector(".journal-empty")?.remove();
+
+    // Reuses ensureDayGroup rather than a separate "ensure today" helper:
+    // today's group is just the day group for `now`, prepended like any
+    // other freshly-appearing newest day, and ensureDayGroup already
+    // populates/reads the `dayGroups` map correctly (a hand-rolled duplicate
+    // of that logic would be one more place for the two to drift apart).
+    const group = this.ensureDayGroup(now, "prepend");
+
+    const placeholder: JournalEntry = {
+      // No file yet. Nothing reads `file` before commitComposer runs —
+      // createEntryEl leaves `data-path` unset for exactly this case.
+      file: null as unknown as JournalEntry["file"],
+      created: now,
+    };
+
+    const rendered = this.createEntryEl(placeholder);
+    rendered.el.addClass("journal-entry-composer");
+    group.prepend(rendered.el);
+
+    // Always a plain textarea, never `this.plugin.editorFactory.create()`:
+    // the embedded editor needs a real TFile to hand the embed registry, and
+    // this entry doesn't have one yet. See commitComposer for the swap once
+    // it does.
+    const editor = new TextareaEditor();
+    editor.onChange((value) => void this.onComposerInput(rendered, value));
+    editor.onBlur(() => this.discardEmptyComposer(rendered));
+    editor.mount(rendered.bodyEl, null, "");
+
+    rendered.editor = editor;
+    this.composer = rendered;
+
     this.scrollToTop();
+    editor.focus();
+  }
+
+  /**
+   * Fires on every keystroke in the composer's placeholder textarea. Creates
+   * the entry file the first time it holds meaningful content, then hands
+   * the composer over to the real editor.
+   *
+   * `this.composer` is claimed (set to null) synchronously, before any
+   * `await` — including `enqueueTimelineMutation`'s own — so a second fast
+   * keystroke's own call to this method (a separate invocation; this one is
+   * merely suspended, not blocking the event loop) sees the branch below
+   * instead of re-entering here and starting a second create.
+   */
+  private async onComposerInput(rendered: RenderedEntry, value: string): Promise<void> {
+    if (this.composer !== rendered) {
+      // Either commitComposer is still in flight for this entry, or it
+      // already finished. Once it finishes, wireEditor rewires this
+      // entry's onChange to scheduleSave directly — this method is never
+      // called again for it, and destroy() also means the OLD textarea's
+      // listener (the only thing that could still call this) is gone. So
+      // this branch is only actually reachable during the in-flight window,
+      // where `rendered.entry.file` is still the placeholder: scheduling a
+      // save against it would crash once the debounce fires. Nothing is
+      // lost by skipping it — the composer's own (still-mounted) textarea
+      // already holds this keystroke, and commitComposer reads it fresh,
+      // straight from that textarea, the moment it actually runs.
+      if (rendered.entry.file) this.scheduleSave(rendered, value);
+      return;
+    }
+
+    if (value.trim().length === 0) return;
+
+    this.composer = null;
+    await this.enqueueTimelineMutation(() => this.commitComposer(rendered));
+  }
+
+  /**
+   * Creates the Markdown file for a composer that just received meaningful
+   * content, then swaps its placeholder textarea for the real editor —
+   * reusing `mountUsableEditor`, the same embed-or-fallback logic
+   * `replaceWithFallback` uses for the opposite direction of swap, seeded
+   * with whatever text is currently held rather than a snapshot from
+   * further back, so nothing typed during the create is lost. Runs inside
+   * `enqueueTimelineMutation`, like every other timeline mutation, and
+   * respects `closed`/`generation` at each await the same way they do.
+   */
+  private async commitComposer(rendered: RenderedEntry): Promise<void> {
+    if (this.closed) return;
+    const generation = this.generation;
+    const created = rendered.entry.created;
+    const valueAtCreate = rendered.editor?.getValue() ?? "";
+
+    let file: TFile;
+    try {
+      file = await this.plugin.repository.createEntry(created, valueAtCreate);
+    } catch (error) {
+      console.error("Journal Entries: could not create entry", error);
+      new Notice("Journal Entries: could not create the entry file. Your text is still here.");
+      // Let the user retry on the next keystroke — the composer (and
+      // whatever it holds) is untouched. Only reclaim it if nothing else
+      // has since torn the timeline down or opened a different one.
+      if (!this.closed && generation === this.generation && this.composer === null) {
+        this.composer = rendered;
+      }
+      return;
+    }
+
+    // Marked immediately on success, before any further bookkeeping — not
+    // only before a later body write — so the metadata cache's post-create
+    // "changed" event (fired once it parses the new file's frontmatter)
+    // doesn't race the index update below and queue a redundant upsert.
+    this.plugin.journal.markSelfWrite(file.path);
+
+    if (this.closed || generation !== this.generation) {
+      // The timeline was torn down (or reloaded) while the create was in
+      // flight; clearTimeline already destroyed this composer. The file
+      // itself is a perfectly ordinary entry now, with nothing referencing
+      // it from this (defunct) view — the next reload's listEntries() picks
+      // it up normally, same as any entry created by hand.
+      return;
+    }
+
+    // Anything typed while createEntry() was in flight landed in the
+    // composer's still-mounted textarea, not on disk yet.
+    const latestValue = rendered.editor?.getValue() ?? valueAtCreate;
+
+    rendered.entry = { file, created };
+    rendered.el.dataset.path = file.path;
+    rendered.el.removeClass("journal-entry-composer");
+    this.rendered.set(file.path, rendered);
+    // savedBody starts matching exactly what createEntry just wrote; save()
+    // below (only called if typing outran the create) brings it up to date
+    // with `latestValue`, succeed or fail, before anything reads it further.
+    rendered.savedBody = valueAtCreate;
+
+    if (latestValue !== valueAtCreate) {
+      await this.save(rendered, latestValue);
+      if (this.closed || generation !== this.generation) return;
+    }
+
+    const oldEditor = rendered.editor;
+    rendered.editor = null;
+    oldEditor?.destroy();
+    rendered.bodyEl.empty();
+
+    // Seeded from `latestValue` (in memory), not a fresh disk read: the
+    // point of capturing it above is that it may be ahead of whatever
+    // `save()` above managed to persist (e.g. it failed), and the visible
+    // editor must never show less than what the user actually typed.
+    const editor = this.mountUsableEditor(rendered, latestValue);
+    rendered.editor = editor;
+    // Known true: this is the composer, which startNewEntry always scrolls
+    // to. Nothing else sets this for a fresh mount outside mountEditor's own
+    // observer-driven path, which this deliberately bypasses (see below).
+    rendered.intersecting = true;
+
+    this.mountOrder.push(file.path);
+    this.enforceMountLimit();
+    // Joins the mount window normally from here on, so a later scroll past
+    // it (and back) is handled exactly like any other entry.
+    this.mountObserver?.observe(rendered.el);
+
+    editor.focus("end");
+  }
+
+  /**
+   * Removes an abandoned empty composer. Only ever applies before the file
+   * exists — a committed entry is never auto-deleted, however empty it
+   * becomes; deletion is always an explicit user action (see CLAUDE.md's
+   * "Lazy Creation").
+   */
+  private discardEmptyComposer(rendered: RenderedEntry): void {
+    if (this.composer !== rendered) return;
+    if ((rendered.editor?.getValue() ?? "").trim().length > 0) return;
+
+    rendered.editor?.destroy();
+    rendered.el.remove();
+    this.composer = null;
+    this.removeEmptyDayGroups();
   }
 
   scrollToTop(): void {

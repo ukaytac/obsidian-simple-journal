@@ -102,7 +102,18 @@ import type { EntryEditor } from "./EntryEditor";
 interface EmbedEditMode {
   get?(): string;
   set?(value: string, clearHistory: boolean): void;
-  cm?: { focus?(): void; requestMeasure?(): void };
+  cm?: {
+    focus?(): void;
+    requestMeasure?(): void;
+    /** Only read for `focus("end")`'s caret placement, below. */
+    state?: { doc?: { length?: number } };
+    /** Only called for `focus("end")`'s caret placement, below. A plain
+     * `{anchor, head}` object is part of CM6's own public `TransactionSpec`
+     * shape — this doesn't reach for anything beyond what `editMode.cm`
+     * (a real CM6 `EditorView`, per docs/editor-embed-api.md) already
+     * documents. */
+    dispatch?(transaction: { selection?: { anchor: number; head?: number } }): void;
+  };
 }
 
 interface MarkdownEmbed {
@@ -546,9 +557,17 @@ export class ObsidianEmbedEditor implements EntryEditor {
     this.writeBody(value);
   }
 
-  focus(): void {
+  focus(caretPosition?: "end"): void {
     try {
-      this.embed?.editMode?.cm?.focus?.();
+      const cm = this.embed?.editMode?.cm;
+      cm?.focus?.();
+
+      if (caretPosition === "end") {
+        const length = cm?.state?.doc?.length;
+        if (typeof length === "number") {
+          cm?.dispatch?.({ selection: { anchor: length, head: length } });
+        }
+      }
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to focus", error);
     }

@@ -37,7 +37,17 @@ export interface EntryEditor {
    */
   getValue(): string;
   setValue(value: string): void;
-  focus(): void;
+  /**
+   * Gives this editor the keyboard focus. `caretPosition === "end"` also
+   * moves the caret to the very end of the document — used when the
+   * composer's plain-text placeholder is swapped for the real editor
+   * mid-keystroke (see `JournalView.commitComposer`), so the user's next
+   * character lands where they left off rather than at the start of what
+   * they already typed. Omitted (the common case, e.g. focusing an entry
+   * that scrolled back into view) leaves whatever selection the editor
+   * already has.
+   */
+  focus(caretPosition?: "end"): void;
   /** True when this editor currently holds the keyboard focus. */
   hasFocus(): boolean;
   /** Called on every edit. Registered before mount. */

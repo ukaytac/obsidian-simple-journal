@@ -99,8 +99,12 @@ export class TextareaEditor implements EntryEditor {
     this.resize();
   }
 
-  focus(): void {
+  focus(caretPosition?: "end"): void {
     this.textarea?.focus();
+    if (caretPosition === "end" && this.textarea) {
+      const end = this.textarea.value.length;
+      this.textarea.setSelectionRange(end, end);
+    }
   }
 
   hasFocus(): boolean {

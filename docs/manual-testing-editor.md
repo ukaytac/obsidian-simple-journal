@@ -193,3 +193,43 @@ i.e. past 60 entries on desktop or 25 on mobile).
       feel wasteful relative to what's actually on screen (too large a
       margin). Adjust `MOUNT_ROOT_MARGIN` in `JournalView.ts` if either feels
       off.
+
+---
+
+# Manual testing: the new-entry composer's focus/caret handover (Task 15)
+
+`JournalView.commitComposer` swaps the composer's plain `TextareaEditor` for
+the real editor mid-keystroke — the file doesn't exist until the first
+meaningful character, so nothing else can mount the embedded editor sooner.
+Nothing automated can watch where the caret actually lands after that swap
+(jsdom has no real CM6 instance, and `focus("end")`'s CM6 half is a
+`cm.dispatch({selection: ...})` call this plugin can't observe the visible
+effect of outside a real window). Verify by hand:
+
+- [ ] **The swap doesn't eat a keystroke.** Run **New journal entry**, then
+      type a sentence at a normal typing speed without pausing (fast enough
+      that several characters land before the file is likely to have been
+      created). Confirm every character you typed appears in the entry, in
+      order, once the swap to the real editor completes — nothing dropped
+      during the brief window where the old textarea has been destroyed but
+      the new editor hasn't mounted yet.
+- [ ] **The caret lands at the end, not the start.** Type a full sentence
+      into a fresh composer (enough to trigger the file-creation swap), then
+      *immediately* keep typing without pausing or clicking. Confirm the
+      continuation appears **after** what you already typed, not inserted at
+      the beginning of the document — i.e. the real editor's caret was
+      placed at the end of the seeded text, not left at its default (start
+      of document) position.
+- [ ] **The swapped-in editor visibly has focus.** After the swap, confirm
+      the blinking cursor is visible in the entry (not just that typing
+      happens to work) — check this with both the embedded editor available
+      and, if you can force the fallback (see the embed-availability tests
+      above), with the plain-textarea fallback too, since `focus("end")` is
+      implemented separately in each.
+- [ ] **Typed content survives a failed create.** If you can simulate
+      `EntryRepository.createEntry` throwing (e.g. temporarily make the
+      configured journal folder path invalid, or revoke write permission on
+      the vault folder on desktop), type into a fresh composer and confirm:
+      a Notice appears, the typed text is still visible in the composer, and
+      typing further retries the create rather than silently dropping the
+      text or duplicating the composer.

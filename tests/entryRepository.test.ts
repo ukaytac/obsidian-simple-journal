@@ -173,6 +173,28 @@ describe("createEntry", () => {
     expect(data.trimEnd().endsWith("---")).toBe(true);
   });
 
+  it("seeds the entry with an initial body in one write, readable back via readBody", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52), "Hello there.");
+
+    const data = fake.vault.contents.get(file.path) ?? "";
+    expect(data.startsWith('---\ncreated: "2026-08-12T22:41:52')).toBe(true);
+    // Exactly one blank-line separator between the frontmatter and the body
+    // — not two (the naive `\n${body}` bug the plan corrections call out).
+    expect(data.endsWith("---\n\nHello there.")).toBe(true);
+    expect(await repo.readBody(file)).toBe("Hello there.");
+  });
+
+  it("an empty (default) body round-trips as the same empty document createEntry() always wrote", async () => {
+    const { fake, repo } = setup();
+    const withDefault = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52));
+    const withExplicitEmpty = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 53), "");
+
+    expect(fake.vault.contents.get(withDefault.path)).toBe(
+      fake.vault.contents.get(withExplicitEmpty.path)?.replace("22:41:53", "22:41:52"),
+    );
+  });
+
   it("suffixes a second entry created in the same second", async () => {
     const { repo } = setup();
     const at = new Date(2026, 7, 12, 22, 41, 52);

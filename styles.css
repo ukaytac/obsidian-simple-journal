@@ -48,6 +48,13 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Marks the open composer (see JournalView.openComposer) so it reads as
+   "in progress" while it has no file yet — reverts to the normal
+   .journal-entry-time color the moment commitComposer gives it one. */
+.journal-entry-composer .journal-entry-time {
+  color: var(--text-accent);
+}
+
 /* markdown-rendered (see JournalView.createEntryEl) only supplies
    element-level rules — headings, lists, pre, blockquote, table, callout.
    The reading-font variables below are what .markdown-preview-view would
