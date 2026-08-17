@@ -135,6 +135,34 @@
   display: block;
 }
 
+/* Obsidian styles an embed as a quoted card: a left border, an inset and a
+   background. Inside the timeline the embed is not a quotation of another
+   note, it *is* the entry, so all of that chrome has to go — CLAUDE.md:
+   "Avoid excessive borders, shadows, cards, gradients, or app-like chrome.
+   This is a writing surface." Both selectors are listed because the embed
+   structure is built directly onto our own host element. */
+.journal-entry-embed,
+.journal-entry-embed .markdown-embed {
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The editor's own page padding is sized for a full note pane — a wide gutter
+   and a tall run-off below the last line. Both are wrong for an entry sitting
+   in a list, and the top padding is what leaves a gap under the timestamp. */
+.journal-entry-embed .cm-sizer,
+.journal-entry-embed .cm-contentContainer,
+.journal-entry-embed .cm-content {
+  padding: 0;
+  margin: 0;
+  max-width: none;
+  min-height: 0;
+}
+
 .journal-entry-embed .markdown-source-view,
 .journal-entry-embed .cm-editor {
   background: transparent;
