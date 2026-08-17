@@ -679,9 +679,11 @@ export class JournalView extends ItemView {
     if (generation !== this.generation) return;
     if (token !== rendered.opToken) return;
 
-    // Strips only the blank line Task 3's create template leaves after the
-    // frontmatter, not indentation on the first real content line — unlike
-    // a plain trim(), which would also eat a leading indented code block.
+    // `body` is already separator-free (EntryRepository.readBody's job).
+    // This only trims EXTRA leading blank lines a user's own content might
+    // have, and trailing whitespace — not indentation on the first real
+    // content line — unlike a plain trim(), which would also eat a leading
+    // indented code block.
     const strippedBody = body.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
 
     await MarkdownRenderer.render(

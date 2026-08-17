@@ -302,9 +302,9 @@ export class ObsidianEmbedEditor implements EntryEditor {
       this.pendingValue = null;
 
       if (loadedBody !== seedValue) {
+        // writeBody() itself refreshes lastRawBody to match what it wrote.
         this.writeBody(seedValue);
         this.lastBody = seedValue;
-        this.lastRawBody = restoreSeparator(frontmatter, seedValue);
       } else {
         this.lastBody = loadedBody;
       }
@@ -454,12 +454,24 @@ export class ObsidianEmbedEditor implements EntryEditor {
    * `set()`, per the boundary contract above: the separator is restored (in
    * whichever newline flavour the buffer's own frontmatter already ends in)
    * before handing the result to `replaceBody`.
+   *
+   * Also refreshes `lastRawBody` to match, here rather than at each call
+   * site (`mount()`, `setValue()`): this is the one place that already
+   * computes both `frontmatter` and the raw body actually being written, so
+   * every caller gets a correct `lastRawBody` by construction instead of
+   * needing to remember to keep it in sync itself. `setValue()` previously
+   * didn't, which let `readBody`'s frontmatter-guard heuristic (see its doc)
+   * compare a fresh raw body against a stale `lastRawBody` predating the
+   * `setValue()` — the same false-negative-closing-delimiter case that
+   * heuristic exists to catch, just reached from a path it wasn't guarding.
    */
   private writeBody(body: string): void {
     try {
       const raw = this.embed?.editMode?.get?.() ?? "";
       const { frontmatter } = splitFrontmatter(raw);
-      this.embed?.editMode?.set?.(replaceBody(raw, restoreSeparator(frontmatter, body)), false);
+      const rawBody = restoreSeparator(frontmatter, body);
+      this.embed?.editMode?.set?.(replaceBody(raw, rawBody), false);
+      this.lastRawBody = rawBody;
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to write", error);
       // Consistent with readRaw(): a set() that starts throwing leaves this

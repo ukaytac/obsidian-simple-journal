@@ -488,6 +488,43 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     expect(changes).toEqual([]);
     expect(editor.getValue()).toBe(ruleBody);
   });
+
+  it("keeps lastRawBody current after setValue(), so a later broken-delimiter edit is still caught", () => {
+    // Regression test: setValue() used to update only `lastBody`, leaving
+    // `lastRawBody` — the frontmatter guard's own suffix-comparison
+    // reference — stale at whatever it was as of the last mount()/readBody().
+    // If the body setValue() had just written itself contains a thematic
+    // break, and the frontmatter's real closing "---" is then deleted before
+    // the next poll tick, the guard's `lastRawBody.endsWith(rawBody)` check
+    // compares against that stale value instead of what's actually in the
+    // buffer, so the suffix relationship it looks for never matches and the
+    // guard fails to bail — reporting the truncated tail exactly like the
+    // case above, just reached via setValue() instead of mount().
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const newBodyWithRule = "Before the rule.\n\n---\n\nAfter the rule.\n";
+    editor.setValue(newBodyWithRule);
+    expect(changes).toEqual([]); // setValue() itself must not report a change
+
+    // Before the next poll tick, the frontmatter's real closing "---" is
+    // deleted, leaving only the thematic break inside the body just set.
+    const closingDelimiterDeleted =
+      '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\n' + newBodyWithRule;
+    setDoc(closingDelimiterDeleted);
+    vi.advanceTimersByTime(300);
+
+    // Must bail to the last known-good body, not report the truncated tail
+    // after the thematic break — which would have the view delete "Before
+    // the rule." from disk while it's still visible on screen.
+    expect(changes).toEqual([]);
+    expect(editor.getValue()).toBe(newBodyWithRule);
+  });
 });
 
 describe("ObsidianEmbedEditor: hazard 1 — neutralising the embed's writer and self-reload hooks", () => {

@@ -1,3 +1,21 @@
+// This file has two layers:
+//
+//   - The byte-exact layer: `splitFrontmatter` and `replaceBody`. Their
+//     contract is `frontmatter + body === data`, always, for any input,
+//     including a body that itself starts with a newline. This is what
+//     protects a user's arbitrary frontmatter — it must never be changed to
+//     "help" a caller, and its round-trip guarantee holds regardless of
+//     anything below.
+//   - The convention layer: `stripSeparator`/`restoreSeparator`. These know
+//     one extra fact the byte-exact layer deliberately doesn't: a
+//     conventional entry has exactly one blank line between the closing
+//     `---` and its text, and that line is a separator, not content. They
+//     exist so callers (EntryRepository, ObsidianEmbedEditor) can work in a
+//     body-without-separator convention without each reimplementing the same
+//     one-newline-wide rule. Nothing here changes what `splitFrontmatter`/
+//     `replaceBody` themselves consider "the body" — the stripping/restoring
+//     happens entirely on the caller's side of the byte-exact boundary.
+
 export interface SplitDocument {
   /** The frontmatter block including both `---` delimiter lines and the trailing newline. Empty when absent. */
   frontmatter: string;
@@ -69,11 +87,15 @@ export function stripSeparator(frontmatter: string, body: string): string {
 
 /**
  * The inverse of `stripSeparator`: restores exactly one newline of separator
- * ahead of `body`, in the same flavour `frontmatter` already ends in (`\r\n`
- * if it does, `\n` otherwise — including when `frontmatter` doesn't end in a
- * newline at all, the rare case where the closing delimiter sits at EOF with
- * no trailing newline of its own). Returns `body` unchanged when `frontmatter`
- * is empty, so a file with no frontmatter block is never given one.
+ * ahead of `body`, in whichever newline flavour `frontmatter` uses — `\r\n`
+ * if the block contains one anywhere, `\n` otherwise. Checked with
+ * `includes`, not `endsWith`: the closing delimiter can sit at EOF with no
+ * trailing newline of its own (`---\r\ncreated: x\r\n---`, the rare case a
+ * user's last edit left with no final newline at all), and `endsWith` would
+ * then miss the `\r\n` earlier in the block and wrongly fall back to `\n`,
+ * introducing a bare LF into an otherwise all-CRLF file. Returns `body`
+ * unchanged when `frontmatter` is empty, so a file with no frontmatter block
+ * is never given one.
  *
  * Pass the result to `replaceBody`, not straight to disk: `replaceBody` still
  * owns inserting the newline that keeps the delimiter from fusing with the
@@ -81,5 +103,5 @@ export function stripSeparator(frontmatter: string, body: string): string {
  */
 export function restoreSeparator(frontmatter: string, body: string): string {
   if (!frontmatter) return body;
-  return (frontmatter.endsWith("\r\n") ? "\r\n" : "\n") + body;
+  return (frontmatter.includes("\r\n") ? "\r\n" : "\n") + body;
 }

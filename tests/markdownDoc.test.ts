@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replaceBody, splitFrontmatter } from "../src/journal/markdownDoc";
+import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
 
 const withFrontmatter = `---
 created: 2026-08-12T22:41:52+03:00
@@ -121,5 +121,73 @@ describe("replaceBody with an unusual body argument", () => {
     const data = "---\ncreated: x\n---\n\nOld body.\n";
     const result = replaceBody(data, "No leading newline body.\n");
     expect(result).toBe("---\ncreated: x\n---\nNo leading newline body.\n");
+  });
+});
+
+describe("stripSeparator", () => {
+  it("strips exactly one leading LF separator when frontmatter is present", () => {
+    expect(stripSeparator("---\ncreated: x\n---\n", "\nBody.\n")).toBe("Body.\n");
+  });
+
+  it("strips exactly one leading CRLF separator when frontmatter is present", () => {
+    expect(stripSeparator("---\r\ncreated: x\r\n---\r\n", "\r\nBody.\r\n")).toBe("Body.\r\n");
+  });
+
+  it("leaves a body with no leading blank line unchanged", () => {
+    expect(stripSeparator("---\ncreated: x\n---\n", "Body.\n")).toBe("Body.\n");
+  });
+
+  it("strips only one of two leading blank lines, keeping the second as content", () => {
+    expect(stripSeparator("---\ncreated: x\n---\n", "\n\nBody.\n")).toBe("\nBody.\n");
+  });
+
+  it("returns the body untouched when there is no frontmatter at all", () => {
+    expect(stripSeparator("", "\nBody.\n")).toBe("\nBody.\n");
+  });
+
+  it("returns an empty body untouched", () => {
+    expect(stripSeparator("---\ncreated: x\n---\n", "")).toBe("");
+  });
+});
+
+describe("restoreSeparator", () => {
+  it("restores an LF separator when frontmatter ends in LF", () => {
+    expect(restoreSeparator("---\ncreated: x\n---\n", "Body.\n")).toBe("\nBody.\n");
+  });
+
+  it("restores a CRLF separator when frontmatter ends in CRLF", () => {
+    expect(restoreSeparator("---\r\ncreated: x\r\n---\r\n", "Body.\r\n")).toBe("\r\nBody.\r\n");
+  });
+
+  it("restores a CRLF separator when the closing delimiter is at EOF with no trailing newline of its own", () => {
+    // Regression case: `endsWith("\r\n")` would be false here (the block ends
+    // in bare "---", not a newline), wrongly falling back to LF and
+    // introducing a bare LF into an otherwise all-CRLF file. `includes`
+    // finds the CRLF earlier in the block instead.
+    const frontmatter = "---\r\ncreated: x\r\n---";
+    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\r\nBody.\n");
+  });
+
+  it("restores an LF separator when the closing delimiter is at EOF with no CRLF anywhere in the block", () => {
+    const frontmatter = "---\ncreated: x\n---";
+    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\nBody.\n");
+  });
+
+  it("restores a CRLF separator for a block with mixed line endings, even though it ends in a bare LF", () => {
+    // A property line uses CRLF but the closing delimiter's own trailing
+    // newline is bare LF: `endsWith("\r\n")` would be false and wrongly pick
+    // LF; `includes` finds the CRLF used earlier in the block instead.
+    const frontmatter = "---\ncreated: x\r\n---\n";
+    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\r\nBody.\n");
+  });
+
+  it("returns the body untouched when there is no frontmatter at all", () => {
+    expect(restoreSeparator("", "Body.\n")).toBe("Body.\n");
+  });
+
+  it("still adds the separator ahead of an empty body when frontmatter is present", () => {
+    // Unlike stripSeparator, an empty body is not "nothing to restore": a
+    // brand-new entry's empty body still gets the conventional blank line.
+    expect(restoreSeparator("---\ncreated: x\n---\n", "")).toBe("\n");
   });
 });
