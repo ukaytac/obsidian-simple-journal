@@ -1,4 +1,6 @@
-import type { App, TFile } from "obsidian";
+import { Notice, type App, type TFile } from "obsidian";
+import { ObsidianEmbedEditor } from "./ObsidianEmbedEditor";
+import { TextareaEditor } from "./TextareaEditor";
 
 /**
  * One entry's editing surface. Every implementation detail of how text gets
@@ -95,4 +97,26 @@ export function hasEmbeddedEditorApi(app: App): boolean {
   }).embedRegistry?.embedByExtension;
 
   return typeof registry?.md === "function";
+}
+
+/**
+ * Chooses the editor implementation once, at plugin load. If the internal API
+ * is missing the user is told once, and the journal keeps working on the
+ * fallback rather than breaking.
+ */
+export function createEntryEditorFactory(app: App): EntryEditorFactory {
+  const available = hasEmbeddedEditorApi(app);
+
+  if (!available) {
+    new Notice(
+      "Journal Entries: this Obsidian version does not expose its embedded editor. " +
+        "Falling back to plain text editing.",
+      10000,
+    );
+  }
+
+  return {
+    usingFallback: !available,
+    create: () => (available ? new ObsidianEmbedEditor(app) : new TextareaEditor()),
+  };
 }

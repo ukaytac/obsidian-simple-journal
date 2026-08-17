@@ -107,3 +107,45 @@
   outline: none;
   box-shadow: none;
 }
+
+/* ObsidianEmbedEditor chrome. Scoped entirely under .journal-entry-embed so
+   nothing here ever leaks into a real note's own embeds elsewhere in
+   Obsidian. See docs/editor-embed-api.md "DOM chrome that must be hidden"
+   and CLAUDE.md's "no titles" rule: the inline title is editable, and
+   renames the underlying file when typed into, so display: none here isn't
+   cosmetic — it's what makes it unfocusable. */
+.journal-entry-embed .markdown-embed-title,
+.journal-entry-embed .inline-title,
+.journal-entry-embed .metadata-container,
+.journal-entry-embed .markdown-embed-link {
+  display: none;
+}
+
+/* Two .markdown-embed-content nodes exist (preview and edit mode are both
+   constructed); only the one that actually contains the CM6 editor should
+   ever be shown. :has() rather than nth-child/order, since which one is
+   preview vs. editor isn't guaranteed to stay in DOM order across Obsidian
+   versions. */
+.journal-entry-embed .markdown-embed-content {
+  display: none;
+}
+
+.journal-entry-embed .markdown-embed-content:has(.cm-editor) {
+  display: block;
+}
+
+.journal-entry-embed .markdown-source-view,
+.journal-entry-embed .cm-editor {
+  background: transparent;
+}
+
+.journal-entry-embed .cm-scroller {
+  padding: 0;
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+}
+
+.journal-entry-embed .cm-editor.cm-focused {
+  outline: none;
+}
