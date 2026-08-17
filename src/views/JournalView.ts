@@ -4,6 +4,7 @@ import type JournalEntriesPlugin from "../main";
 import { pageAfter } from "../services/entryIndex";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import type { EntryEditor } from "./EntryEditor";
+import { enforceMountLimit as runEnforceMountLimit, type MountState } from "./mountWindow";
 import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
@@ -11,8 +12,25 @@ export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 /** Entries rendered per page. */
 const PAGE_SIZE = 40;
 
-/** Maximum simultaneously mounted editors. Lower on mobile, where memory is tighter. */
+/**
+ * Backstop cap on simultaneously mounted editors. The primary mechanism that
+ * keeps the mounted set bounded is `mountObserver` reacting to entries
+ * entering/leaving the viewport (see `installMountObserver`); this only binds
+ * when more entries are simultaneously within the observed window than this
+ * allows — a very tall pane, or many short entries packed into
+ * `MOUNT_ROOT_MARGIN`. Lower on mobile, where memory is tighter.
+ */
 const MAX_MOUNTED_EDITORS = Platform.isMobile ? 25 : 60;
+
+/**
+ * How far outside the visible viewport an entry mounts a live editor / stays
+ * mounted, so typing is ready slightly before the entry is actually on
+ * screen rather than popping in exactly at the edge. Larger on mobile: a
+ * flick scroll covers more of the pane per gesture there than a desktop
+ * scroll-wheel tick does, so a small margin would otherwise show a visible
+ * lag between an entry appearing and it becoming editable.
+ */
+const MOUNT_ROOT_MARGIN = Platform.isMobile ? "900px 0px" : "400px 0px";
 
 /**
  * Cap on consecutive pages loaded in one burst without a genuine scroll
@@ -34,6 +52,18 @@ interface RenderedEntry {
   editor: EntryEditor | null;
   /** Debounced save timer handle. */
   saveHandle: number | null;
+  /** Whether `el` currently intersects the viewport, per `mountObserver`. */
+  intersecting: boolean;
+  /**
+   * Bumped every time `mountEditor` or `renderStatic` starts work for this
+   * entry. Both capture the value at the start and re-check it after their
+   * one await; a mismatch means a later operation (a mount superseding a
+   * static render, or vice versa — reachable the moment an entry's
+   * intersection flips again while the first is still reading the file from
+   * disk) has since taken over, so the stale one bails instead of writing
+   * into `bodyEl` after the newer operation already has.
+   */
+  opToken: number;
 }
 
 export class JournalView extends ItemView {
@@ -52,6 +82,12 @@ export class JournalView extends ItemView {
   private generation = 0;
   private sentinelEl: HTMLElement | null = null;
   private observer: IntersectionObserver | null = null;
+  /**
+   * Watches every rendered entry's element and mounts/unmounts its editor as
+   * it crosses `MOUNT_ROOT_MARGIN`. Separate from `observer` (the paging
+   * sentinel), which only ever watches one element.
+   */
+  private mountObserver: IntersectionObserver | null = null;
   private index: JournalEntry[] = [];
   private lastLoadedPath: string | null = null;
   private loading = false;
@@ -110,6 +146,7 @@ export class JournalView extends ItemView {
       return;
     }
 
+    this.installMountObserver();
     await this.loadNextPage();
     this.installSentinel();
   }
@@ -129,6 +166,7 @@ export class JournalView extends ItemView {
    */
   private async clearTimeline(): Promise<void> {
     this.teardownSentinel();
+    this.teardownMountObserver();
     this.generation++;
 
     const renderedEntries = Array.from(this.rendered.values());
@@ -366,6 +404,54 @@ export class JournalView extends ItemView {
     this.burstCount = 0;
   }
 
+  /**
+   * Installs the observer that drives the editor mount window. Every
+   * rendered entry is `observe()`d as it is appended (see `appendEntry`);
+   * this only needs to construct the observer itself once per timeline.
+   *
+   * An entry crossing into `MOUNT_ROOT_MARGIN` mounts a live editor; crossing
+   * back out unmounts it (flushing first) and restores static rendering.
+   * This is the primary bound on mounted editors — `MAX_MOUNTED_EDITORS` in
+   * `enforceMountLimit` is only a backstop for when more entries are
+   * simultaneously within the margin than that allows.
+   */
+  private installMountObserver(): void {
+    this.teardownMountObserver();
+
+    // Constructed from the timeline's own window, same reasoning as
+    // installSentinel: this must keep working if the leaf is in a popout.
+    const win = this.timelineEl.win as Window & typeof globalThis;
+
+    this.mountObserver = new win.IntersectionObserver(
+      (entries) => {
+        for (const observerEntry of entries) {
+          const path = (observerEntry.target as HTMLElement).dataset.path;
+          if (!path) continue;
+
+          const rendered = this.rendered.get(path);
+          if (!rendered) continue;
+
+          rendered.intersecting = observerEntry.isIntersecting;
+
+          if (observerEntry.isIntersecting) {
+            void this.mountEditor(rendered);
+          } else {
+            void this.unmountEditor(rendered);
+          }
+        }
+      },
+      {
+        root: this.contentEl,
+        rootMargin: MOUNT_ROOT_MARGIN,
+      },
+    );
+  }
+
+  private teardownMountObserver(): void {
+    this.mountObserver?.disconnect();
+    this.mountObserver = null;
+  }
+
   private renderEmptyState(): void {
     this.timelineEl.createDiv({
       cls: "journal-empty",
@@ -373,13 +459,24 @@ export class JournalView extends ItemView {
     });
   }
 
-  /** Appends an entry below everything currently rendered, as a live editor. */
+  /**
+   * Appends an entry below everything currently rendered. Rendered
+   * statically and handed to `mountObserver`, not mounted directly:
+   * `observe()` delivers an immediate callback with the entry's current
+   * intersection state, which mounts a live editor right away for whatever
+   * is already on screen and leaves everything else — most of a 40-entry
+   * page, in the common case — statically rendered until it actually nears
+   * the viewport. `mountEditor`/`renderStatic`'s shared `opToken` resolves the
+   * race this creates when that immediate callback fires before this
+   * static render has finished reading the file.
+   */
   private appendEntry(entry: JournalEntry): void {
     const group = this.ensureDayGroup(entry.created, "append");
     const rendered = this.createEntryEl(entry);
     group.appendChild(rendered.el);
     this.rendered.set(entry.file.path, rendered);
-    void this.mountEditor(rendered);
+    void this.renderStatic(rendered);
+    this.mountObserver?.observe(rendered.el);
   }
 
   /**
@@ -466,10 +563,29 @@ export class JournalView extends ItemView {
     // (and whatever a theme layers on top of it) instead of browser defaults.
     const bodyEl = el.createDiv({ cls: "journal-entry-body markdown-rendered" });
 
-    return { entry, el, bodyEl, renderComponent: null, editor: null, saveHandle: null };
+    return {
+      entry,
+      el,
+      bodyEl,
+      renderComponent: null,
+      editor: null,
+      saveHandle: null,
+      intersecting: false,
+      opToken: 0,
+    };
   }
 
-  /** Read-only rendering of an entry, used when no editor is mounted for it. */
+  /**
+   * Read-only rendering of an entry, used when no editor is mounted for it.
+   *
+   * Bumps and re-checks `rendered.opToken` around its one await, same
+   * reasoning as `mountEditor`: `appendEntry` calls this and hands the entry
+   * to `mountObserver` in the same breath, and the observer's immediate
+   * callback can fire — and call `mountEditor` — before this has finished
+   * reading the file. Without the token check, this could then render stale
+   * static Markdown into `bodyEl` after `mountEditor` already mounted a live
+   * editor into it.
+   */
   private async renderStatic(rendered: RenderedEntry): Promise<void> {
     const generation = this.generation;
     // Bail before creating any Component if a reload() already ran (e.g. a
@@ -478,6 +594,7 @@ export class JournalView extends ItemView {
     // a RenderedEntry that this.rendered no longer references — nothing
     // downstream would unload it.
     if (generation !== this.generation) return;
+    const token = ++rendered.opToken;
 
     rendered.renderComponent?.unload();
     rendered.bodyEl.empty();
@@ -487,10 +604,12 @@ export class JournalView extends ItemView {
     rendered.renderComponent = component;
 
     const body = await this.plugin.repository.readBody(rendered.entry.file);
-    // Re-check: the reload may instead have landed while readBody was in
-    // flight. Bail rather than render into a detached bodyEl that no
-    // longer belongs to the visible timeline.
+    // Re-check both: the reload may have landed while readBody was in
+    // flight (generation), or mountEditor may have taken over this entry in
+    // the meantime (opToken) — either way, bail rather than render into a
+    // bodyEl this operation no longer owns.
     if (generation !== this.generation) return;
+    if (token !== rendered.opToken) return;
 
     // Strips only the blank line Task 3's create template leaves after the
     // frontmatter, not indentation on the first real content line — unlike
@@ -507,16 +626,24 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Turns an entry into a live editor and enforces the mount cap. Guards
-   * against a concurrent `clearTimeline()` (a reload, or the view closing)
-   * the same way `renderStatic` does: `generation` is captured before the
-   * only await, and checked after it, so a mount that resumes into a
-   * timeline this instance no longer owns bails before touching the DOM or
-   * `mountOrder` rather than mounting an editor nothing will ever unmount.
+   * Turns an entry into a live editor and enforces the mount cap. Called by
+   * `mountObserver` whenever an entry enters `MOUNT_ROOT_MARGIN` — this is
+   * the primary mount trigger, not `appendEntry` (see its doc).
+   *
+   * Guards against a concurrent `clearTimeline()` (a reload, or the view
+   * closing) the same way `renderStatic` does: `generation` is captured
+   * before the only await, and checked after it, so a mount that resumes
+   * into a timeline this instance no longer owns bails before touching the
+   * DOM or `mountOrder` rather than mounting an editor nothing will ever
+   * unmount. Also bumps/checks `rendered.opToken`, same reasoning as
+   * `renderStatic`: this can race a concurrent static render (the one
+   * `appendEntry` starts) or another mount attempt, and the loser must not
+   * write into `bodyEl` after the winner already has.
    */
   private async mountEditor(rendered: RenderedEntry): Promise<void> {
     if (rendered.editor) return;
     const generation = this.generation;
+    const token = ++rendered.opToken;
 
     rendered.renderComponent?.unload();
     rendered.renderComponent = null;
@@ -525,6 +652,7 @@ export class JournalView extends ItemView {
 
     const body = await this.plugin.repository.readBody(rendered.entry.file);
     if (generation !== this.generation) return;
+    if (token !== rendered.opToken) return;
     if (rendered.editor) return;
 
     const editor = this.mountUsableEditor(rendered, body);
@@ -536,12 +664,20 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Mounts the configured editor, and if it reports that it failed — the
-   * internal API changed shape on this Obsidian version — replaces it with the
-   * textarea fallback for this entry. The journal stays editable either way.
+   * Wires the callbacks every editor needs, regardless of which
+   * implementation it is or when it was created (primary, mount-time
+   * fallback, or a later `replaceWithFallback` swap) — kept in one place so
+   * none of the three call sites can drift out of sync with each other.
+   *
+   * `onBlur` unmounts the editor once it is both unfocused and already
+   * outside the viewport: `mountObserver` skips unmounting a focused editor
+   * (see `unmountEditor`) so a scroll-driven blur never rips the keyboard
+   * out from under the user mid-sentence, but that means the entry needs a
+   * second chance to unmount once the user actually does click away —
+   * otherwise an entry the user typed in and then scrolled past stays
+   * mounted for the rest of the session.
    */
-  private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
-    const editor = this.plugin.editorFactory.create();
+  private wireEditor(rendered: RenderedEntry, editor: EntryEditor): void {
     editor.onChange((value) => this.scheduleSave(rendered, value));
 
     // REQUIRED. An embedded editor can also fail *after* a successful mount —
@@ -549,6 +685,20 @@ export class JournalView extends ItemView {
     // that happens it stops reporting changes, and without this the user goes
     // on typing into a surface whose text is never committed.
     editor.onUnusable(() => void this.replaceWithFallback(rendered));
+
+    editor.onBlur(() => {
+      if (!rendered.intersecting) void this.unmountEditor(rendered);
+    });
+  }
+
+  /**
+   * Mounts the configured editor, and if it reports that it failed — the
+   * internal API changed shape on this Obsidian version — replaces it with the
+   * textarea fallback for this entry. The journal stays editable either way.
+   */
+  private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
+    const editor = this.plugin.editorFactory.create();
+    this.wireEditor(rendered, editor);
 
     editor.mount(rendered.bodyEl, rendered.entry.file, body);
 
@@ -561,7 +711,7 @@ export class JournalView extends ItemView {
       rendered.bodyEl.empty();
 
       const fallback = new TextareaEditor();
-      fallback.onChange((value) => this.scheduleSave(rendered, value));
+      this.wireEditor(rendered, fallback);
       fallback.mount(rendered.bodyEl, rendered.entry.file, body);
       return fallback;
     }
@@ -583,7 +733,7 @@ export class JournalView extends ItemView {
     rendered.bodyEl.empty();
 
     const fallback = new TextareaEditor();
-    fallback.onChange((value) => this.scheduleSave(rendered, value));
+    this.wireEditor(rendered, fallback);
     fallback.mount(rendered.bodyEl, rendered.entry.file, text);
     rendered.editor = fallback;
 
@@ -591,32 +741,54 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Unmounts editors furthest from the viewport — the oldest entries, at the
-   * bottom of the list — replacing them with static rendering. The focused
-   * editor is never unmounted.
+   * Resolves a path's current mount state for `mountWindow`'s pure selection
+   * logic — the only bridge between that DOM/Obsidian-free module and this
+   * view's actual `rendered` map.
    */
-  private enforceMountLimit(): void {
-    while (this.mountOrder.length > MAX_MOUNTED_EDITORS) {
-      const path = this.mountOrder.shift();
-      if (!path) break;
+  private mountStateOf(path: string): MountState | undefined {
+    const rendered = this.rendered.get(path);
+    if (!rendered?.editor) return undefined;
 
-      const rendered = this.rendered.get(path);
-      if (!rendered?.editor) continue;
-
-      if (rendered.editor.hasFocus()) {
-        // Skip the focused editor; put it back at the end of the queue.
-        this.mountOrder.push(path);
-        if (this.mountOrder.every((p) => this.rendered.get(p)?.editor?.hasFocus())) break;
-        continue;
-      }
-
-      void this.unmountEditor(rendered);
-    }
+    return {
+      mounted: true,
+      focused: rendered.editor.hasFocus(),
+      intersecting: rendered.intersecting,
+    };
   }
 
-  /** Flushes pending edits, destroys the editor, and restores static rendering. */
+  /**
+   * Backstop for when more entries are simultaneously within
+   * `MOUNT_ROOT_MARGIN` than `MAX_MOUNTED_EDITORS` allows. The primary
+   * mount/unmount mechanism is `mountObserver`; this only runs after a mount
+   * that pushes the count over the cap. Selection and the termination
+   * guarantee live in `mountWindow.ts`, exercised directly there with
+   * fabricated state; this just supplies the live lookup and the actual
+   * (async) unmount.
+   */
+  private enforceMountLimit(): void {
+    runEnforceMountLimit(
+      this.mountOrder,
+      MAX_MOUNTED_EDITORS,
+      (path) => this.mountStateOf(path),
+      (path) => {
+        const rendered = this.rendered.get(path);
+        if (rendered) void this.unmountEditor(rendered);
+      },
+    );
+  }
+
+  /**
+   * Flushes pending edits, destroys the editor, and restores static
+   * rendering. Never unmounts a focused editor: `mountObserver` calls this
+   * unconditionally the moment an entry leaves `MOUNT_ROOT_MARGIN`, and
+   * ripping the keyboard focus out from under the user mid-sentence just
+   * because they scrolled would be worse than leaving one editor mounted
+   * past the margin. `wireEditor`'s `onBlur` callback gives that entry a
+   * second chance to unmount once the user actually clicks away.
+   */
   private async unmountEditor(rendered: RenderedEntry): Promise<void> {
     if (!rendered.editor) return;
+    if (rendered.editor.hasFocus()) return;
     // Captured before the only await below. If a concurrent clearTimeline()
     // lands while the flush is in flight, it has already flushed, destroyed,
     // and nulled every editor (including this one) and emptied the timeline

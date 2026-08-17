@@ -113,3 +113,42 @@ checklist exists to answer, not a mechanism to verify:
       underlying file. (Renaming the file from the File Explorer or the
       command palette, outside the timeline, is unaffected and still works
       normally.)
+
+---
+
+# Manual testing: the viewport-driven mount window
+
+`JournalView`'s editor mount/unmount decision (`mountObserver`, an
+`IntersectionObserver` rooted on the timeline pane) and the pure
+selection/termination logic behind its `MAX_MOUNTED_EDITORS` backstop
+(`src/views/mountWindow.ts`) are covered by `tests/mountWindow.test.ts` with
+fabricated state. What that suite cannot cover is real scroll physics, real
+focus/blur timing, and a real `IntersectionObserver` reacting to a real
+layout — verify these by hand, in a real Obsidian window, with a vault of at
+least a few hundred entries (enough to scroll well past `MAX_MOUNTED_EDITORS`,
+i.e. past 60 entries on desktop or 25 on mobile).
+
+- [ ] **Scroll past the cap and back; entries at the top are live again, text
+      intact.** Open the journal, then scroll continuously downward until
+      you're well past the mount cap (the console should show at most
+      `MAX_MOUNTED_EDITORS` mounted `.journal-entry-embed`/`.journal-entry-textarea`
+      elements at any point — the entries scrolled past should have quietly
+      reverted to static rendering). Before scrolling back, note the exact
+      text of a couple of entries near the top. Scroll back up to today.
+      Confirm: the entries at the top are directly editable again (not
+      click-to-edit, not static Markdown) — `mountObserver` re-mounts them the
+      moment they re-enter `MOUNT_ROOT_MARGIN` — and their text is byte-for-byte
+      what it was before you scrolled away (nothing was lost or duplicated
+      across the unmount → static → remount round trip).
+- [ ] **A focused editor keeps focus and its text when scrolled out of view.**
+      Click into an entry near the top and place the cursor mid-sentence.
+      Without clicking away (so the entry keeps keyboard focus), scroll it
+      out of the viewport and past `MOUNT_ROOT_MARGIN` — far enough that an
+      ordinary (unfocused) entry at that position would already have
+      unmounted. Confirm the entry does *not* revert to static rendering
+      while it holds focus (`unmountEditor` skips a focused editor
+      unconditionally). Now click elsewhere in the document to blur it, then
+      scroll back to check that entry: it correctly unmounted after the blur
+      (via `wireEditor`'s `onBlur` callback, since it was still off-screen at
+      that point) and its text — including whatever you typed before
+      scrolling — was saved and is intact.
