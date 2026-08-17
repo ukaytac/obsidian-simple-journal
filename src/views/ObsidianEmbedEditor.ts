@@ -58,13 +58,30 @@ import type { EntryEditor } from "./EntryEditor";
  * only intercepts callers that dispatch through `embed.onFileChanged(...)` —
  * anything that captured the original method at construction time, or that
  * reloads the buffer through some other internal route entirely, would
- * bypass this. Whether the embed actually reloads while dirty isn't
- * measurable without a running Obsidian, so a second, independent,
- * provenance-based guard (`pendingWrite` in `startPolling`/`notifyWritten`)
- * also treats a reappearing value as an echo rather than a real edit — belt
- * and braces, not conditional on this neutralisation holding. The manual
- * test (docs/manual-testing-editor.md) is the real arbiter of whether either
- * guard is still needed on a given Obsidian version.
+ * bypass this.
+ *
+ * There is deliberately no second, content-and-timestamp guard here trying
+ * to catch a reload if this neutralisation ever turns out to be incomplete.
+ * Three rounds of review each found a distinct way such a guard drops the
+ * user's actual typed text (a content-keyed history misreading an ordinary
+ * undo as a stale reload; a timestamp window that has no value able to be
+ * both reliably longer than the poll period plus real-world echo latency
+ * and reliably shorter than a human type-then-revert — those two ranges
+ * don't overlap; an unfocused restore path leaving the buffer and the
+ * caller's view of it diverged). A guard over an event this file cannot
+ * observe cannot be tuned into correctness. And the hazard it existed to
+ * insure against is already covered three times over without it: the spike
+ * measured the embed never writes on its own; `onFileChanged` is
+ * neutralised above; and decisively, `EntryRepository.writeBody` takes the
+ * frontmatter from disk inside `vault.process`, never from this editor's
+ * buffer, so losing `created` to a stray reload is structurally impossible
+ * regardless of what this buffer holds. A defence that is unreliable when
+ * needed, harmful when not, and covers an already-covered hazard is
+ * negative value — see docs/manual-testing-editor.md for the one empirical
+ * check that actually answers whether a reload happens at all, and for
+ * what a real fix would need to look like if it does (a revision counter
+ * the view owns, or suppressing reports while focused with a write in
+ * flight — never content-and-timestamp matching).
  */
 
 interface EmbedEditMode {
@@ -127,28 +144,6 @@ function neutralise(record: Record<string, unknown>, name: string, asyncReturn =
   record[name] = noop;
 }
 
-/**
- * How long after `notifyWritten(body)` a poll-detected change matching that
- * exact `body` is still treated as that write's echo rather than a fresh,
- * unrelated edit that merely happens to coincide with it. A genuine echo (if
- * one ever occurs — see below) lands within roughly one poll tick of the
- * write resolving, so ~300ms is generous enough to cover that without
- * lingering.
- *
- * Widening this window doesn't make the guard safer, only slower to release
- * an ordinary edit it shouldn't have caught: a user who reverts to exactly
- * the just-written body within the window (e.g. types a character then
- * immediately backspaces it) still has that revert silently undone, the
- * same failure class the previous, content-keyed guard had, just narrowed
- * to a shrinking sliver of time instead of eliminated. That residual is
- * accepted because `onFileChanged` is already neutralised above — the echo
- * this guard exists to catch should never happen at all in a real Obsidian
- * window. This is insurance against that neutralisation being incomplete or
- * bypassed (unverifiable without a running Obsidian), not a mechanism this
- * plugin depends on to behave correctly.
- */
-const WRITE_ECHO_WINDOW_MS = 300;
-
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
   private containerEl: HTMLElement | null = null;
@@ -182,19 +177,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
    */
   private mountedFrontmatter: string | null = null;
 
-  /**
-   * Provenance record for the write-echo guard (see this file's top
-   * comment). Set only by `notifyWritten()` — i.e. only when the caller
-   * confirms a specific body was actually written to disk — never by
-   * anything this editor emits on its own. A poll-detected change is only
-   * ever treated as an echo when it matches this exact body AND arrives
-   * within `WRITE_ECHO_WINDOW_MS`; this is deliberately NOT content-keyed
-   * against a history of past emissions (an earlier design was, and it
-   * misread an ordinary undo/backspace back to previously-seen text as a
-   * stale reload, silently reverting the user's own undo).
-   */
-  private pendingWrite: { body: string; at: number } | null = null;
-
   constructor(private readonly app: App) {}
 
   /** False when the internal API did not behave as expected; the caller must fall back. */
@@ -210,7 +192,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
     this.usable = false;
     this.mountedFrontmatter = null;
-    this.pendingWrite = null;
 
     const creator = getCreator(this.app);
     if (!creator || !file) {
@@ -402,6 +383,19 @@ export class ObsidianEmbedEditor implements EntryEditor {
         // unchanged. Reporting the truncated tail would have the view
         // write it as the entry's entire body, deleting everything before
         // the thematic break from disk while it's still visible on screen.
+        //
+        // Residual: if a frontmatter-growth-plus-head-deletion coincidence
+        // like this happens within a single poll tick and is the user's
+        // last action before teardown, flush() reads this same bailed-to
+        // lastBody and reports the OLDER body, one edit behind — so a
+        // caller that then writes it would restore the deleted head text
+        // rather than committing whatever the user most recently typed.
+        // Bailing is still the right failure mode here: nothing is written
+        // that wasn't already known-good, and the file on disk is
+        // preserved untouched, per CLAUDE.md's "when uncertain, preserve
+        // the file" — but this loss of the very latest edit in this
+        // specific, narrow coincidence is a known, accepted trade-off
+        // rather than a hidden one.
         return this.lastBody;
       }
     }
@@ -424,36 +418,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
       // to know via the same isUsable()/onUnusable() path as a read failure.
       this.markUnusable();
     }
-  }
-
-  /**
-   * Records that `body` was just written to disk. See `pendingWrite`'s doc
-   * and this file's top comment: this is the provenance a poll-detected
-   * change is checked against, so only the actual echo of a write we know
-   * happened gets suppressed — never merely "a body we've seen before".
-   */
-  notifyWritten(body: string): void {
-    this.pendingWrite = { body, at: Date.now() };
-  }
-
-  /**
-   * Consumes `pendingWrite` if `body` matches it within the echo window —
-   * "consumes" meaning it is cleared either way, so it can never match a
-   * second time (once used) and never lingers to match some unrelated later
-   * edit (once the window lapses).
-   */
-  private consumeWriteEcho(body: string): boolean {
-    const pending = this.pendingWrite;
-    if (!pending) return false;
-
-    if (Date.now() - pending.at > WRITE_ECHO_WINDOW_MS) {
-      this.pendingWrite = null;
-      return false;
-    }
-    if (body !== pending.body) return false;
-
-    this.pendingWrite = null;
-    return true;
   }
 
   /**
@@ -487,20 +451,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
       const body = this.readBody();
       if (body === this.lastBody) return;
-
-      if (this.consumeWriteEcho(body)) {
-        // A write we know happened just echoed back into the buffer,
-        // discarding whatever the user typed since. Restore the newer text
-        // unconditionally — including when unfocused: a set() on an
-        // unfocused editor has no cursor to disturb, so gating this on
-        // hasFocus() bought nothing and, worse, left the buffer and
-        // lastBody diverged (and lastRaw stale) until the next mismatched
-        // tick, with getValue()/flush() reporting the stale echoed body in
-        // the meantime — exactly what a teardown flush must not write.
-        this.writeBody(this.lastBody);
-        lastRaw = this.readRaw() ?? lastRaw;
-        return;
-      }
 
       this.lastBody = body;
       this.changeCallback?.(body);
@@ -621,7 +571,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
     this.embed = null;
     this.usable = false;
     this.mountedFrontmatter = null;
-    this.pendingWrite = null;
     if (embed) this.teardownEmbed(embed);
     this.containerEl?.remove();
     this.containerEl = null;

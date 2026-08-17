@@ -57,23 +57,39 @@ registry, a real CodeMirror 6 instance, and Obsidian's actual save/debounce
 pipeline (Task 13+), none of which `tests/obsidianEmbedEditor.test.ts`'s fake
 embed can stand in for. Verify these by hand in a real Obsidian window.
 
-## The write-echo race
+## External writes: does the embed actually reload?
 
-- [ ] **Typing continuously past the autosave debounce without losing
-      characters.** Open an entry and type a long sentence steadily, without
-      pausing — long enough that the view's debounced save fires and writes
-      to disk at least once or twice while you keep typing. Re-read the
-      sentence back: every character you typed is present, in order, with
-      nothing dropped mid-sentence. This is the exact failure mode of the
-      write-echo bug (a save landing, the vault emitting `modify`, and a
-      stale reload clobbering newer keystrokes) — `tests/obsidianEmbedEditor.test.ts`
-      reproduces it against a fake embed, but only a real Obsidian window
-      exercises the real `onFileChanged` path this plugin neutralises plus
-      the real debounced writer from JournalView.
-- [ ] **Same test, faster.** Repeat holding down a single key (e.g. arrow
-      key through autorepeat isn't useful here — instead paste-then-edit, or
-      type as fast as you can) to make the save/keystroke race as tight as
-      possible. Still no dropped characters.
+`ObsidianEmbedEditor` neutralises the embed's `onFileChanged` hook so this
+editor's buffer stays authoritative while mounted (see the source file's top
+comment). There is deliberately no runtime guard on top of that anymore: an
+earlier design tried to catch a reload with a content-and-timestamp check,
+and three separate rounds of review each found a different way it dropped
+the user's own typed text — a heuristic over an event this file cannot
+observe could not be tuned into correctness, so it was removed rather than
+tuned a fourth time. That makes this a single, open empirical question this
+checklist exists to answer, not a mechanism to verify:
+
+- [ ] **Type while an external write lands on the same file.** Open an
+      entry in the journal timeline and type a long sentence continuously,
+      without pausing, for long enough that the view's own debounced save
+      writes to disk at least once. While that's happening (or immediately
+      after), force an external change to the *same* file — edit it from a
+      second pane, or edit it directly outside Obsidian and let the vault
+      pick up the change — and keep typing through it. Then check: does the
+      buffer ever visibly revert to older text, and is any typed text lost
+      or out of order?
+      - **If nothing is lost:** the neutralisation is holding as expected in
+        a real Obsidian window, and no guard is needed here. Leave this file
+        as-is.
+      - **If text IS lost:** the embed is reloading despite the
+        neutralisation, through some path other than `embed.onFileChanged(...)`.
+        Whatever replaces the old guard must be deterministic, not another
+        heuristic layered on the same unobservable event — e.g. a revision
+        counter the view owns and checks before accepting a change, or
+        suppressing reported changes entirely while the editor is focused
+        and a write is known to be in flight. Content-and-timestamp matching
+        is not an option again: it was tried here and removed specifically
+        because it cannot be made correct.
 
 ## Editing fidelity
 

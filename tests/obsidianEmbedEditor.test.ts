@@ -63,12 +63,6 @@ installObsidianDomHelpers(globalThis as unknown as typeof globalThis);
  * `opts.throwOnLoad`/`throwOnShowEditor` model a shape change or a runtime
  * error partway through construction. `breakGet()` flips `get()` from
  * "working" to "throws" after the fact, for the failure-after-mount case.
- * `simulateReload(diskDoc)` models the embed reloading its own buffer from
- * disk on a vault `modify` event — the self-reload race this file's
- * `onFileChanged` neutralisation and `notifyWritten`/`pendingWrite` guard
- * both defend against — without needing a real vault or a real
- * `onFileChanged` (which this test's embed also has, and which the code
- * under test neutralises).
  */
 function fakeEmbedCreator(
   initialDoc: string,
@@ -159,7 +153,6 @@ function fakeEmbedCreator(
     spies,
     getDoc: () => doc,
     setDoc: (v: string) => (doc = v),
-    simulateReload: (diskDoc: string) => (doc = diskDoc),
     breakGet: () => {
       getShouldThrow = true;
     },
@@ -208,14 +201,6 @@ const SEEDED_BODY = splitFrontmatter(SEEDED_DOC).body;
 
 function fakeFile(): TFile {
   return { path: "Journal/2026/01/entry.md" } as unknown as TFile;
-}
-
-/** Focuses the mounted `.journal-entry-embed` container so hasFocus() reports true. */
-function focusEmbedContainer(container: HTMLElement): HTMLElement {
-  const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
-  embedContainer.tabIndex = -1;
-  embedContainer.focus();
-  return embedContainer;
 }
 
 /**
@@ -613,207 +598,6 @@ describe("ObsidianEmbedEditor: change polling", () => {
     setDoc(replaceBody(SEEDED_DOC, "SHOULD NEVER BE SEEN.\n"));
     vi.advanceTimersByTime(1000);
     expect(changes).toEqual([]);
-  });
-});
-
-describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  it("a stale reload racing ahead of typing does not clobber newer keystrokes", () => {
-    // Reproduces the exact trace from review: user types "B1"; the poll
-    // reports it; a caller's debounced write of "B1" starts; the user types
-    // on to "B2" while that write is still in flight; the "B1" write
-    // finally resolves (modelled by the explicit notifyWritten("B1") call —
-    // the real JournalView calls this immediately after its vault.process
-    // write resolves, which can easily be after the user has moved on, as
-    // here) and its vault `modify` event reloads the embed's buffer back to
-    // (now stale) "B1" — modelled here via simulateReload() directly,
-    // standing in for a real onFileChanged-triggered reload (which the code
-    // under test neutralises; this test proves the SECOND, independent
-    // guard also holds, regardless of whether that neutralisation is what's
-    // doing the work in a real Obsidian window). The reload arrives one
-    // poll tick after notifyWritten, well inside WRITE_ECHO_WINDOW_MS.
-    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
-    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
-    const changes: string[] = [];
-    editor.onChange((value) => changes.push(value));
-
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    editor.mount(container, fakeFile(), SEEDED_BODY);
-    // The restore-on-echo path only engages while the user is still here.
-    focusEmbedContainer(container);
-
-    setDoc(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1"]);
-
-    setDoc(replaceBody(SEEDED_DOC, "B2"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1", "B2"]);
-
-    editor.notifyWritten("B1"); // the view's debounced write of "B1" only resolves now
-
-    simulateReload(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-
-    // The bug: "B1" gets reported again and "B2" is gone. The fix: this
-    // exact body was confirmed written a moment ago, so the reload is
-    // recognised as that write's echo — nothing new is reported, and the
-    // buffer is restored to "B2".
-    expect(changes).toEqual(["B1", "B2"]);
-    expect(editor.getValue()).toBe("B2");
-  });
-
-  it("a legitimate revert to a previously emitted body (e.g. undo) is reported as a normal edit, not suppressed", () => {
-    // Regression test for the FIRST version of this guard, which was
-    // content-keyed against a history of everything this editor had ever
-    // emitted: typing "Today I ran.", then " Fast", then undoing/backspacing
-    // back to "Today I ran." reverted to a body the guard had seen before
-    // and — with no provenance check — misread as a stale reload, silently
-    // retyping " Fast" back in under the user mid-undo. The provenance-based
-    // guard has no pending write to match here (notifyWritten is never
-    // called in this test), so it must not suppress anything.
-    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
-    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
-    const changes: string[] = [];
-    editor.onChange((value) => changes.push(value));
-
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    editor.mount(container, fakeFile(), SEEDED_BODY);
-    focusEmbedContainer(container);
-
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["Today I ran."]);
-
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran. Fast"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["Today I ran.", "Today I ran. Fast"]);
-
-    // Undo/backspace back to a body already seen once before.
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
-    vi.advanceTimersByTime(300);
-
-    expect(changes).toEqual(["Today I ran.", "Today I ran. Fast", "Today I ran."]);
-    expect(editor.getValue()).toBe("Today I ran.");
-  });
-
-  it("an echo outside the write-echo window is treated as a normal edit", () => {
-    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
-    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
-    const changes: string[] = [];
-    editor.onChange((value) => changes.push(value));
-
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    editor.mount(container, fakeFile(), SEEDED_BODY);
-    focusEmbedContainer(container);
-
-    setDoc(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1"]);
-
-    editor.notifyWritten("B1");
-
-    setDoc(replaceBody(SEEDED_DOC, "B2"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1", "B2"]);
-
-    // Well past WRITE_ECHO_WINDOW_MS (300ms): the pending record must have
-    // lapsed, so this reload back to "B1" is no longer explained by it and
-    // is reported like any other edit.
-    vi.advanceTimersByTime(5000);
-    simulateReload(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-
-    expect(changes).toEqual(["B1", "B2", "B1"]);
-  });
-
-  it("a revert arriving after the (now short) window is reported as a normal edit, not suppressed", () => {
-    // Regression test for Important 1: with the previous ~1s window, a
-    // quick type-then-revert of exactly the just-written text — timed at
-    // ~700ms after notifyWritten, comfortably inside that window — was
-    // misread as a stale echo and silently undone. Shrinking the window to
-    // ~300ms (a genuine echo lands within roughly one poll tick of the
-    // write resolving, so it doesn't need to be any wider) lets this same
-    // timing through as an ordinary edit instead.
-    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
-    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
-    const changes: string[] = [];
-    editor.onChange((value) => changes.push(value));
-
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    editor.mount(container, fakeFile(), SEEDED_BODY);
-    focusEmbedContainer(container);
-
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["Today I ran."]);
-
-    editor.notifyWritten("Today I ran."); // the write of exactly this text just resolved
-
-    // The user types a space; reported normally (doesn't match the pending
-    // write's exact body).
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran. "));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["Today I ran.", "Today I ran. "]);
-
-    // ~700ms have now passed since notifyWritten — past the 300ms window.
-    vi.advanceTimersByTime(300);
-
-    // The user backspaces the space, reverting to exactly the body that
-    // was written. Because the window has lapsed, this is an ordinary edit.
-    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
-    vi.advanceTimersByTime(300);
-
-    expect(changes).toEqual(["Today I ran.", "Today I ran. ", "Today I ran."]);
-    expect(editor.getValue()).toBe("Today I ran.");
-  });
-
-  it("an echo is corrected in the buffer even when the editor is unfocused, so a teardown flush never writes stale text", () => {
-    // Regression test for Important 2: the restore used to be gated on
-    // hasFocus(), so when a genuine echo arrived while nobody was focused
-    // on this editor, the change stream stayed correct but the buffer and
-    // lastBody were left diverged from it — getValue()/flush() kept
-    // reporting the stale echoed body, and a teardown flush would have
-    // written it over the user's actual, newer text.
-    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
-    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
-    const changes: string[] = [];
-    editor.onChange((value) => changes.push(value));
-
-    const container = document.createElement("div");
-    // Deliberately not appended to document.body / not focused: hasFocus()
-    // must report false throughout this test.
-    editor.mount(container, fakeFile(), SEEDED_BODY);
-
-    setDoc(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1"]);
-
-    setDoc(replaceBody(SEEDED_DOC, "B2"));
-    vi.advanceTimersByTime(300);
-    expect(changes).toEqual(["B1", "B2"]);
-
-    editor.notifyWritten("B1");
-    simulateReload(replaceBody(SEEDED_DOC, "B1"));
-    vi.advanceTimersByTime(300);
-
-    // Still correctly suppressed: no spurious "B1" reported.
-    expect(changes).toEqual(["B1", "B2"]);
-    // The regression: this used to return "B1" here because the buffer was
-    // never corrected without focus.
-    expect(editor.getValue()).toBe("B2");
-
-    // flush() unconditionally re-emits the current value — must be "B2",
-    // not a stale "B1" written over the user's actual text at teardown.
-    editor.flush();
-    expect(changes).toEqual(["B1", "B2", "B2"]);
   });
 });
 
