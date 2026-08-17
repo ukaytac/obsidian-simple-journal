@@ -3527,19 +3527,41 @@ Add to `onOpen()`, before `await this.reload()`:
     void this.mountEditor(rendered);
   }
 
-  /** Reloads one entry's text from disk without remounting its editor. */
+  /**
+   * Reloads one entry's text from disk without remounting its editor.
+   *
+   * REQUIRED: `savedBody` must be updated in the same breath as `setValue`.
+   * `save()` skips the write when the value equals `savedBody`; if the external
+   * body is installed without advancing it, the next flush sees a difference,
+   * writes the external content straight back, and re-fires `modify` — the
+   * reload loop this guard exists to prevent.
+   *
+   * Seed it from `getValue()` rather than from `body` for the same reason
+   * `mountEditor` does: the editor may normalize line endings, so the stored
+   * value has to come from the same code path the comparison reads.
+   */
   private async refreshEntryContent(rendered: RenderedEntry): Promise<void> {
     const body = await this.plugin.repository.readBody(rendered.entry.file);
 
     if (rendered.editor) {
       if (rendered.editor.getValue() === body) return;
       rendered.editor.setValue(body);
+      rendered.savedBody = rendered.editor.getValue();
       return;
     }
 
     await this.renderStatic(rendered);
   }
 ```
+
+**Also required of this task: a closed-view guard on the reload path.** Until now
+nothing could enqueue a timeline mutation after `onClose`, because the only
+deferred caller is a `queueMicrotask` that drains long before a human closes a
+tab. A vault-event handler changes that — it can call `reload()` from an
+arbitrary async callback, which would rebuild the timeline into a detached
+`timelineEl` and leak every mounted editor along with its 250 ms poll for the
+rest of the session. Set a `closed` flag in `onClose` and check it at the top of
+the serialized reload.
 
 Add the imports this needs at the top of `JournalView.ts`:
 
