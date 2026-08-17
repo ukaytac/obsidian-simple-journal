@@ -168,6 +168,59 @@ describe("enforceMountLimit", () => {
     for (const path of evicted) expect(order).not.toContain(path);
   });
 
+  it("tolerates onEvict flipping the victim's own state to unmounted", () => {
+    // Mirrors the live view loosely: JournalView's onEvict starts an async
+    // unmountEditor(), which eventually nulls rendered.editor — here that
+    // mutation happens synchronously inside onEvict instead, to check the
+    // pure function doesn't misbehave if a caller's bookkeeping is already
+    // updated by the time onEvict returns (order itself was already spliced
+    // by enforceMountLimit before onEvict ran, so this should be a no-op as
+    // far as this loop's own behaviour goes).
+    const order = ["a", "b"];
+    const states: Record<string, MountState> = {
+      a: { mounted: true, focused: false, intersecting: false },
+      b: { mounted: true, focused: false, intersecting: false },
+    };
+    const evicted: string[] = [];
+
+    enforceMountLimit(order, 1, statesOf(states), (path) => {
+      evicted.push(path);
+      states[path] = { ...states[path], mounted: false };
+    });
+
+    expect(evicted).toEqual(["a"]);
+    expect(order).toEqual(["b"]);
+    expect(states.a.mounted).toBe(false);
+  });
+
+  it("tolerates onEvict adding a new path mid-loop, still terminating at the cap", () => {
+    // Mirrors a concurrent mount landing while eviction is in progress:
+    // JournalView's mountEditor pushes onto the same mountOrder array that
+    // enforceMountLimit is iterating (well, over its `order` parameter, the
+    // same array by reference). The newly added path must still be
+    // correctly evicted if it's evictable and the cap requires it, and the
+    // loop must still terminate.
+    const order = ["a", "b"];
+    const states: Record<string, MountState> = {
+      a: { mounted: true, focused: false, intersecting: false },
+      b: { mounted: true, focused: false, intersecting: false },
+      c: { mounted: true, focused: false, intersecting: false },
+    };
+    let addedC = false;
+    const evicted: string[] = [];
+
+    enforceMountLimit(order, 0, statesOf(states), (path) => {
+      evicted.push(path);
+      if (path === "a" && !addedC) {
+        addedC = true;
+        order.push("c");
+      }
+    });
+
+    expect(order).toEqual([]);
+    expect(evicted).toEqual(["a", "b", "c"]);
+  });
+
   it("removes the victim from `order` before invoking onEvict", () => {
     // JournalView relies on this ordering: its onEvict starts an async
     // unmount, and mountOrder must already reflect the removal by then so a

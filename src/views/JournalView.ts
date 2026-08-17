@@ -4,6 +4,7 @@ import type JournalEntriesPlugin from "../main";
 import { pageAfter } from "../services/entryIndex";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import type { EntryEditor } from "./EntryEditor";
+import { saveIfChanged } from "./entrySave";
 import { enforceMountLimit as runEnforceMountLimit, type MountState } from "./mountWindow";
 import { TextareaEditor } from "./TextareaEditor";
 
@@ -52,6 +53,15 @@ interface RenderedEntry {
   editor: EntryEditor | null;
   /** Debounced save timer handle. */
   saveHandle: number | null;
+  /**
+   * The body last known to be on disk for this entry — seeded from the file
+   * read when an editor mounts, updated after every successful `save()`.
+   * `save()` skips the write entirely when the value to save matches this,
+   * so scrolling an unedited entry in and out of the mount window (which
+   * flushes on every unmount) never rewrites its file, bumps its mtime, or
+   * fires a spurious `modify` event.
+   */
+  savedBody: string;
   /** Whether `el` currently intersects the viewport, per `mountObserver`. */
   intersecting: boolean;
   /**
@@ -102,6 +112,8 @@ export class JournalView extends ItemView {
   private burstCount = 0;
   /** Paths of entries with a mounted editor, oldest-mounted first. */
   private mountOrder: string[] = [];
+  /** Serializes `reload()`/`onClose()`; see `enqueueTimelineMutation`. */
+  private timelineMutationChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -130,12 +142,45 @@ export class JournalView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    await this.clearTimeline();
+    await this.enqueueTimelineMutation(() => this.clearTimeline());
     this.contentEl.empty();
   }
 
   /** Discards and rebuilds the timeline, rendering only the first page. */
   async reload(): Promise<void> {
+    return this.enqueueTimelineMutation(() => this.reloadNow());
+  }
+
+  /**
+   * Serializes every call that tears down or rebuilds the timeline —
+   * `reload()` and `onClose()` — behind one chain, so two can never
+   * interleave. `generation` alone doesn't close this: a caller could
+   * capture it after its own `await this.clearTimeline()` and bail on
+   * mismatch, but `clearTimeline`'s own destroy-and-clear sequence
+   * (`rendered.clear()`, `dayGroups.clear()`, `timelineEl.empty()`, …) has no
+   * such guard on the synchronous work that follows *its* await — two
+   * overlapping `clearTimeline` calls would still each unconditionally
+   * clear/rebuild the same shared maps and DOM, regardless of what either
+   * caller checks afterwards. Concretely reachable via the settings tab's
+   * debounced `refreshJournal` (which calls `reload()`) landing while
+   * `clearTimeline`'s flush is in flight, or `nextPage`'s
+   * `queueMicrotask(() => void this.reload())` re-anchor firing during
+   * another in-flight reload.
+   *
+   * The stored chain (`this.timelineMutationChain`) itself never rejects —
+   * `task` is used as both the fulfillment and rejection handler on the
+   * previous link — so one call's failure can never wedge every later call
+   * behind a permanently-rejected promise. The promise returned to THIS
+   * call's own caller still carries this call's real outcome.
+   */
+  private enqueueTimelineMutation<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.timelineMutationChain.then(task, task);
+    this.timelineMutationChain = result.catch(() => undefined);
+    return result;
+  }
+
+  /** The actual body of `reload()`, run only inside `enqueueTimelineMutation`. */
+  private async reloadNow(): Promise<void> {
     await this.clearTimeline();
 
     this.index = this.plugin.repository.listEntries();
@@ -163,6 +208,16 @@ export class JournalView extends ItemView {
    * destroyed. Without this, an edit still sitting inside the 500ms debounce
    * window when the view closes (or a reload/settings change tears the
    * timeline down) would never reach disk.
+   *
+   * `Promise.allSettled`, not `Promise.all`: `save()` itself never rejects,
+   * but a flush's synchronous `editor.flush()` call could in principle throw
+   * before reaching it. `Promise.all` would then reject this whole method,
+   * skipping the destroy loop, `rendered.clear()`, and `timelineEl.empty()`
+   * below entirely — leaving every editor mounted (an `ObsidianEmbedEditor`'s
+   * 250ms poll still running against soon-to-be-detached DOM) and `onClose`/
+   * `reload` themselves rejecting. `allSettled` guarantees every flush is
+   * given the chance to finish, successfully or not, before teardown
+   * proceeds regardless.
    */
   private async clearTimeline(): Promise<void> {
     this.teardownSentinel();
@@ -170,7 +225,7 @@ export class JournalView extends ItemView {
     this.generation++;
 
     const renderedEntries = Array.from(this.rendered.values());
-    await Promise.all(renderedEntries.map((rendered) => this.flushSave(rendered)));
+    await Promise.allSettled(renderedEntries.map((rendered) => this.flushSave(rendered)));
 
     for (const rendered of renderedEntries) {
       rendered.editor?.destroy();
@@ -570,6 +625,10 @@ export class JournalView extends ItemView {
       renderComponent: null,
       editor: null,
       saveHandle: null,
+      // Overwritten with the real on-disk body the moment an editor mounts
+      // (see mountEditor); "" here is never observable as a save decision
+      // since nothing can trigger a save before that happens.
+      savedBody: "",
       intersecting: false,
       opToken: 0,
     };
@@ -608,6 +667,15 @@ export class JournalView extends ItemView {
     // flight (generation), or mountEditor may have taken over this entry in
     // the meantime (opToken) — either way, bail rather than render into a
     // bodyEl this operation no longer owns.
+    //
+    // Note this bails WITHOUT unloading the `component` just created above —
+    // safe only because whatever superseded it already unloaded
+    // `rendered.renderComponent` first: `clearTimeline`'s own destroy loop
+    // (the generation-mismatch case) does this synchronously before it ever
+    // awaits anything, and `mountEditor` (the opToken-mismatch case) unloads
+    // it synchronously before its own await, i.e. before this line could ever
+    // run. A future caller that awaits something before superseding this one
+    // would leak that Component instead of this bail catching it.
     if (generation !== this.generation) return;
     if (token !== rendered.opToken) return;
 
@@ -638,7 +706,10 @@ export class JournalView extends ItemView {
    * unmount. Also bumps/checks `rendered.opToken`, same reasoning as
    * `renderStatic`: this can race a concurrent static render (the one
    * `appendEntry` starts) or another mount attempt, and the loser must not
-   * write into `bodyEl` after the winner already has.
+   * write into `bodyEl` after the winner already has. Also re-checks
+   * `rendered.intersecting` after the await, for the symmetric reason
+   * `unmountEditor` does: the entry may have left the margin again while
+   * this was reading the file.
    */
   private async mountEditor(rendered: RenderedEntry): Promise<void> {
     if (rendered.editor) return;
@@ -655,6 +726,20 @@ export class JournalView extends ItemView {
     if (token !== rendered.opToken) return;
     if (rendered.editor) return;
 
+    if (!rendered.intersecting) {
+      // Left MOUNT_ROOT_MARGIN while this was reading the file. The
+      // observer's exit transition already fired and called unmountEditor,
+      // which no-opped (rendered.editor was still null) — no further
+      // callback arrives until another transition, so without this check an
+      // entry that's now off-screen would mount a live editor anyway (and
+      // stay mounted indefinitely, invisible to any future scroll-driven
+      // unmount). Restore static rendering instead of leaving bodyEl blank
+      // (already cleared above).
+      void this.renderStatic(rendered);
+      return;
+    }
+
+    rendered.savedBody = body;
     const editor = this.mountUsableEditor(rendered, body);
 
     rendered.editor = editor;
@@ -778,6 +863,18 @@ export class JournalView extends ItemView {
   }
 
   /**
+   * Ensures `path` is present in `mountOrder` — a no-op if it already is.
+   * Called wherever `unmountEditor` declines to unmount an editor that
+   * remains legitimately mounted (still focused, or back on screen), so it
+   * stays visible to `enforceMountLimit`'s cap even when the decline happens
+   * on a path `enforceMountLimit` itself already spliced out before calling
+   * in (see `mountWindow.ts`'s eviction contract).
+   */
+  private ensureMountOrderContains(path: string): void {
+    if (!this.mountOrder.includes(path)) this.mountOrder.push(path);
+  }
+
+  /**
    * Flushes pending edits, destroys the editor, and restores static
    * rendering. Never unmounts a focused editor: `mountObserver` calls this
    * unconditionally the moment an entry leaves `MOUNT_ROOT_MARGIN`, and
@@ -788,17 +885,50 @@ export class JournalView extends ItemView {
    */
   private async unmountEditor(rendered: RenderedEntry): Promise<void> {
     if (!rendered.editor) return;
-    if (rendered.editor.hasFocus()) return;
-    // Captured before the only await below. If a concurrent clearTimeline()
+
+    if (rendered.editor.hasFocus()) {
+      // Still legitimately mounted — keep it tracked. Reachable when this is
+      // called directly by mountObserver's exit callback (which never
+      // pre-removes `mountOrder`) as well as, in principle, via
+      // enforceMountLimit (which does): pickEvictionCandidate already
+      // excludes focused entries at selection time, so this path shouldn't
+      // fire from there, but re-adding is a harmless no-op if it somehow did.
+      this.ensureMountOrderContains(rendered.entry.file.path);
+      return;
+    }
+
+    // Captured before the awaits below. If a concurrent clearTimeline()
     // lands while the flush is in flight, it has already flushed, destroyed,
     // and nulled every editor (including this one) and emptied the timeline
     // itself — bail rather than redundantly destroy an already-destroyed
     // editor and render static Markdown into a bodyEl that no longer belongs
-    // to any visible timeline.
+    // to any visible timeline. mountOrder itself is stale/replaced by then,
+    // so no ensureMountOrderContains call is needed on this path.
     const generation = this.generation;
 
-    await this.flushSave(rendered);
+    try {
+      await this.flushSave(rendered);
+    } catch (error) {
+      // save() itself never rejects; this only guards against a future
+      // change reintroducing a throw here (e.g. editor.flush() itself). The
+      // destroy/restore-static sequence below must still run regardless —
+      // an editor left mounted because of a failed flush would keep polling
+      // (ObsidianEmbedEditor) or holding DOM (either editor) forever, on top
+      // of whatever the failed flush already lost.
+      console.error("Journal Entries: failed to flush a pending save before unmounting", error);
+    }
     if (generation !== this.generation) return;
+
+    if (rendered.intersecting) {
+      // Re-entered MOUNT_ROOT_MARGIN while the flush was in flight.
+      // mountEditor's own guard (`if (rendered.editor) return`) already saw
+      // this editor still set and no-opped, so no other code path will
+      // remount it — leave it mounted rather than destroying a now-visible
+      // entry's live editor out from under the user. Keep it tracked in
+      // mountOrder for the same reason as the focused case above.
+      this.ensureMountOrderContains(rendered.entry.file.path);
+      return;
+    }
 
     // Freeze the height across the swap so the scroll position does not shift.
     const height = rendered.bodyEl.offsetHeight;
@@ -840,8 +970,26 @@ export class JournalView extends ItemView {
     await this.save(rendered, rendered.editor?.getValue() ?? "");
   }
 
+  /**
+   * Writes `value` to disk unless it already matches `rendered.savedBody`,
+   * and never rejects. The dirty check and the never-reject shape are both
+   * in `saveIfChanged` — kept as a small, dependency-injected pure function
+   * (same shape as `mountWindow.ts`'s `stateOf`/`onEvict`) so both are
+   * covered by `tests/entrySave.test.ts` directly, without needing a live
+   * `JournalView`.
+   */
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
-    await this.plugin.repository.writeBody(rendered.entry.file, value);
+    rendered.savedBody = await saveIfChanged(
+      value,
+      rendered.savedBody,
+      (v) => this.plugin.repository.writeBody(rendered.entry.file, v),
+      (error) => {
+        console.error("Journal Entries: failed to save an entry", rendered.entry.file.path, error);
+        new Notice(
+          `Journal Entries: failed to save "${rendered.entry.file.path}". See the developer console for details.`,
+        );
+      },
+    );
   }
 
   /**

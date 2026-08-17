@@ -152,3 +152,33 @@ i.e. past 60 entries on desktop or 25 on mobile).
       (via `wireEditor`'s `onBlur` callback, since it was still off-screen at
       that point) and its text — including whatever you typed before
       scrolling — was saved and is intact.
+- [ ] **Does `focusout` fire for reasons other than "the user clicked a
+      different entry"?** `ObsidianEmbedEditor`'s blur handling is a
+      `focusout` listener on the embed's container, filtered by
+      `relatedTarget` (see its source). Two cases neither the automated
+      suite nor a code read can settle: (1) does it fire when the whole
+      Obsidian window loses OS-level focus (switching to another app) —
+      `relatedTarget` would be `null` there just as it is for a real blur,
+      which the current filter can't distinguish from "moved outside the
+      container"; (2) does it fire when a CM6-internal popup takes focus
+      (the in-editor search panel, an autocomplete/suggestion dropdown)? If
+      either fires `onBlur`, `wireEditor`'s "second chance" unmount
+      (`if (!rendered.intersecting) void this.unmountEditor(rendered)`)
+      would tear down and revert to static rendering an entry the user
+      still considers "in", the moment it's also off-screen — e.g. tabbing
+      to another app mid-sentence while scrolled past the margin. Check by:
+      focusing an off-screen-eligible entry (scroll it near the
+      `MOUNT_ROOT_MARGIN` edge), then (a) switch to a different application
+      and back, (b) trigger the in-editor search panel or `[[` autocomplete
+      and dismiss it, and in each case confirm the entry is still a live
+      editor with focus afterward, not reverted to static text.
+- [ ] **Do the `400px`/`900px` margins feel right?** With real scrolling
+      (mouse wheel, trackpad, and — on mobile — a flick gesture), confirm an
+      entry becomes editable *before* it's needed, not exactly as it scrolls
+      into view (a visible "pop-in" or a moment of lag before `[[` works
+      would mean the margin is too small for that input method), and that
+      the number of simultaneously mounted `.journal-entry-embed`/
+      `.journal-entry-textarea` elements at a normal scroll speed doesn't
+      feel wasteful relative to what's actually on screen (too large a
+      margin). Adjust `MOUNT_ROOT_MARGIN` in `JournalView.ts` if either feels
+      off.
