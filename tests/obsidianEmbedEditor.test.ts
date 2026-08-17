@@ -319,6 +319,29 @@ describe("ObsidianEmbedEditor: availability and mount failures", () => {
     expect(editor.isUsable()).toBe(false);
     expect(unusableFired).toBe(true);
   });
+
+  it("tags exactly the pane containing .cm-editor, not both panes", () => {
+    // Guards the positive case: the noEditorDom test above only proves
+    // tagEditorPane() fails safely when it finds NOTHING. It would still
+    // pass unchanged if tagEditorPane() ever dropped its ".cm-editor" check
+    // and tagged both panes — which would make the CSS reveal the preview
+    // pane too, alongside the editor.
+    const { creator } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const panes = Array.from(container.querySelectorAll(".markdown-embed-content"));
+    expect(panes.length).toBe(2); // sanity: the fake really built both panes
+
+    const tagged = panes.filter((pane) => pane.classList.contains("journal-entry-embed-editor-pane"));
+    expect(tagged.length).toBe(1);
+    expect(tagged[0].querySelector(".cm-editor")).not.toBeNull();
+
+    const untagged = panes.filter((pane) => !pane.classList.contains("journal-entry-embed-editor-pane"));
+    expect(untagged.length).toBe(1);
+    expect(untagged[0].querySelector(".cm-editor")).toBeNull();
+  });
 });
 
 describe("ObsidianEmbedEditor: the body/document translation", () => {
@@ -439,6 +462,42 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     vi.advanceTimersByTime(300);
 
     expect(changes).toEqual(["A NEW BODY EDIT.\n"]);
+  });
+
+  it("also catches a false-negative closing delimiter hidden by a thematic break in the body", () => {
+    // Regression test: the guard only checked `frontmatter === ""`, which
+    // misses this case entirely. If the body itself contains its own "---"
+    // (an ordinary Markdown thematic break) and the user deletes the
+    // frontmatter's REAL closing "---", the document still starts with
+    // "---", so splitFrontmatter closes the block on the body's thematic
+    // break instead: "frontmatter" silently swallows everything up to and
+    // including that break, and "body" becomes only the text after it — a
+    // strict suffix of what the body used to be, with everything before the
+    // break missing. Reporting that truncated tail as the whole body would
+    // have the view write it as such, deleting the earlier text from disk
+    // while it's still visible on screen.
+    const RULE_DOC =
+      '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n---\n\nBefore the rule.\n\n---\n\nAfter the rule.\n';
+    const ruleBody = splitFrontmatter(RULE_DOC).body;
+
+    const { creator, setDoc } = fakeEmbedCreator(RULE_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), ruleBody);
+    expect(editor.getValue()).toBe(ruleBody);
+
+    // Delete the frontmatter's closing "---" (but leave the thematic break
+    // further down untouched).
+    const closingDelimiterDeleted =
+      '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\nBefore the rule.\n\n---\n\nAfter the rule.\n';
+    setDoc(closingDelimiterDeleted);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([]);
+    expect(editor.getValue()).toBe(ruleBody);
   });
 });
 
@@ -564,16 +623,18 @@ describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
 
   it("a stale reload racing ahead of typing does not clobber newer keystrokes", () => {
     // Reproduces the exact trace from review: user types "B1"; the poll
-    // reports it; a caller's debounced write of "B1" starts and resolves
-    // (modelled by the explicit notifyWritten("B1") call — the real
-    // JournalView calls this immediately after its vault.process write
-    // resolves); the user types on to "B2"; the "B1" write's vault `modify`
-    // event reloads the embed's buffer back to (now stale) "B1" — modelled
-    // here via simulateReload() directly, standing in for a real
-    // onFileChanged-triggered reload (which the code under test
-    // neutralises; this test proves the SECOND, independent guard also
-    // holds, regardless of whether that neutralisation is what's doing the
-    // work in a real Obsidian window).
+    // reports it; a caller's debounced write of "B1" starts; the user types
+    // on to "B2" while that write is still in flight; the "B1" write
+    // finally resolves (modelled by the explicit notifyWritten("B1") call —
+    // the real JournalView calls this immediately after its vault.process
+    // write resolves, which can easily be after the user has moved on, as
+    // here) and its vault `modify` event reloads the embed's buffer back to
+    // (now stale) "B1" — modelled here via simulateReload() directly,
+    // standing in for a real onFileChanged-triggered reload (which the code
+    // under test neutralises; this test proves the SECOND, independent
+    // guard also holds, regardless of whether that neutralisation is what's
+    // doing the work in a real Obsidian window). The reload arrives one
+    // poll tick after notifyWritten, well inside WRITE_ECHO_WINDOW_MS.
     const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
     const changes: string[] = [];
@@ -589,11 +650,11 @@ describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
     vi.advanceTimersByTime(300);
     expect(changes).toEqual(["B1"]);
 
-    editor.notifyWritten("B1"); // the view's debounced write of "B1" just resolved
-
     setDoc(replaceBody(SEEDED_DOC, "B2"));
     vi.advanceTimersByTime(300);
     expect(changes).toEqual(["B1", "B2"]);
+
+    editor.notifyWritten("B1"); // the view's debounced write of "B1" only resolves now
 
     simulateReload(replaceBody(SEEDED_DOC, "B1"));
     vi.advanceTimersByTime(300);
@@ -662,7 +723,7 @@ describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
     vi.advanceTimersByTime(300);
     expect(changes).toEqual(["B1", "B2"]);
 
-    // Well past WRITE_ECHO_WINDOW_MS (~1s): the pending record must have
+    // Well past WRITE_ECHO_WINDOW_MS (300ms): the pending record must have
     // lapsed, so this reload back to "B1" is no longer explained by it and
     // is reported like any other edit.
     vi.advanceTimersByTime(5000);
@@ -670,6 +731,89 @@ describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
     vi.advanceTimersByTime(300);
 
     expect(changes).toEqual(["B1", "B2", "B1"]);
+  });
+
+  it("a revert arriving after the (now short) window is reported as a normal edit, not suppressed", () => {
+    // Regression test for Important 1: with the previous ~1s window, a
+    // quick type-then-revert of exactly the just-written text — timed at
+    // ~700ms after notifyWritten, comfortably inside that window — was
+    // misread as a stale echo and silently undone. Shrinking the window to
+    // ~300ms (a genuine echo lands within roughly one poll tick of the
+    // write resolving, so it doesn't need to be any wider) lets this same
+    // timing through as an ordinary edit instead.
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+    focusEmbedContainer(container);
+
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["Today I ran."]);
+
+    editor.notifyWritten("Today I ran."); // the write of exactly this text just resolved
+
+    // The user types a space; reported normally (doesn't match the pending
+    // write's exact body).
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran. "));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["Today I ran.", "Today I ran. "]);
+
+    // ~700ms have now passed since notifyWritten — past the 300ms window.
+    vi.advanceTimersByTime(300);
+
+    // The user backspaces the space, reverting to exactly the body that
+    // was written. Because the window has lapsed, this is an ordinary edit.
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual(["Today I ran.", "Today I ran. ", "Today I ran."]);
+    expect(editor.getValue()).toBe("Today I ran.");
+  });
+
+  it("an echo is corrected in the buffer even when the editor is unfocused, so a teardown flush never writes stale text", () => {
+    // Regression test for Important 2: the restore used to be gated on
+    // hasFocus(), so when a genuine echo arrived while nobody was focused
+    // on this editor, the change stream stayed correct but the buffer and
+    // lastBody were left diverged from it — getValue()/flush() kept
+    // reporting the stale echoed body, and a teardown flush would have
+    // written it over the user's actual, newer text.
+    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    // Deliberately not appended to document.body / not focused: hasFocus()
+    // must report false throughout this test.
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    setDoc(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1"]);
+
+    setDoc(replaceBody(SEEDED_DOC, "B2"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1", "B2"]);
+
+    editor.notifyWritten("B1");
+    simulateReload(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+
+    // Still correctly suppressed: no spurious "B1" reported.
+    expect(changes).toEqual(["B1", "B2"]);
+    // The regression: this used to return "B1" here because the buffer was
+    // never corrected without focus.
+    expect(editor.getValue()).toBe("B2");
+
+    // flush() unconditionally re-emits the current value — must be "B2",
+    // not a stale "B1" written over the user's actual text at teardown.
+    editor.flush();
+    expect(changes).toEqual(["B1", "B2", "B2"]);
   });
 });
 

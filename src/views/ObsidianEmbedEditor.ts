@@ -130,13 +130,24 @@ function neutralise(record: Record<string, unknown>, name: string, asyncReturn =
 /**
  * How long after `notifyWritten(body)` a poll-detected change matching that
  * exact `body` is still treated as that write's echo rather than a fresh,
- * unrelated edit that merely happens to coincide with it. "About a second":
- * generous enough to cover the gap between a debounced write landing and the
- * vault's `modify` event (if anything) reaching the embed, tight enough that
- * an ordinary later edit — including reverting back to old text via undo or
- * backspace, which is common and must NOT be swallowed — can't stray into it.
+ * unrelated edit that merely happens to coincide with it. A genuine echo (if
+ * one ever occurs — see below) lands within roughly one poll tick of the
+ * write resolving, so ~300ms is generous enough to cover that without
+ * lingering.
+ *
+ * Widening this window doesn't make the guard safer, only slower to release
+ * an ordinary edit it shouldn't have caught: a user who reverts to exactly
+ * the just-written body within the window (e.g. types a character then
+ * immediately backspaces it) still has that revert silently undone, the
+ * same failure class the previous, content-keyed guard had, just narrowed
+ * to a shrinking sliver of time instead of eliminated. That residual is
+ * accepted because `onFileChanged` is already neutralised above — the echo
+ * this guard exists to catch should never happen at all in a real Obsidian
+ * window. This is insurance against that neutralisation being incomplete or
+ * bypassed (unverifiable without a running Obsidian), not a mechanism this
+ * plugin depends on to behave correctly.
  */
-const WRITE_ECHO_WINDOW_MS = 1000;
+const WRITE_ECHO_WINDOW_MS = 300;
 
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
@@ -363,12 +374,36 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
     const { frontmatter, body } = splitFrontmatter(raw);
 
-    // See mountedFrontmatter's doc: bail ONLY when the block has genuinely
-    // stopped parsing (regressed from a real block to none at all), not on
-    // every difference from what was last seen — a single legitimate
-    // property addition/removal must not silently stop all future saves.
-    if (this.mountedFrontmatter && frontmatter === "") {
-      return this.lastBody;
+    if (this.mountedFrontmatter) {
+      // See mountedFrontmatter's doc: bail ONLY when the block has
+      // genuinely stopped parsing, not on every difference from what was
+      // last seen — a single legitimate property addition/removal must not
+      // silently stop all future saves. Two distinct ways it can genuinely
+      // break:
+      if (frontmatter === "") {
+        // The delimiter is gone entirely (e.g. the closing "---" was
+        // deleted with nothing else in the body that looks like one):
+        // splitFrontmatter treats the whole document as body.
+        return this.lastBody;
+      }
+      if (
+        frontmatter.length > this.mountedFrontmatter.length &&
+        body !== this.lastBody &&
+        this.lastBody.endsWith(body)
+      ) {
+        // The closing "---" was deleted, but the body happens to contain
+        // its OWN "---" (a thematic break) further down — splitFrontmatter
+        // then closes the block on that line instead, silently swallowing
+        // everything between the real frontmatter and the thematic break
+        // into "frontmatter", and reporting only the tail after it as the
+        // whole body. That combination (frontmatter grew, and what's left
+        // of the body is a strict suffix of what it was) is what separates
+        // this from a legitimate property addition, where the body is
+        // unchanged. Reporting the truncated tail would have the view
+        // write it as the entry's entire body, deleting everything before
+        // the thematic break from disk while it's still visible on screen.
+        return this.lastBody;
+      }
     }
 
     this.mountedFrontmatter = frontmatter;
@@ -382,6 +417,12 @@ export class ObsidianEmbedEditor implements EntryEditor {
       this.embed?.editMode?.set?.(replaceBody(raw, body), false);
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to write", error);
+      // Consistent with readRaw(): a set() that starts throwing leaves this
+      // editor unable to reliably accept further edits (every setValue()
+      // would fail silently, and the next poll-reported body would
+      // overwrite whatever the buffer actually holds), so the caller needs
+      // to know via the same isUsable()/onUnusable() path as a read failure.
+      this.markUnusable();
     }
   }
 
@@ -428,6 +469,13 @@ export class ObsidianEmbedEditor implements EntryEditor {
    */
   private startPolling(): void {
     let lastRaw = this.readRaw() ?? "";
+    // The initial read above may itself have found the embed already
+    // broken and called markUnusable() — without this check, setInterval
+    // below would still be installed regardless, leaving a 250ms loop
+    // running against an editor already flagged unusable, clearable only by
+    // destroy() rather than the markUnusable() path that's supposed to own
+    // stopping it.
+    if (!this.usable) return;
 
     this.pollHandle = window.setInterval(() => {
       const raw = this.readRaw();
@@ -441,14 +489,16 @@ export class ObsidianEmbedEditor implements EntryEditor {
       if (body === this.lastBody) return;
 
       if (this.consumeWriteEcho(body)) {
-        // A write we know happened just echoed back into the buffer. If
-        // the user is still here to have lost keystrokes to it, restore
-        // the newer text; otherwise just drop the echo without disturbing
-        // an unfocused buffer.
-        if (this.hasFocus()) {
-          this.writeBody(this.lastBody);
-          lastRaw = this.readRaw() ?? lastRaw;
-        }
+        // A write we know happened just echoed back into the buffer,
+        // discarding whatever the user typed since. Restore the newer text
+        // unconditionally — including when unfocused: a set() on an
+        // unfocused editor has no cursor to disturb, so gating this on
+        // hasFocus() bought nothing and, worse, left the buffer and
+        // lastBody diverged (and lastRaw stale) until the next mismatched
+        // tick, with getValue()/flush() reporting the stale echoed body in
+        // the meantime — exactly what a teardown flush must not write.
+        this.writeBody(this.lastBody);
+        lastRaw = this.readRaw() ?? lastRaw;
         return;
       }
 
