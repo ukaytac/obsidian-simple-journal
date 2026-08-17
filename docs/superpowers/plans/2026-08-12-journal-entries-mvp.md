@@ -2894,7 +2894,22 @@ git commit -m "feat: load older entries incrementally on scroll"
 
 ## Task 13: Editor mounting and the mount window
 
-Every loaded entry becomes a live editor, capped so memory stays bounded. Entries beyond the cap fall back to static rendering.
+An entry that scrolls into view becomes a live editor; one that scrolls well clear
+of it is flushed, destroyed and replaced by static rendering, and mounts again on
+the way back. A second `IntersectionObserver` — separate from the paging sentinel
+— drives this. `MAX_MOUNTED_EDITORS` is a backstop, not the mechanism: when it
+binds, the entry furthest from the viewport is unmounted. The focused editor is
+never unmounted, even scrolled out of view, because that would take the keyboard
+out from under the user mid-sentence.
+
+**The snippets below predate that design** — they queue mounts FIFO by completion
+order, which was wrong twice over. On mobile the first 40-entry page exceeded the
+25 cap before the user scrolled at all, so eviction order fell out of
+`vault.read()` timing and could discard the entry being looked at; and nothing
+ever remounted an evicted entry, so scrolling past the cap and back left the top
+of the journal permanently uneditable. Read them for the save/flush/unmount
+plumbing, which is unchanged, and take the mounting trigger from the paragraph
+above.
 
 **Files:**
 - Modify: `src/views/JournalView.ts`, `src/main.ts`
