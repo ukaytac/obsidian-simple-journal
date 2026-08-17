@@ -149,6 +149,25 @@ export class TextareaEditor implements EntryEditor {
   }
 
   /**
+   * TextareaEditor never reloads its own buffer from disk — the textarea's
+   * value only ever changes via `setValue()` or the user's own typing, so
+   * there is no internal write-echo path for it to guard against, unlike
+   * `ObsidianEmbedEditor`'s embed, which can reload itself. No-op.
+   */
+  notifyWritten(_body: string): void {
+    // Intentional no-op.
+  }
+
+  /**
+   * TextareaEditor is "always usable" (see `EntryEditor.isUsable`'s doc) —
+   * it has no internal API to fail out from under itself mid-session.
+   * No-op.
+   */
+  onUnusable(_callback: () => void): void {
+    // Intentional no-op.
+  }
+
+  /**
    * Resizes the textarea to fit its content. `event` is the triggering
    * input event, if any, and `previousValue` is the textarea's value just
    * before that event; together they let a fast path skip work that a

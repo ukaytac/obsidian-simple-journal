@@ -52,11 +52,19 @@ import type { EntryEditor } from "./EntryEditor";
  * place as the writer methods below. `loadFile` is deliberately left alone:
  * `load()` needs it for the *initial* read.
  *
- * Whether the embed actually performs such a reload while dirty isn't
- * measurable without a running Obsidian, so a second, independent guard
- * (`recentEmissions` in `startPolling`) also treats a reappearing old body as
- * an echo rather than a real edit — belt and braces, not conditional on the
- * first guard holding.
+ * This is confirmed the right trade: external edits no longer reaching this
+ * editor's buffer on their own is intended, because the view already owns
+ * that path through `setValue()`. But replacing the *instance property*
+ * only intercepts callers that dispatch through `embed.onFileChanged(...)` —
+ * anything that captured the original method at construction time, or that
+ * reloads the buffer through some other internal route entirely, would
+ * bypass this. Whether the embed actually reloads while dirty isn't
+ * measurable without a running Obsidian, so a second, independent,
+ * provenance-based guard (`pendingWrite` in `startPolling`/`notifyWritten`)
+ * also treats a reappearing value as an echo rather than a real edit — belt
+ * and braces, not conditional on this neutralisation holding. The manual
+ * test (docs/manual-testing-editor.md) is the real arbiter of whether either
+ * guard is still needed on a given Obsidian version.
  */
 
 interface EmbedEditMode {
@@ -120,18 +128,22 @@ function neutralise(record: Record<string, unknown>, name: string, asyncReturn =
 }
 
 /**
- * Bound on `recentEmissions` (see `startPolling`). A handful of in-flight,
- * not-yet-written keystroke bursts is all that can realistically be pending
- * at once; this just keeps the array from growing without limit over a long
- * editing session.
+ * How long after `notifyWritten(body)` a poll-detected change matching that
+ * exact `body` is still treated as that write's echo rather than a fresh,
+ * unrelated edit that merely happens to coincide with it. "About a second":
+ * generous enough to cover the gap between a debounced write landing and the
+ * vault's `modify` event (if anything) reaching the embed, tight enough that
+ * an ordinary later edit — including reverting back to old text via undo or
+ * backspace, which is common and must NOT be swallowed — can't stray into it.
  */
-const RECENT_EMISSIONS_LIMIT = 8;
+const WRITE_ECHO_WINDOW_MS = 1000;
 
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
   private containerEl: HTMLElement | null = null;
   private changeCallback: ((value: string) => void) | null = null;
   private blurCallback: (() => void) | null = null;
+  private unusableCallback: (() => void) | null = null;
   private pollHandle: number | null = null;
   private usable = false;
 
@@ -146,26 +158,31 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private pendingValue: string | null = null;
 
   /**
-   * The frontmatter block exactly as it stood at mount/last-load. If the
-   * user breaks it (e.g. deletes the closing `---`), `splitFrontmatter` on
-   * the resulting document reports empty frontmatter and treats the entire
-   * document as "body" — reporting that through onChange would eventually
-   * have `EntryRepository.writeBody` paste the now-unparsed frontmatter
-   * lines into the body as a second, disk-visible frontmatter-looking block
-   * (created/mood/etc. survive, since `replaceBody` still preserves the
-   * real frontmatter ahead of it, but it's still visible corruption). Used
-   * by `readBody` to detect this and fall back rather than propagate it.
+   * The frontmatter block exactly as it stood at the last successful read.
+   * Refreshed on every read that still parses (see `readBody`) — a
+   * legitimate frontmatter edit (added/removed/reordered a property, still a
+   * well-formed block) is not an error and must not stop body edits from
+   * being reported. Only used to detect the one case that IS an error: the
+   * block going from present to totally unparseable (e.g. the user deleted
+   * its closing `---`), which would otherwise let `splitFrontmatter` treat
+   * the whole document as "body" and have `EntryRepository.writeBody` paste
+   * those now-unparsed frontmatter lines into the body as a second,
+   * disk-visible frontmatter-looking block on the next write.
    */
   private mountedFrontmatter: string | null = null;
 
   /**
-   * Bodies this editor has itself emitted through onChange recently, oldest
-   * first. Belt-and-braces against the self-reload race described in this
-   * file's top comment: if a poll tick observes a body that matches one of
-   * these rather than genuinely new text, it's treated as a stale echo of a
-   * write that raced ahead of further typing, not a real edit.
+   * Provenance record for the write-echo guard (see this file's top
+   * comment). Set only by `notifyWritten()` — i.e. only when the caller
+   * confirms a specific body was actually written to disk — never by
+   * anything this editor emits on its own. A poll-detected change is only
+   * ever treated as an echo when it matches this exact body AND arrives
+   * within `WRITE_ECHO_WINDOW_MS`; this is deliberately NOT content-keyed
+   * against a history of past emissions (an earlier design was, and it
+   * misread an ordinary undo/backspace back to previously-seen text as a
+   * stale reload, silently reverting the user's own undo).
    */
-  private recentEmissions: string[] = [];
+  private pendingWrite: { body: string; at: number } | null = null;
 
   constructor(private readonly app: App) {}
 
@@ -182,6 +199,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
     this.usable = false;
     this.mountedFrontmatter = null;
+    this.pendingWrite = null;
 
     const creator = getCreator(this.app);
     if (!creator || !file) {
@@ -263,9 +281,14 @@ export class ObsidianEmbedEditor implements EntryEditor {
       } else {
         this.lastBody = loadedBody;
       }
-      this.recordEmission(this.lastBody);
 
+      // Tags the pane containing the real CM6 editor. If neither its
+      // synchronous nor its deferred safety-net pass ever finds one, it
+      // calls markUnusable() itself (asynchronously — see its doc), which
+      // is why this can't be checked synchronously here the way the other
+      // mount-time failures above are.
       this.tagEditorPane();
+
       this.startPolling();
       // No removeEventListener on destroy: this listener is reachable only
       // from this now-detached, dereferenced containerEl, so it's collected
@@ -301,17 +324,21 @@ export class ObsidianEmbedEditor implements EntryEditor {
   }
 
   /**
-   * Marks this editor unusable and stops polling. Called the moment
-   * `readRaw()` observes the embed behaving unexpectedly — file deleted
-   * while mounted, or any shape change after mount — so the caller's
-   * `isUsable()` check (normally only meaningful right after `mount()`)
-   * also catches a *later* failure, rather than leaving the user typing
-   * into an editor whose text can never be read back out.
+   * Marks this editor unusable, stops polling, and tells the caller via
+   * `onUnusable`. Called the moment something observes the embed behaving
+   * unexpectedly — `readRaw()` on a shape change or a runtime failure after
+   * a successful mount (e.g. the file was deleted out from under it), or
+   * `tagEditorPane()` never finding the CM6 editor pane at all — so a
+   * *later* failure is caught too, not only the one `isUsable()` reflects
+   * right after `mount()`. Without the callback firing, the user would keep
+   * typing into an editor whose text can never be read back out, with the
+   * poll silently stopped and no way for the caller to notice.
    */
   private markUnusable(): void {
     if (!this.usable) return;
     this.usable = false;
     this.stopPolling();
+    this.unusableCallback?.();
   }
 
   /** Raw editMode.get() output — the whole document, frontmatter included. */
@@ -335,14 +362,16 @@ export class ObsidianEmbedEditor implements EntryEditor {
     if (raw === null) return this.lastBody;
 
     const { frontmatter, body } = splitFrontmatter(raw);
-    if (this.mountedFrontmatter !== null && frontmatter !== this.mountedFrontmatter) {
-      // See mountedFrontmatter's doc: the user broke the frontmatter
-      // delimiter. Fall back to the last known-good body instead of
-      // reporting this one — it self-heals the moment the delimiter is
-      // restored, and never reaches EntryRepository.writeBody in the
-      // meantime.
+
+    // See mountedFrontmatter's doc: bail ONLY when the block has genuinely
+    // stopped parsing (regressed from a real block to none at all), not on
+    // every difference from what was last seen — a single legitimate
+    // property addition/removal must not silently stop all future saves.
+    if (this.mountedFrontmatter && frontmatter === "") {
       return this.lastBody;
     }
+
+    this.mountedFrontmatter = frontmatter;
     return body;
   }
 
@@ -356,9 +385,34 @@ export class ObsidianEmbedEditor implements EntryEditor {
     }
   }
 
-  private recordEmission(body: string): void {
-    this.recentEmissions.push(body);
-    if (this.recentEmissions.length > RECENT_EMISSIONS_LIMIT) this.recentEmissions.shift();
+  /**
+   * Records that `body` was just written to disk. See `pendingWrite`'s doc
+   * and this file's top comment: this is the provenance a poll-detected
+   * change is checked against, so only the actual echo of a write we know
+   * happened gets suppressed — never merely "a body we've seen before".
+   */
+  notifyWritten(body: string): void {
+    this.pendingWrite = { body, at: Date.now() };
+  }
+
+  /**
+   * Consumes `pendingWrite` if `body` matches it within the echo window —
+   * "consumes" meaning it is cleared either way, so it can never match a
+   * second time (once used) and never lingers to match some unrelated later
+   * edit (once the window lapses).
+   */
+  private consumeWriteEcho(body: string): boolean {
+    const pending = this.pendingWrite;
+    if (!pending) return false;
+
+    if (Date.now() - pending.at > WRITE_ECHO_WINDOW_MS) {
+      this.pendingWrite = null;
+      return false;
+    }
+    if (body !== pending.body) return false;
+
+    this.pendingWrite = null;
+    return true;
   }
 
   /**
@@ -386,14 +440,11 @@ export class ObsidianEmbedEditor implements EntryEditor {
       const body = this.readBody();
       if (body === this.lastBody) return;
 
-      if (this.recentEmissions.includes(body)) {
-        // Belt-and-braces (see this file's top comment): this body is one
-        // WE emitted before, not new text — a stale echo of a write that
-        // raced ahead of further typing. this.lastBody is by construction
-        // newer than anything in recentEmissions, so restore it in the
-        // buffer if the user is still here to lose keystrokes to it;
-        // otherwise just drop the echo without disturbing an unfocused
-        // buffer.
+      if (this.consumeWriteEcho(body)) {
+        // A write we know happened just echoed back into the buffer. If
+        // the user is still here to have lost keystrokes to it, restore
+        // the newer text; otherwise just drop the echo without disturbing
+        // an unfocused buffer.
         if (this.hasFocus()) {
           this.writeBody(this.lastBody);
           lastRaw = this.readRaw() ?? lastRaw;
@@ -402,7 +453,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
       }
 
       this.lastBody = body;
-      this.recordEmission(body);
       this.changeCallback?.(body);
     }, 250);
   }
@@ -464,6 +514,10 @@ export class ObsidianEmbedEditor implements EntryEditor {
     this.blurCallback = callback;
   }
 
+  onUnusable(callback: () => void): void {
+    this.unusableCallback = callback;
+  }
+
   flush(): void {
     // Mirrors TextareaEditor.flush(): before a first successful mount (or
     // after mount() found no usable embed), lastBody is just its ""
@@ -475,7 +529,6 @@ export class ObsidianEmbedEditor implements EntryEditor {
     if (!this.embed && this.pendingValue === null) return;
     const value = this.getValue();
     this.lastBody = value;
-    this.recordEmission(value);
     this.changeCallback?.(value);
   }
 
@@ -502,6 +555,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
     this.discardCurrentEmbed();
     this.changeCallback = null;
     this.blurCallback = null;
+    this.unusableCallback = null;
   }
 
   /**
@@ -517,7 +571,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
     this.embed = null;
     this.usable = false;
     this.mountedFrontmatter = null;
-    this.recentEmissions = [];
+    this.pendingWrite = null;
     if (embed) this.teardownEmbed(embed);
     this.containerEl?.remove();
     this.containerEl = null;
@@ -536,22 +590,43 @@ export class ObsidianEmbedEditor implements EntryEditor {
    * Tags whichever `.markdown-embed-content` pane actually contains the CM6
    * editor with a class the CSS keys off, so the "hide the preview pane,
    * show the editor pane" rule doesn't depend on `:has()` support — some
-   * embedded webviews Obsidian can run on may not have it, which would
-   * otherwise leave BOTH panes hidden while isUsable() still reports true.
-   * Called once right after showEditor() and once more on the next tick as
-   * a safety net, in case the CM6 DOM is constructed asynchronously on some
-   * version rather than synchronously as the spike observed.
+   * embedded webviews Obsidian can run on may not have it. Tries once
+   * synchronously, then once more on the next tick as a safety net in case
+   * the CM6 DOM is constructed asynchronously on some version rather than
+   * synchronously as the spike observed.
+   *
+   * If NEITHER pass finds a pane to tag, this calls `markUnusable()`:
+   * leaving nothing tagged would mean the blanket `display: none` on
+   * `.markdown-embed-content` hides BOTH panes, leaving the user with a
+   * blank, unusable entry while `isUsable()` still reported true at mount
+   * time — the exact failure removing the CSS `:has()` selector was meant
+   * to eliminate, just relocated into this method instead.
    */
   private tagEditorPane(): void {
-    const tag = (): void => {
+    // Captured so the deferred pass can tell a remount happened in the
+    // meantime (this.embed now points at a different instance) and skip
+    // rather than wrongly declare the NEW mount unusable over the OLD one's
+    // missing DOM.
+    const mountedEmbed = this.embed;
+
+    const tag = (): boolean => {
       const container = this.containerEl;
-      if (!container) return;
+      if (!container) return false;
+      let tagged = false;
       for (const pane of Array.from(container.querySelectorAll(".markdown-embed-content"))) {
-        if (pane.querySelector(".cm-editor")) pane.classList.add("journal-entry-embed-editor-pane");
+        if (pane.querySelector(".cm-editor")) {
+          pane.classList.add("journal-entry-embed-editor-pane");
+          tagged = true;
+        }
       }
+      return tagged;
     };
 
-    tag();
-    window.setTimeout(tag, 0);
+    if (tag()) return;
+
+    window.setTimeout(() => {
+      if (this.embed !== mountedEmbed) return;
+      if (!tag()) this.markUnusable();
+    }, 0);
   }
 }

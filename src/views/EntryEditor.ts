@@ -70,6 +70,25 @@ export interface EntryEditor {
    * `TextareaEditor` instead. Absent means "always usable".
    */
   isUsable?(): boolean;
+  /**
+   * Tells this editor that `body` was just written to disk (the caller's
+   * `vault.process` write resolved with exactly this body). Some
+   * implementations reload their own buffer from disk on external changes;
+   * without this, that self-reload can race a debounced write against
+   * further typing and misread the echo of an old value as a fresh edit,
+   * discarding newer keystrokes. `TextareaEditor` has no such reload path
+   * and implements this as a no-op.
+   */
+  notifyWritten(body: string): void;
+  /**
+   * Registered once, before mount. Fires if this editor discovers — at any
+   * point after a successful `mount`, not only right after it — that it can
+   * no longer be trusted (e.g. the internal API it depends on stopped
+   * behaving as expected). The caller should tear this editor down and
+   * mount `TextareaEditor` in its place. `TextareaEditor` never fails this
+   * way and implements this as a no-op.
+   */
+  onUnusable(callback: () => void): void;
 }
 
 export type EntryEditorFactory = {

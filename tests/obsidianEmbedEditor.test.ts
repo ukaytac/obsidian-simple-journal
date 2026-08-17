@@ -53,21 +53,35 @@ installObsidianDomHelpers(globalThis as unknown as typeof globalThis);
  * (frontmatter included), and `set()` replaces it wholesale. `initialDoc`
  * stands in for "the embed loaded this file's current disk content itself".
  *
+ * On a successful `showEditor()` it also builds the two `.markdown-embed-content`
+ * panes docs/editor-embed-api.md found (preview + editor, only the latter
+ * containing `.cm-editor`) inside whatever `containerEl` the creator was
+ * invoked with — real enough for `tagEditorPane()` to find and tag the right
+ * one, the same as any other mount test exercises. `opts.noEditorDom` skips
+ * this, to exercise the "never finds a pane at all" failure path.
+ *
  * `opts.throwOnLoad`/`throwOnShowEditor` model a shape change or a runtime
  * error partway through construction. `breakGet()` flips `get()` from
  * "working" to "throws" after the fact, for the failure-after-mount case.
  * `simulateReload(diskDoc)` models the embed reloading its own buffer from
- * disk on a vault `modify` event — the self-reload race this file's onFileChanged
- * neutralisation and `recentEmissions` guard both defend against — without
- * needing a real vault or a real `onFileChanged` (which this test's embed
- * also has, and which the code under test neutralises).
+ * disk on a vault `modify` event — the self-reload race this file's
+ * `onFileChanged` neutralisation and `notifyWritten`/`pendingWrite` guard
+ * both defend against — without needing a real vault or a real
+ * `onFileChanged` (which this test's embed also has, and which the code
+ * under test neutralises).
  */
 function fakeEmbedCreator(
   initialDoc: string,
-  opts: { noEditMode?: boolean; throwOnLoad?: boolean; throwOnShowEditor?: boolean } = {},
+  opts: {
+    noEditMode?: boolean;
+    throwOnLoad?: boolean;
+    throwOnShowEditor?: boolean;
+    noEditorDom?: boolean;
+  } = {},
 ) {
   let doc = initialDoc;
   let getShouldThrow = false;
+  let hostContainerEl: HTMLElement | null = null;
 
   // Obsidian's real requestSave is very likely a Debouncer function object
   // carrying its own .cancel()/.run(), not a plain function — see
@@ -116,10 +130,29 @@ function fakeEmbedCreator(
         set: (value: string, _clearHistory: boolean) => spies.set(value),
         cm: { focus: vi.fn(), requestMeasure: vi.fn() },
       };
+
+      if (!opts.noEditorDom && hostContainerEl) {
+        const ownerDoc = hostContainerEl.ownerDocument;
+
+        const preview = ownerDoc.createElement("div");
+        preview.className = "markdown-embed-content";
+        hostContainerEl.appendChild(preview);
+
+        const editorPane = ownerDoc.createElement("div");
+        editorPane.className = "markdown-embed-content";
+        const cmEditor = ownerDoc.createElement("div");
+        cmEditor.className = "cm-editor";
+        editorPane.appendChild(cmEditor);
+        hostContainerEl.appendChild(editorPane);
+      }
     },
   };
 
-  const creator = () => embed;
+  const creator = (context: { containerEl: HTMLElement }) => {
+    hostContainerEl = context.containerEl;
+    return embed;
+  };
+
   return {
     creator,
     embed,
@@ -144,10 +177,10 @@ function fakeEmbedCreatorFactory() {
   const created: Array<ReturnType<typeof fakeEmbedCreator>> = [];
   let nextDoc = "";
 
-  const creator = () => {
+  const creator = (context: { containerEl: HTMLElement }) => {
     const instance = fakeEmbedCreator(nextDoc);
     created.push(instance);
-    return instance.embed;
+    return instance.creator(context);
   };
 
   return {
@@ -175,6 +208,14 @@ const SEEDED_BODY = splitFrontmatter(SEEDED_DOC).body;
 
 function fakeFile(): TFile {
   return { path: "Journal/2026/01/entry.md" } as unknown as TFile;
+}
+
+/** Focuses the mounted `.journal-entry-embed` container so hasFocus() reports true. */
+function focusEmbedContainer(container: HTMLElement): HTMLElement {
+  const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
+  embedContainer.tabIndex = -1;
+  embedContainer.focus();
+  return embedContainer;
 }
 
 /**
@@ -257,6 +298,27 @@ describe("ObsidianEmbedEditor: availability and mount failures", () => {
     expect(spies.unload).toHaveBeenCalled();
     expect(spies.onunload).toHaveBeenCalled();
   });
+
+  it("calls onUnusable and flips isUsable() false when no CM6 editor pane is ever found", () => {
+    vi.useFakeTimers();
+    const { creator } = fakeEmbedCreator(SEEDED_DOC, { noEditorDom: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    let unusableFired = false;
+    editor.onUnusable(() => (unusableFired = true));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    // Still true synchronously: the safety-net check is deferred to the
+    // next tick specifically to tolerate a CM6 DOM built asynchronously.
+    expect(editor.isUsable()).toBe(true);
+    expect(unusableFired).toBe(false);
+
+    vi.advanceTimersByTime(0);
+
+    expect(editor.isUsable()).toBe(false);
+    expect(unusableFired).toBe(true);
+  });
 });
 
 describe("ObsidianEmbedEditor: the body/document translation", () => {
@@ -318,6 +380,65 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
 
     expect(getDoc()).toBe("STILL NO FRONTMATTER.\n");
     expect(editor.getValue()).toBe("STILL NO FRONTMATTER.\n");
+  });
+});
+
+describe("ObsidianEmbedEditor: the frontmatter guard", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("a genuinely broken frontmatter delimiter suppresses reporting until it's restored", () => {
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    // The user deletes the closing "---": splitFrontmatter now finds no
+    // frontmatter at all, and the whole document becomes "the body".
+    const broken = 'created: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\nORIGINAL BODY.\n';
+    setDoc(broken);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([]);
+    expect(editor.getValue()).toBe(SEEDED_BODY); // falls back to the last known-good body
+
+    // Restoring the delimiter self-heals. The body itself never changed
+    // from SEEDED_BODY throughout, so there is still nothing new to report.
+    setDoc(SEEDED_DOC);
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual([]);
+  });
+
+  it("a legitimate frontmatter property addition does not stop future body edits from being reported", () => {
+    // Regression test: the guard used to bail on ANY difference from the
+    // snapshot taken at mount, not only a genuinely broken delimiter — so a
+    // single legitimate property addition made every later body edit
+    // unreportable for the rest of the session.
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const withNewProperty =
+      '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\ntag: "life"\n---\n\nORIGINAL BODY.\n';
+    setDoc(withNewProperty);
+    vi.advanceTimersByTime(300);
+    // The body itself hasn't changed, so nothing is reported yet — but the
+    // frontmatter snapshot must have refreshed rather than latching onto the
+    // old one and rejecting everything from here on.
+    expect(changes).toEqual([]);
+
+    setDoc(replaceBody(withNewProperty, "A NEW BODY EDIT.\n"));
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual(["A NEW BODY EDIT.\n"]);
   });
 });
 
@@ -406,11 +527,13 @@ describe("ObsidianEmbedEditor: change polling", () => {
     expect(changes).toEqual([]);
   });
 
-  it("a get() failure discovered by the poll flips isUsable() false and stops polling", () => {
+  it("a get() failure discovered by the poll flips isUsable() false, fires onUnusable, and stops polling", () => {
     const { creator, breakGet, setDoc } = fakeEmbedCreator(SEEDED_DOC);
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
     const changes: string[] = [];
     editor.onChange((value) => changes.push(value));
+    let unusableFired = false;
+    editor.onUnusable(() => (unusableFired = true));
 
     const container = document.createElement("div");
     editor.mount(container, fakeFile(), SEEDED_BODY);
@@ -422,6 +545,7 @@ describe("ObsidianEmbedEditor: change polling", () => {
     vi.advanceTimersByTime(300);
 
     expect(editor.isUsable()).toBe(false);
+    expect(unusableFired).toBe(true);
 
     // Polling must actually have stopped, not just gone quiet because
     // get() keeps throwing: a later, unrelated buffer change (impossible in
@@ -433,16 +557,18 @@ describe("ObsidianEmbedEditor: change polling", () => {
   });
 });
 
-describe("ObsidianEmbedEditor: self-reload race (the write-echo bug)", () => {
+describe("ObsidianEmbedEditor: write-echo guard (notifyWritten)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   it("a stale reload racing ahead of typing does not clobber newer keystrokes", () => {
     // Reproduces the exact trace from review: user types "B1"; the poll
-    // reports it; a caller's debounced write of "B1" starts; the user
-    // types on to "B2"; the "B1" write lands, the vault emits `modify`,
-    // and the embed reloads its buffer to (now stale) "B1" — modelled
+    // reports it; a caller's debounced write of "B1" starts and resolves
+    // (modelled by the explicit notifyWritten("B1") call — the real
+    // JournalView calls this immediately after its vault.process write
+    // resolves); the user types on to "B2"; the "B1" write's vault `modify`
+    // event reloads the embed's buffer back to (now stale) "B1" — modelled
     // here via simulateReload() directly, standing in for a real
     // onFileChanged-triggered reload (which the code under test
     // neutralises; this test proves the SECOND, independent guard also
@@ -456,15 +582,14 @@ describe("ObsidianEmbedEditor: self-reload race (the write-echo bug)", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     editor.mount(container, fakeFile(), SEEDED_BODY);
-
     // The restore-on-echo path only engages while the user is still here.
-    const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
-    embedContainer.tabIndex = -1;
-    embedContainer.focus();
+    focusEmbedContainer(container);
 
     setDoc(replaceBody(SEEDED_DOC, "B1"));
     vi.advanceTimersByTime(300);
     expect(changes).toEqual(["B1"]);
+
+    editor.notifyWritten("B1"); // the view's debounced write of "B1" just resolved
 
     setDoc(replaceBody(SEEDED_DOC, "B2"));
     vi.advanceTimersByTime(300);
@@ -473,12 +598,78 @@ describe("ObsidianEmbedEditor: self-reload race (the write-echo bug)", () => {
     simulateReload(replaceBody(SEEDED_DOC, "B1"));
     vi.advanceTimersByTime(300);
 
-    // The bug: "B1" gets reported again and "B2" is gone. The fix: the
-    // reload is recognised as a stale echo of something this editor
-    // already emitted, nothing new is reported, and the buffer is
-    // restored to "B2".
+    // The bug: "B1" gets reported again and "B2" is gone. The fix: this
+    // exact body was confirmed written a moment ago, so the reload is
+    // recognised as that write's echo — nothing new is reported, and the
+    // buffer is restored to "B2".
     expect(changes).toEqual(["B1", "B2"]);
     expect(editor.getValue()).toBe("B2");
+  });
+
+  it("a legitimate revert to a previously emitted body (e.g. undo) is reported as a normal edit, not suppressed", () => {
+    // Regression test for the FIRST version of this guard, which was
+    // content-keyed against a history of everything this editor had ever
+    // emitted: typing "Today I ran.", then " Fast", then undoing/backspacing
+    // back to "Today I ran." reverted to a body the guard had seen before
+    // and — with no provenance check — misread as a stale reload, silently
+    // retyping " Fast" back in under the user mid-undo. The provenance-based
+    // guard has no pending write to match here (notifyWritten is never
+    // called in this test), so it must not suppress anything.
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+    focusEmbedContainer(container);
+
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["Today I ran."]);
+
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran. Fast"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["Today I ran.", "Today I ran. Fast"]);
+
+    // Undo/backspace back to a body already seen once before.
+    setDoc(replaceBody(SEEDED_DOC, "Today I ran."));
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual(["Today I ran.", "Today I ran. Fast", "Today I ran."]);
+    expect(editor.getValue()).toBe("Today I ran.");
+  });
+
+  it("an echo outside the write-echo window is treated as a normal edit", () => {
+    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+    focusEmbedContainer(container);
+
+    setDoc(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1"]);
+
+    editor.notifyWritten("B1");
+
+    setDoc(replaceBody(SEEDED_DOC, "B2"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1", "B2"]);
+
+    // Well past WRITE_ECHO_WINDOW_MS (~1s): the pending record must have
+    // lapsed, so this reload back to "B1" is no longer explained by it and
+    // is reported like any other edit.
+    vi.advanceTimersByTime(5000);
+    simulateReload(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual(["B1", "B2", "B1"]);
   });
 });
 
