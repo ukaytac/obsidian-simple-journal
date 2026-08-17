@@ -2,16 +2,19 @@ import { Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
+import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
 
 export default class JournalEntriesPlugin extends Plugin {
   settings: JournalSettings = { ...DEFAULT_SETTINGS };
   repository!: EntryRepository;
+  editorFactory!: EntryEditorFactory;
 
   async onload(): Promise<void> {
     await this.loadSettings();
 
     this.repository = new EntryRepository(this.app, () => this.settings.journalFolder);
+    this.editorFactory = createEntryEditorFactory(this.app);
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));

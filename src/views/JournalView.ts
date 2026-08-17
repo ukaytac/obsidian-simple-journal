@@ -1,13 +1,18 @@
-import { Component, ItemView, MarkdownRenderer, WorkspaceLeaf } from "obsidian";
+import { Component, ItemView, MarkdownRenderer, Notice, Platform, WorkspaceLeaf } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
 import { pageAfter } from "../services/entryIndex";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
+import type { EntryEditor } from "./EntryEditor";
+import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 
 /** Entries rendered per page. */
 const PAGE_SIZE = 40;
+
+/** Maximum simultaneously mounted editors. Lower on mobile, where memory is tighter. */
+const MAX_MOUNTED_EDITORS = Platform.isMobile ? 25 : 60;
 
 /**
  * Cap on consecutive pages loaded in one burst without a genuine scroll
@@ -25,6 +30,10 @@ interface RenderedEntry {
   bodyEl: HTMLElement;
   /** Component that owns any MarkdownRenderer output, so it can be unloaded. */
   renderComponent: Component | null;
+  /** Live editing surface for this entry, or null when it is statically rendered. */
+  editor: EntryEditor | null;
+  /** Debounced save timer handle. */
+  saveHandle: number | null;
 }
 
 export class JournalView extends ItemView {
@@ -55,6 +64,8 @@ export class JournalView extends ItemView {
   private forcedReobserve = false;
   /** Consecutive pages loaded in the current forced-reobserve burst. */
   private burstCount = 0;
+  /** Paths of entries with a mounted editor, oldest-mounted first. */
+  private mountOrder: string[] = [];
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -83,13 +94,13 @@ export class JournalView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    this.clearTimeline();
+    await this.clearTimeline();
     this.contentEl.empty();
   }
 
   /** Discards and rebuilds the timeline, rendering only the first page. */
   async reload(): Promise<void> {
-    this.clearTimeline();
+    await this.clearTimeline();
 
     this.index = this.plugin.repository.listEntries();
     this.lastLoadedPath = null;
@@ -103,14 +114,35 @@ export class JournalView extends ItemView {
     this.installSentinel();
   }
 
-  private clearTimeline(): void {
+  /**
+   * Discards the current timeline. Bumps `generation` before doing any async
+   * work (flushing), same reasoning as `renderStatic`/`loadNextPage`: any
+   * mount or unmount from the outgoing generation that resumes after this
+   * point sees the change and bails rather than touching a timeline this
+   * method is in the middle of tearing down.
+   *
+   * Every pending save is flushed — via `flushSave`, which itself calls
+   * `editor.flush()` before reading the value — before any editor is
+   * destroyed. Without this, an edit still sitting inside the 500ms debounce
+   * window when the view closes (or a reload/settings change tears the
+   * timeline down) would never reach disk.
+   */
+  private async clearTimeline(): Promise<void> {
     this.teardownSentinel();
     this.generation++;
-    for (const rendered of this.rendered.values()) {
+
+    const renderedEntries = Array.from(this.rendered.values());
+    await Promise.all(renderedEntries.map((rendered) => this.flushSave(rendered)));
+
+    for (const rendered of renderedEntries) {
+      rendered.editor?.destroy();
+      rendered.editor = null;
       rendered.renderComponent?.unload();
     }
+
     this.rendered.clear();
     this.dayGroups.clear();
+    this.mountOrder = [];
     this.lastRenderedMonth = null;
     this.timelineEl.empty();
   }
@@ -341,13 +373,13 @@ export class JournalView extends ItemView {
     });
   }
 
-  /** Appends an entry below everything currently rendered. */
+  /** Appends an entry below everything currently rendered, as a live editor. */
   private appendEntry(entry: JournalEntry): void {
     const group = this.ensureDayGroup(entry.created, "append");
-    const el = this.createEntryEl(entry);
-    group.appendChild(el.el);
-    this.rendered.set(entry.file.path, el);
-    void this.renderStatic(el);
+    const rendered = this.createEntryEl(entry);
+    group.appendChild(rendered.el);
+    this.rendered.set(entry.file.path, rendered);
+    void this.mountEditor(rendered);
   }
 
   /**
@@ -434,7 +466,7 @@ export class JournalView extends ItemView {
     // (and whatever a theme layers on top of it) instead of browser defaults.
     const bodyEl = el.createDiv({ cls: "journal-entry-body markdown-rendered" });
 
-    return { entry, el, bodyEl, renderComponent: null };
+    return { entry, el, bodyEl, renderComponent: null, editor: null, saveHandle: null };
   }
 
   /** Read-only rendering of an entry, used when no editor is mounted for it. */
@@ -472,6 +504,185 @@ export class JournalView extends ItemView {
       rendered.entry.file.path,
       component,
     );
+  }
+
+  /**
+   * Turns an entry into a live editor and enforces the mount cap. Guards
+   * against a concurrent `clearTimeline()` (a reload, or the view closing)
+   * the same way `renderStatic` does: `generation` is captured before the
+   * only await, and checked after it, so a mount that resumes into a
+   * timeline this instance no longer owns bails before touching the DOM or
+   * `mountOrder` rather than mounting an editor nothing will ever unmount.
+   */
+  private async mountEditor(rendered: RenderedEntry): Promise<void> {
+    if (rendered.editor) return;
+    const generation = this.generation;
+
+    rendered.renderComponent?.unload();
+    rendered.renderComponent = null;
+    rendered.bodyEl.empty();
+    rendered.bodyEl.style.removeProperty("min-height");
+
+    const body = await this.plugin.repository.readBody(rendered.entry.file);
+    if (generation !== this.generation) return;
+    if (rendered.editor) return;
+
+    const editor = this.mountUsableEditor(rendered, body);
+
+    rendered.editor = editor;
+    this.mountOrder.push(rendered.entry.file.path);
+
+    this.enforceMountLimit();
+  }
+
+  /**
+   * Mounts the configured editor, and if it reports that it failed — the
+   * internal API changed shape on this Obsidian version — replaces it with the
+   * textarea fallback for this entry. The journal stays editable either way.
+   */
+  private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
+    const editor = this.plugin.editorFactory.create();
+    editor.onChange((value) => this.scheduleSave(rendered, value));
+
+    // REQUIRED. An embedded editor can also fail *after* a successful mount —
+    // its file is deleted, or the internal API changes shape under it. When
+    // that happens it stops reporting changes, and without this the user goes
+    // on typing into a surface whose text is never committed.
+    editor.onUnusable(() => void this.replaceWithFallback(rendered));
+
+    editor.mount(rendered.bodyEl, rendered.entry.file, body);
+
+    if (editor.isUsable?.() === false) {
+      console.error(
+        "Journal Entries: embedded editor was unusable; falling back to plain text for",
+        rendered.entry.file.path,
+      );
+      editor.destroy();
+      rendered.bodyEl.empty();
+
+      const fallback = new TextareaEditor();
+      fallback.onChange((value) => this.scheduleSave(rendered, value));
+      fallback.mount(rendered.bodyEl, rendered.entry.file, body);
+      return fallback;
+    }
+
+    return editor;
+  }
+
+  /**
+   * Swaps a failed embedded editor for the plain-text fallback, preserving
+   * whatever text it still holds. `getValue()` stays truthful after `destroy()`,
+   * so nothing the user typed is lost across the swap.
+   */
+  private async replaceWithFallback(rendered: RenderedEntry): Promise<void> {
+    const failed = rendered.editor;
+    if (!failed) return;
+
+    const text = failed.getValue();
+    failed.destroy();
+    rendered.bodyEl.empty();
+
+    const fallback = new TextareaEditor();
+    fallback.onChange((value) => this.scheduleSave(rendered, value));
+    fallback.mount(rendered.bodyEl, rendered.entry.file, text);
+    rendered.editor = fallback;
+
+    new Notice("Journal Entries: switched this entry to plain text editing.");
+  }
+
+  /**
+   * Unmounts editors furthest from the viewport — the oldest entries, at the
+   * bottom of the list — replacing them with static rendering. The focused
+   * editor is never unmounted.
+   */
+  private enforceMountLimit(): void {
+    while (this.mountOrder.length > MAX_MOUNTED_EDITORS) {
+      const path = this.mountOrder.shift();
+      if (!path) break;
+
+      const rendered = this.rendered.get(path);
+      if (!rendered?.editor) continue;
+
+      if (rendered.editor.hasFocus()) {
+        // Skip the focused editor; put it back at the end of the queue.
+        this.mountOrder.push(path);
+        if (this.mountOrder.every((p) => this.rendered.get(p)?.editor?.hasFocus())) break;
+        continue;
+      }
+
+      void this.unmountEditor(rendered);
+    }
+  }
+
+  /** Flushes pending edits, destroys the editor, and restores static rendering. */
+  private async unmountEditor(rendered: RenderedEntry): Promise<void> {
+    if (!rendered.editor) return;
+    // Captured before the only await below. If a concurrent clearTimeline()
+    // lands while the flush is in flight, it has already flushed, destroyed,
+    // and nulled every editor (including this one) and emptied the timeline
+    // itself — bail rather than redundantly destroy an already-destroyed
+    // editor and render static Markdown into a bodyEl that no longer belongs
+    // to any visible timeline.
+    const generation = this.generation;
+
+    await this.flushSave(rendered);
+    if (generation !== this.generation) return;
+
+    // Freeze the height across the swap so the scroll position does not shift.
+    const height = rendered.bodyEl.offsetHeight;
+    rendered.bodyEl.style.minHeight = `${height}px`;
+
+    rendered.editor?.destroy();
+    rendered.editor = null;
+
+    const index = this.mountOrder.indexOf(rendered.entry.file.path);
+    if (index >= 0) this.mountOrder.splice(index, 1);
+
+    await this.renderStatic(rendered);
+    rendered.bodyEl.style.removeProperty("min-height");
+  }
+
+  /** Debounces writes so typing does not hit the disk on every keystroke. */
+  private scheduleSave(rendered: RenderedEntry, value: string): void {
+    if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+
+    rendered.saveHandle = window.setTimeout(() => {
+      rendered.saveHandle = null;
+      void this.save(rendered, value);
+    }, 500);
+  }
+
+  /**
+   * Writes any pending edit immediately. Called before an editor is destroyed
+   * and when the view closes, so nothing sitting inside the debounce window is
+   * lost. `editor.flush()` commits what the editor holds; `getValue()` stays
+   * truthful even after `destroy()`, so this cannot write an empty body over
+   * real text.
+   */
+  private async flushSave(rendered: RenderedEntry): Promise<void> {
+    rendered.editor?.flush();
+
+    if (rendered.saveHandle === null) return;
+    window.clearTimeout(rendered.saveHandle);
+    rendered.saveHandle = null;
+    await this.save(rendered, rendered.editor?.getValue() ?? "");
+  }
+
+  private async save(rendered: RenderedEntry, value: string): Promise<void> {
+    await this.plugin.repository.writeBody(rendered.entry.file, value);
+  }
+
+  /**
+   * An editor mounted or updated while its tab is hidden cannot measure its
+   * own height — a hidden element reports `scrollHeight` 0 — so it flags
+   * itself and waits for this. Obsidian calls `onResize()` (`@since 0.9.7`)
+   * when a leaf becomes visible, and also on width changes, which re-wrap
+   * text; every mounted editor is re-measured either way.
+   */
+  onResize(): void {
+    for (const rendered of this.rendered.values()) {
+      rendered.editor?.remeasure();
+    }
   }
 
   /** Replaced with real behaviour in Task 15. */
