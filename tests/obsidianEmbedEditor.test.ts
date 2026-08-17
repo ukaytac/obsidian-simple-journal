@@ -52,14 +52,41 @@ installObsidianDomHelpers(globalThis as unknown as typeof globalThis);
  * undefined until `showEditor()` runs, `get()` returns the whole document
  * (frontmatter included), and `set()` replaces it wholesale. `initialDoc`
  * stands in for "the embed loaded this file's current disk content itself".
+ *
+ * `opts.throwOnLoad`/`throwOnShowEditor` model a shape change or a runtime
+ * error partway through construction. `breakGet()` flips `get()` from
+ * "working" to "throws" after the fact, for the failure-after-mount case.
+ * `simulateReload(diskDoc)` models the embed reloading its own buffer from
+ * disk on a vault `modify` event — the self-reload race this file's onFileChanged
+ * neutralisation and `recentEmissions` guard both defend against — without
+ * needing a real vault or a real `onFileChanged` (which this test's embed
+ * also has, and which the code under test neutralises).
  */
-function fakeEmbedCreator(initialDoc: string, opts: { noEditMode?: boolean } = {}) {
+function fakeEmbedCreator(
+  initialDoc: string,
+  opts: { noEditMode?: boolean; throwOnLoad?: boolean; throwOnShowEditor?: boolean } = {},
+) {
   let doc = initialDoc;
+  let getShouldThrow = false;
+
+  // Obsidian's real requestSave is very likely a Debouncer function object
+  // carrying its own .cancel()/.run(), not a plain function — see
+  // neutralise()'s doc in the source file for why that matters.
+  const requestSave = vi.fn() as unknown as (() => void) & {
+    cancel: ReturnType<typeof vi.fn>;
+    run: ReturnType<typeof vi.fn>;
+  };
+  requestSave.cancel = vi.fn();
+  requestSave.run = vi.fn();
+
   const spies = {
-    save: vi.fn(),
-    requestSave: vi.fn(),
+    save: vi.fn(async () => {}),
+    requestSave,
     requestSaveFolds: vi.fn(),
-    load: vi.fn(),
+    onFileChanged: vi.fn(),
+    load: vi.fn(() => {
+      if (opts.throwOnLoad) throw new Error("load boom");
+    }),
     showEditor: vi.fn(),
     unload: vi.fn(),
     onunload: vi.fn(),
@@ -73,22 +100,37 @@ function fakeEmbedCreator(initialDoc: string, opts: { noEditMode?: boolean } = {
     save: spies.save,
     requestSave: spies.requestSave,
     requestSaveFolds: spies.requestSaveFolds,
+    onFileChanged: spies.onFileChanged,
     load: spies.load,
     unload: spies.unload,
     onunload: spies.onunload,
     showEditor: () => {
+      if (opts.throwOnShowEditor) throw new Error("showEditor boom");
       spies.showEditor();
       if (opts.noEditMode) return;
       embed.editMode = {
-        get: () => doc,
+        get: () => {
+          if (getShouldThrow) throw new Error("get boom");
+          return doc;
+        },
         set: (value: string, _clearHistory: boolean) => spies.set(value),
-        cm: { focus: vi.fn() },
+        cm: { focus: vi.fn(), requestMeasure: vi.fn() },
       };
     },
   };
 
   const creator = () => embed;
-  return { creator, embed, spies, getDoc: () => doc, setDoc: (v: string) => (doc = v) };
+  return {
+    creator,
+    embed,
+    spies,
+    getDoc: () => doc,
+    setDoc: (v: string) => (doc = v),
+    simulateReload: (diskDoc: string) => (doc = diskDoc),
+    breakGet: () => {
+      getShouldThrow = true;
+    },
+  };
 }
 
 /**
@@ -197,6 +239,24 @@ describe("ObsidianEmbedEditor: availability and mount failures", () => {
     expect(() => editor.mount(container, fakeFile(), SEEDED_BODY)).not.toThrow();
     expect(editor.isUsable()).toBe(false);
   });
+
+  it("a throw from showEditor() (after load() already ran) still tears down the leaked embed", () => {
+    // Regression test: this.embed was previously assigned only after
+    // showEditor() succeeded, so a throw from showEditor() itself left the
+    // catch block's `if (this.embed)` false — the already-constructed,
+    // already-load()ed embed was never unload()ed, and its Component kept
+    // whatever it registered running against detached DOM.
+    const { creator, spies } = fakeEmbedCreator(SEEDED_DOC, { throwOnShowEditor: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+
+    expect(() => editor.mount(container, fakeFile(), SEEDED_BODY)).not.toThrow();
+
+    expect(editor.isUsable()).toBe(false);
+    expect(spies.load).toHaveBeenCalled();
+    expect(spies.unload).toHaveBeenCalled();
+    expect(spies.onunload).toHaveBeenCalled();
+  });
 });
 
 describe("ObsidianEmbedEditor: the body/document translation", () => {
@@ -261,8 +321,8 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
   });
 });
 
-describe("ObsidianEmbedEditor: hazard 1 — neutralising the embed's writer", () => {
-  it("save(), requestSave() and requestSaveFolds() are no-ops on the mounted instance", () => {
+describe("ObsidianEmbedEditor: hazard 1 — neutralising the embed's writer and self-reload hooks", () => {
+  it("save(), requestSave(), requestSaveFolds() and onFileChanged() are no-ops on the mounted instance", () => {
     const { creator, embed, spies } = fakeEmbedCreator(SEEDED_DOC);
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
     const container = document.createElement("div");
@@ -272,10 +332,40 @@ describe("ObsidianEmbedEditor: hazard 1 — neutralising the embed's writer", ()
     expect(() => (record.save as () => void)()).not.toThrow();
     expect(() => (record.requestSave as () => void)()).not.toThrow();
     expect(() => (record.requestSaveFolds as () => void)()).not.toThrow();
+    expect(() => (record.onFileChanged as () => void)()).not.toThrow();
 
     expect(spies.save).not.toHaveBeenCalled();
     expect(spies.requestSave).not.toHaveBeenCalled();
     expect(spies.requestSaveFolds).not.toHaveBeenCalled();
+    expect(spies.onFileChanged).not.toHaveBeenCalled();
+  });
+
+  it("save()'s replacement still returns a Promise, matching the real API", async () => {
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const save = (embed as Record<string, unknown>).save as () => unknown;
+    const result = save();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it("requestSave's replacement still carries the original's own properties (e.g. a Debouncer's cancel()/run())", () => {
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const requestSave = (embed as Record<string, unknown>).requestSave as {
+      cancel?: () => void;
+      run?: () => void;
+    };
+    expect(typeof requestSave.cancel).toBe("function");
+    expect(typeof requestSave.run).toBe("function");
+    expect(() => requestSave.cancel?.()).not.toThrow();
+    expect(() => requestSave.run?.()).not.toThrow();
   });
 });
 
@@ -314,6 +404,141 @@ describe("ObsidianEmbedEditor: change polling", () => {
     vi.advanceTimersByTime(1000);
 
     expect(changes).toEqual([]);
+  });
+
+  it("a get() failure discovered by the poll flips isUsable() false and stops polling", () => {
+    const { creator, breakGet, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+    expect(editor.isUsable()).toBe(true);
+
+    // Simulates a shape change or a runtime failure discovered only after a
+    // successful mount (e.g. the file was deleted out from under it).
+    breakGet();
+    vi.advanceTimersByTime(300);
+
+    expect(editor.isUsable()).toBe(false);
+
+    // Polling must actually have stopped, not just gone quiet because
+    // get() keeps throwing: a later, unrelated buffer change (impossible in
+    // practice once get() itself is broken, but proves the interval is
+    // really gone) must not resurrect it.
+    setDoc(replaceBody(SEEDED_DOC, "SHOULD NEVER BE SEEN.\n"));
+    vi.advanceTimersByTime(1000);
+    expect(changes).toEqual([]);
+  });
+});
+
+describe("ObsidianEmbedEditor: self-reload race (the write-echo bug)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("a stale reload racing ahead of typing does not clobber newer keystrokes", () => {
+    // Reproduces the exact trace from review: user types "B1"; the poll
+    // reports it; a caller's debounced write of "B1" starts; the user
+    // types on to "B2"; the "B1" write lands, the vault emits `modify`,
+    // and the embed reloads its buffer to (now stale) "B1" — modelled
+    // here via simulateReload() directly, standing in for a real
+    // onFileChanged-triggered reload (which the code under test
+    // neutralises; this test proves the SECOND, independent guard also
+    // holds, regardless of whether that neutralisation is what's doing the
+    // work in a real Obsidian window).
+    const { creator, setDoc, simulateReload } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    // The restore-on-echo path only engages while the user is still here.
+    const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
+    embedContainer.tabIndex = -1;
+    embedContainer.focus();
+
+    setDoc(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1"]);
+
+    setDoc(replaceBody(SEEDED_DOC, "B2"));
+    vi.advanceTimersByTime(300);
+    expect(changes).toEqual(["B1", "B2"]);
+
+    simulateReload(replaceBody(SEEDED_DOC, "B1"));
+    vi.advanceTimersByTime(300);
+
+    // The bug: "B1" gets reported again and "B2" is gone. The fix: the
+    // reload is recognised as a stale echo of something this editor
+    // already emitted, nothing new is reported, and the buffer is
+    // restored to "B2".
+    expect(changes).toEqual(["B1", "B2"]);
+    expect(editor.getValue()).toBe("B2");
+  });
+});
+
+describe("ObsidianEmbedEditor: blur handling", () => {
+  it("does not fire onBlur when focus moves to a relatedTarget still inside the container", () => {
+    const { creator } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
+    const innerWidget = document.createElement("div");
+    embedContainer.appendChild(innerWidget);
+
+    let blurred = false;
+    editor.onBlur(() => (blurred = true));
+
+    // Models CM6's own in-editor search panel, or clicking a widget: focus
+    // moves within the container, so `focusout` bubbles even though this
+    // editor never actually lost focus.
+    embedContainer.dispatchEvent(new FocusEvent("focusout", { relatedTarget: innerWidget }));
+
+    expect(blurred).toBe(false);
+  });
+
+  it("fires onBlur when focus moves outside the container", () => {
+    const { creator } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
+    const outsideEl = document.createElement("div");
+    document.body.appendChild(outsideEl);
+
+    let blurred = false;
+    editor.onBlur(() => (blurred = true));
+
+    embedContainer.dispatchEvent(new FocusEvent("focusout", { relatedTarget: outsideEl }));
+
+    expect(blurred).toBe(true);
+  });
+
+  it("fires onBlur when relatedTarget is null (focus left the document/window)", () => {
+    const { creator } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+
+    const embedContainer = container.querySelector(".journal-entry-embed") as HTMLElement;
+
+    let blurred = false;
+    editor.onBlur(() => (blurred = true));
+
+    embedContainer.dispatchEvent(new FocusEvent("focusout", { relatedTarget: null }));
+
+    expect(blurred).toBe(true);
   });
 });
 

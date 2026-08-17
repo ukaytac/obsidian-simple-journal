@@ -123,14 +123,15 @@
 
 /* Two .markdown-embed-content nodes exist (preview and edit mode are both
    constructed); only the one that actually contains the CM6 editor should
-   ever be shown. :has() rather than nth-child/order, since which one is
-   preview vs. editor isn't guaranteed to stay in DOM order across Obsidian
-   versions. */
+   ever be shown. Tagged from ObsidianEmbedEditor.tagEditorPane() rather than
+   selected here with :has() — some embedded webviews Obsidian can run on may
+   not support :has(), which would otherwise leave BOTH panes hidden while
+   isUsable() still reports true. */
 .journal-entry-embed .markdown-embed-content {
   display: none;
 }
 
-.journal-entry-embed .markdown-embed-content:has(.cm-editor) {
+.journal-entry-embed .markdown-embed-content.journal-entry-embed-editor-pane {
   display: block;
 }
 

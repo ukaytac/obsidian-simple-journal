@@ -22,10 +22,9 @@ import type { EntryEditor } from "./EntryEditor";
  * `EntryEditor`'s contract is body-only. The naive fix — install a body-only
  * buffer once at mount — was tried in the spike and rejected: it leaves the
  * buffer without frontmatter, so any write that slipped through would
- * destroy `created`, and the embed reloads its full-document buffer from
- * disk on an external file change (including this plugin's own writes),
- * silently turning the "body-only" buffer back into a full document with
- * frontmatter inside it.
+ * destroy `created`, and the embed reloading its full-document buffer from
+ * disk (see "self-reload" below) would silently turn the "body-only" buffer
+ * back into a full document with frontmatter inside it.
  *
  * So instead the embed is left to keep the full document it loads for
  * itself, and every `EntryEditor` method translates at the boundary:
@@ -38,12 +37,32 @@ import type { EntryEditor } from "./EntryEditor";
  * correctly even when there is no frontmatter block at all (a user-stripped
  * file): `splitFrontmatter` reports an empty frontmatter string, and
  * `replaceBody` then returns the body unchanged.
+ *
+ * ## Self-reload: why onFileChanged is neutralised too
+ *
+ * While this editor is mounted, its buffer is authoritative — this plugin
+ * already owns synchronisation with the rest of the vault (the view calls
+ * `setValue()` when an external change arrives and the editor doesn't have
+ * focus). If the embed also reloads itself from disk on its own file-changed
+ * hook, the two mechanisms race: this plugin's debounced write of an older
+ * keystroke lands, the vault emits `modify`, the embed reloads to that
+ * (older) content, and a live poll tick sees the reload as a "new" edit and
+ * reports it — silently discarding whatever the user typed in between, mid
+ * sentence. So `onFileChanged` is neutralised the same way and in the same
+ * place as the writer methods below. `loadFile` is deliberately left alone:
+ * `load()` needs it for the *initial* read.
+ *
+ * Whether the embed actually performs such a reload while dirty isn't
+ * measurable without a running Obsidian, so a second, independent guard
+ * (`recentEmissions` in `startPolling`) also treats a reappearing old body as
+ * an echo rather than a real edit — belt and braces, not conditional on the
+ * first guard holding.
  */
 
 interface EmbedEditMode {
   get?(): string;
   set?(value: string, clearHistory: boolean): void;
-  cm?: { focus?(): void };
+  cm?: { focus?(): void; requestMeasure?(): void };
 }
 
 interface MarkdownEmbed {
@@ -53,11 +72,13 @@ interface MarkdownEmbed {
   load?(): void;
   unload?(): void;
   onunload?(): void;
-  // Hazard 1 (docs/editor-embed-api.md): the embed's own writer surface.
-  // Neutralised on every instance before load() runs — see neutraliseWriter.
+  // Hazard 1 (docs/editor-embed-api.md): the embed's own writer surface, and
+  // its self-reload hook. All neutralised on every instance before load()
+  // runs — see neutraliseInternalCallbacks.
   save?(): void;
   requestSave?(): void;
   requestSaveFolds?(): void;
+  onFileChanged?(...args: unknown[]): unknown;
 }
 
 type EmbedCreator = (
@@ -74,8 +95,37 @@ function getCreator(app: App): EmbedCreator | null {
   return typeof registry?.md === "function" ? (registry.md as EmbedCreator) : null;
 }
 
-/** Names of the embed's writer methods. Replaced with no-ops before load(). */
-const WRITER_METHODS = ["save", "requestSave", "requestSaveFolds"] as const;
+/**
+ * Replaces one of the embed's own methods with a no-op on this instance
+ * only (not its prototype, so nothing else that shares the `md` embed class
+ * is affected). Two details matter here, both found only by reasoning about
+ * Obsidian's own code, not by running it:
+ *
+ * - `requestSave` is very likely a `Debouncer` function object carrying its
+ *   own `.cancel()`/`.run()`, not a plain function. If some other internal
+ *   path still holds a reference to what it believes is the original and
+ *   calls `.cancel()` on it — e.g. from the embed's own unload path, which
+ *   this file's try/catch only wraps around `unload()`/`onunload()`
+ *   themselves — a bare `() => {}` would throw there instead. Copying the
+ *   original's own properties onto the replacement keeps that surface intact.
+ * - `save()` returns a Promise in the real API; a replacement that returns
+ *   `undefined` breaks any internal `save().then(...)` the same way.
+ */
+function neutralise(record: Record<string, unknown>, name: string, asyncReturn = false): void {
+  const original = record[name];
+  if (typeof original !== "function") return;
+  const noop = asyncReturn ? (() => Promise.resolve()) : (() => {});
+  Object.assign(noop, original);
+  record[name] = noop;
+}
+
+/**
+ * Bound on `recentEmissions` (see `startPolling`). A handful of in-flight,
+ * not-yet-written keystroke bursts is all that can realistically be pending
+ * at once; this just keeps the array from growing without limit over a long
+ * editing session.
+ */
+const RECENT_EMISSIONS_LIMIT = 8;
 
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
@@ -95,6 +145,28 @@ export class ObsidianEmbedEditor implements EntryEditor {
   /** A setValue() that arrived before mount(); applied once mount() runs. */
   private pendingValue: string | null = null;
 
+  /**
+   * The frontmatter block exactly as it stood at mount/last-load. If the
+   * user breaks it (e.g. deletes the closing `---`), `splitFrontmatter` on
+   * the resulting document reports empty frontmatter and treats the entire
+   * document as "body" — reporting that through onChange would eventually
+   * have `EntryRepository.writeBody` paste the now-unparsed frontmatter
+   * lines into the body as a second, disk-visible frontmatter-looking block
+   * (created/mood/etc. survive, since `replaceBody` still preserves the
+   * real frontmatter ahead of it, but it's still visible corruption). Used
+   * by `readBody` to detect this and fall back rather than propagate it.
+   */
+  private mountedFrontmatter: string | null = null;
+
+  /**
+   * Bodies this editor has itself emitted through onChange recently, oldest
+   * first. Belt-and-braces against the self-reload race described in this
+   * file's top comment: if a poll tick observes a body that matches one of
+   * these rather than genuinely new text, it's treated as a stale echo of a
+   * write that raced ahead of further typing, not a real edit.
+   */
+  private recentEmissions: string[] = [];
+
   constructor(private readonly app: App) {}
 
   /** False when the internal API did not behave as expected; the caller must fall back. */
@@ -109,6 +181,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
     if (this.embed || this.containerEl) this.discardCurrentEmbed();
 
     this.usable = false;
+    this.mountedFrontmatter = null;
 
     const creator = getCreator(this.app);
     if (!creator || !file) {
@@ -122,24 +195,27 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
     this.containerEl = el.createDiv({ cls: "journal-entry-embed" });
 
+    // Held outside the try, not read from `this.embed`: `this.embed` is
+    // only assigned once mount fully succeeds below, so a throw from
+    // load()/showEditor() — after construction but before that assignment —
+    // would otherwise leave the catch block's `if (this.embed)` false and
+    // leak a fully loaded embed. Its Component would keep whatever vault
+    // and metadata handlers it registered running against now-detached DOM
+    // for the rest of the session.
+    let embed: MarkdownEmbed | null = null;
+
     try {
-      const embed = creator(
+      embed = creator(
         { app: this.app, containerEl: this.containerEl, showInline: true, depth: 0 },
         file,
         "",
       );
 
-      // Hazard 1: neutralise the embed's writer BEFORE load() runs anything
-      // that might call it. This plugin writes through
-      // EntryRepository.writeBody (vault.process + replaceBody), which is
-      // what guarantees a user's arbitrary frontmatter survives byte for
-      // byte. The spike measured that the embed does not autosave on its
-      // own and that unload() doesn't flush — but that is a measured
-      // behaviour of one Obsidian version, not a contract a future release
-      // is bound by. A write that slipped through here would bypass
-      // writeBody's guarantee entirely, so the writer methods are replaced
-      // with no-ops on this instance rather than trusted to stay inert.
-      this.neutraliseWriter(embed);
+      // Hazard 1: neutralise the embed's writer and self-reload hooks
+      // BEFORE load() runs anything that might call them. See this file's
+      // top comment for the self-reload race, and `neutralise`'s doc for
+      // why a bare `() => {}` isn't safe here.
+      this.neutraliseInternalCallbacks(embed);
 
       embed.editable = true;
       // Order matters (docs/editor-embed-api.md): editMode does not exist
@@ -157,6 +233,19 @@ export class ObsidianEmbedEditor implements EntryEditor {
       this.embed = embed;
       this.usable = true;
 
+      const loadedRaw = this.readRaw();
+      if (!this.usable || loadedRaw === null) {
+        // readRaw() already found the embed broken (get() threw, or
+        // returned something that isn't a string) and flipped `usable`
+        // false; tear fully down rather than leave a half-mounted embed
+        // around for the caller to find via isUsable().
+        this.discardCurrentEmbed();
+        return;
+      }
+
+      const { frontmatter, body: loadedBody } = splitFrontmatter(loadedRaw);
+      this.mountedFrontmatter = frontmatter;
+
       // The embed loads the file itself, so its buffer already holds the
       // right content — do NOT blindly setValue(initialValue) here, which
       // would force a document replace (and a CM6 selection reset) on every
@@ -168,49 +257,75 @@ export class ObsidianEmbedEditor implements EntryEditor {
       const seedValue = this.pendingValue ?? initialValue;
       this.pendingValue = null;
 
-      const loadedBody = this.readBody();
       if (loadedBody !== seedValue) {
         this.writeBody(seedValue);
         this.lastBody = seedValue;
       } else {
         this.lastBody = loadedBody;
       }
+      this.recordEmission(this.lastBody);
 
+      this.tagEditorPane();
       this.startPolling();
       // No removeEventListener on destroy: this listener is reachable only
       // from this now-detached, dereferenced containerEl, so it's collected
       // with it (same reasoning as TextareaEditor's input/focus listeners).
-      this.containerEl.addEventListener("focusout", () => this.blurCallback?.());
+      this.containerEl.addEventListener("focusout", (event) => {
+        // focusout bubbles for ANY focus change inside the container, not
+        // just one that leaves it — CM6's own in-editor search panel,
+        // clicking a widget. With lazy creation, treating every one of
+        // those as "this editor lost focus" would let a blur-driven discard
+        // of an empty composer fire while the user is still there. Only the
+        // case where the new target is outside the container entirely
+        // counts as a real blur.
+        const related = (event as FocusEvent).relatedTarget as Node | null;
+        if (related && this.containerEl?.contains(related)) return;
+        this.blurCallback?.();
+      });
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to mount", error);
       this.usable = false;
-      if (this.embed) this.teardownEmbed(this.embed);
+      if (embed) this.teardownEmbed(embed);
       this.embed = null;
       this.containerEl?.remove();
       this.containerEl = null;
     }
   }
 
-  /**
-   * Hazard 1: replaces the embed's writer methods with no-ops on this
-   * instance only (not its prototype), so nothing else that shares the
-   * `md` embed class is affected. A no-op, not a delete, because other
-   * internal code may still call these unconditionally.
-   */
-  private neutraliseWriter(embed: MarkdownEmbed): void {
+  private neutraliseInternalCallbacks(embed: MarkdownEmbed): void {
     const record = embed as unknown as Record<string, unknown>;
-    const noop = (): void => {};
-    for (const name of WRITER_METHODS) {
-      if (typeof record[name] === "function") record[name] = noop;
-    }
+    neutralise(record, "save", true);
+    neutralise(record, "requestSave");
+    neutralise(record, "requestSaveFolds");
+    neutralise(record, "onFileChanged");
+  }
+
+  /**
+   * Marks this editor unusable and stops polling. Called the moment
+   * `readRaw()` observes the embed behaving unexpectedly — file deleted
+   * while mounted, or any shape change after mount — so the caller's
+   * `isUsable()` check (normally only meaningful right after `mount()`)
+   * also catches a *later* failure, rather than leaving the user typing
+   * into an editor whose text can never be read back out.
+   */
+  private markUnusable(): void {
+    if (!this.usable) return;
+    this.usable = false;
+    this.stopPolling();
   }
 
   /** Raw editMode.get() output — the whole document, frontmatter included. */
   private readRaw(): string | null {
     try {
-      return this.embed?.editMode?.get?.() ?? null;
+      const raw = this.embed?.editMode?.get?.();
+      if (typeof raw !== "string") {
+        this.markUnusable();
+        return null;
+      }
+      return raw;
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to read", error);
+      this.markUnusable();
       return null;
     }
   }
@@ -218,7 +333,17 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private readBody(): string {
     const raw = this.readRaw();
     if (raw === null) return this.lastBody;
-    return splitFrontmatter(raw).body;
+
+    const { frontmatter, body } = splitFrontmatter(raw);
+    if (this.mountedFrontmatter !== null && frontmatter !== this.mountedFrontmatter) {
+      // See mountedFrontmatter's doc: the user broke the frontmatter
+      // delimiter. Fall back to the last known-good body instead of
+      // reporting this one — it self-heals the moment the delimiter is
+      // restored, and never reaches EntryRepository.writeBody in the
+      // meantime.
+      return this.lastBody;
+    }
+    return body;
   }
 
   /** Translates a body-only value into a full-document set(), per the boundary contract above. */
@@ -229,6 +354,11 @@ export class ObsidianEmbedEditor implements EntryEditor {
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to write", error);
     }
+  }
+
+  private recordEmission(body: string): void {
+    this.recentEmissions.push(body);
+    if (this.recentEmissions.length > RECENT_EMISSIONS_LIMIT) this.recentEmissions.shift();
   }
 
   /**
@@ -247,12 +377,32 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
     this.pollHandle = window.setInterval(() => {
       const raw = this.readRaw();
+      // A null read either means nothing changed relevantly or that
+      // readRaw() just flipped this editor unusable and stopped polling —
+      // either way, nothing to process this tick.
       if (raw === null || raw === lastRaw) return;
       lastRaw = raw;
 
-      const body = splitFrontmatter(raw).body;
+      const body = this.readBody();
       if (body === this.lastBody) return;
+
+      if (this.recentEmissions.includes(body)) {
+        // Belt-and-braces (see this file's top comment): this body is one
+        // WE emitted before, not new text — a stale echo of a write that
+        // raced ahead of further typing. this.lastBody is by construction
+        // newer than anything in recentEmissions, so restore it in the
+        // buffer if the user is still here to lose keystrokes to it;
+        // otherwise just drop the echo without disturbing an unfocused
+        // buffer.
+        if (this.hasFocus()) {
+          this.writeBody(this.lastBody);
+          lastRaw = this.readRaw() ?? lastRaw;
+        }
+        return;
+      }
+
       this.lastBody = body;
+      this.recordEmission(body);
       this.changeCallback?.(body);
     }, 250);
   }
@@ -325,12 +475,22 @@ export class ObsidianEmbedEditor implements EntryEditor {
     if (!this.embed && this.pendingValue === null) return;
     const value = this.getValue();
     this.lastBody = value;
+    this.recordEmission(value);
     this.changeCallback?.(value);
   }
 
-  /** The embed manages its own CM6 layout/measurement; nothing to redo here. */
+  /**
+   * The embed manages its own CM6 layout for most cases, but a resize that
+   * happened while this leaf was hidden (e.g. a background tab) needs an
+   * explicit remeasure once it's visible again — CM6's own
+   * `requestMeasure()` is the public hook for exactly that.
+   */
   remeasure(): void {
-    // Intentional no-op.
+    try {
+      this.embed?.editMode?.cm?.requestMeasure?.();
+    } catch (error) {
+      console.error("Journal Entries: embedded editor failed to remeasure", error);
+    }
   }
 
   destroy(): void {
@@ -356,6 +516,8 @@ export class ObsidianEmbedEditor implements EntryEditor {
     const embed = this.embed;
     this.embed = null;
     this.usable = false;
+    this.mountedFrontmatter = null;
+    this.recentEmissions = [];
     if (embed) this.teardownEmbed(embed);
     this.containerEl?.remove();
     this.containerEl = null;
@@ -368,5 +530,28 @@ export class ObsidianEmbedEditor implements EntryEditor {
     } catch (error) {
       console.error("Journal Entries: embedded editor failed to unload", error);
     }
+  }
+
+  /**
+   * Tags whichever `.markdown-embed-content` pane actually contains the CM6
+   * editor with a class the CSS keys off, so the "hide the preview pane,
+   * show the editor pane" rule doesn't depend on `:has()` support — some
+   * embedded webviews Obsidian can run on may not have it, which would
+   * otherwise leave BOTH panes hidden while isUsable() still reports true.
+   * Called once right after showEditor() and once more on the next tick as
+   * a safety net, in case the CM6 DOM is constructed asynchronously on some
+   * version rather than synchronously as the spike observed.
+   */
+  private tagEditorPane(): void {
+    const tag = (): void => {
+      const container = this.containerEl;
+      if (!container) return;
+      for (const pane of Array.from(container.querySelectorAll(".markdown-embed-content"))) {
+        if (pane.querySelector(".cm-editor")) pane.classList.add("journal-entry-embed-editor-pane");
+      }
+    };
+
+    tag();
+    window.setTimeout(tag, 0);
   }
 }

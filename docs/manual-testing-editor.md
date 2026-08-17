@@ -47,3 +47,53 @@ Obsidian window instead, using a fresh entry with a few lines of text.
       journal tab: the entry is already correctly sized (via `remeasure()`
       on `onResize()`) — it isn't clipped or left at a stale, oversized height
       waiting for the next keystroke.
+
+---
+
+# Manual testing: ObsidianEmbedEditor
+
+None of this is exercisable in jsdom: it depends on the real internal embed
+registry, a real CodeMirror 6 instance, and Obsidian's actual save/debounce
+pipeline (Task 13+), none of which `tests/obsidianEmbedEditor.test.ts`'s fake
+embed can stand in for. Verify these by hand in a real Obsidian window.
+
+## The write-echo race
+
+- [ ] **Typing continuously past the autosave debounce without losing
+      characters.** Open an entry and type a long sentence steadily, without
+      pausing — long enough that the view's debounced save fires and writes
+      to disk at least once or twice while you keep typing. Re-read the
+      sentence back: every character you typed is present, in order, with
+      nothing dropped mid-sentence. This is the exact failure mode of the
+      write-echo bug (a save landing, the vault emitting `modify`, and a
+      stale reload clobbering newer keystrokes) — `tests/obsidianEmbedEditor.test.ts`
+      reproduces it against a fake embed, but only a real Obsidian window
+      exercises the real `onFileChanged` path this plugin neutralises plus
+      the real debounced writer from JournalView.
+- [ ] **Same test, faster.** Repeat holding down a single key (e.g. arrow
+      key through autorepeat isn't useful here — instead paste-then-edit, or
+      type as fast as you can) to make the save/keystroke race as tight as
+      possible. Still no dropped characters.
+
+## Editing fidelity
+
+- [ ] **`[[` autocomplete.** Type `[[` inside an entry. The real Obsidian
+      link suggester appears and lists actual vault files (not a plain-text
+      fallback), including the "Type # to link to a heading" hint.
+- [ ] **Live preview.** Markdown syntax (headings, bold/italic, lists, code
+      fences, callouts) renders inline as you'd see in any other Obsidian
+      note in Live Preview mode — not as raw source text.
+
+## No titles, no renaming (CLAUDE.md "no titles" rule)
+
+- [ ] **No title or properties panel visible.** Open an entry with several
+      frontmatter properties (e.g. `created` plus a couple of extra keys).
+      Neither the note's inline title nor a properties/metadata panel is
+      visible anywhere in the timeline entry — only the body text and its
+      timestamp.
+- [ ] **The entry cannot be renamed from the timeline.** Confirm there is no
+      focusable, editable title element inside a mounted entry at all — there
+      is nothing in the timeline to click or type into that would rename the
+      underlying file. (Renaming the file from the File Explorer or the
+      command palette, outside the timeline, is unaffected and still works
+      normally.)
