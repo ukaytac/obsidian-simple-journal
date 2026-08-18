@@ -95,6 +95,21 @@ interface RenderedEntry {
    * into `bodyEl` after the newer operation already has.
    */
   opToken: number;
+  /**
+   * Bumped every time `save()` starts a new attempt for this entry. `save`
+   * captures the value at the start and re-checks it once its (possibly
+   * slow — a synced or flaky vault) `write` settles, applying `savedBody`
+   * and the error marker only if this is still the most recent attempt.
+   * Without this, two overlapping `save()` calls — `scheduleSave`'s timer
+   * firing while an earlier write is still in flight, or a `flushSave`
+   * starting a second one — can resolve out of order: an older, slow,
+   * *failing* write finishing after a newer one already succeeded would
+   * otherwise stomp `savedBody` back to its own stale value and raise a
+   * permanent false "not saved" marker (and a permanent mount-limit pin,
+   * see `mountStateOf`'s `unsaved`) over text that is, in fact, already
+   * safely on disk.
+   */
+  saveToken: number;
 }
 
 export class JournalView extends ItemView {
@@ -318,6 +333,13 @@ export class JournalView extends ItemView {
     await Promise.allSettled(renderedEntries.map((rendered) => this.flushSave(rendered)));
 
     for (const rendered of renderedEntries) {
+      // Unlike `unmountEditor`'s decline, there is no option to keep this
+      // entry mounted instead: the timeline itself is genuinely coming down
+      // (view close, reload, a settings change). If the flush above still
+      // left this dirty (the write is still failing), the text is about to
+      // be discarded for real — log it before destroying so the developer
+      // console is the last available place to recover it from.
+      this.logUnsavedTextIfLost(rendered);
       rendered.editor?.destroy();
       rendered.editor = null;
       rendered.renderComponent?.unload();
@@ -749,6 +771,7 @@ export class JournalView extends ItemView {
       savedBody: "",
       intersecting: false,
       opToken: 0,
+      saveToken: 0,
     };
 
     button.onClick((event) => this.showEntryMenu(rendered, event));
@@ -1164,6 +1187,27 @@ export class JournalView extends ItemView {
   }
 
   /**
+   * Logs `rendered`'s current text via `console.error` if it is still dirty
+   * (see `isDirty`) — a no-op otherwise, since most torn-down entries have
+   * nothing pending to lose. Called immediately before a caller destroys
+   * this entry's editor on a path that, unlike `unmountEditor`'s decline,
+   * has no option to keep it mounted instead: the timeline itself is coming
+   * down (`clearTimeline`), or the underlying file is genuinely gone
+   * (`removeRenderedEntry`). Logging the actual unsaved body — not just the
+   * path — is the last recovery path available to the user in either case.
+   */
+  private logUnsavedTextIfLost(rendered: RenderedEntry): void {
+    if (!this.isDirty(rendered)) return;
+
+    console.error(
+      "Journal Entries: discarding unsaved text for",
+      rendered.entry.file?.path ?? "(an entry with no file)",
+      "— recover it from this line before it is lost:",
+      rendered.editor?.getValue(),
+    );
+  }
+
+  /**
    * Resolves a path's current mount state for `mountWindow`'s pure selection
    * logic — the only bridge between that DOM/Obsidian-free module and this
    * view's actual `rendered` map.
@@ -1371,7 +1415,16 @@ export class JournalView extends ItemView {
    * same path that happens to land in that window.
    */
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
-    rendered.savedBody = await saveIfChanged(
+    // See `saveToken`'s doc: two `save()` calls for the same entry can
+    // overlap (a `scheduleSave` timer firing while an earlier write is still
+    // in flight, or a `flushSave` starting a second one), and can then
+    // settle out of order. Captured before the only await below, so it
+    // identifies THIS call uniquely; only the call whose token still matches
+    // `rendered.saveToken` when it settles is the most recent one, and only
+    // that one is allowed to touch `savedBody` or the marker.
+    const token = ++rendered.saveToken;
+
+    const result = await saveIfChanged(
       value,
       rendered.savedBody,
       (v) => {
@@ -1383,9 +1436,17 @@ export class JournalView extends ItemView {
         new Notice(
           `Journal Entries: failed to save "${rendered.entry.file.path}". See the developer console for details.`,
         );
-        this.showSaveError(rendered);
+        // REQUIRED: an older, failing write must not raise a marker after a
+        // newer write for this same entry has already been issued (and
+        // possibly already succeeded) — see `saveToken`'s doc.
+        if (token === rendered.saveToken) this.showSaveError(rendered);
       },
     );
+
+    // REQUIRED, same reasoning: an older attempt resolving after a newer one
+    // must not stomp `savedBody` back to its own now-stale result.
+    if (token !== rendered.saveToken) return;
+    rendered.savedBody = result;
 
     // `savedBody` now equals `value` on both a successful write and a
     // no-op skip (value already matched disk) — the only case it does NOT
@@ -1410,6 +1471,17 @@ export class JournalView extends ItemView {
    * already last among the header's children (see `createEntryEl`) — a plain
    * append would land the marker to the right of the (auto-margined, always
    * right-aligned) actions button instead of next to the timestamp.
+   *
+   * Nothing here retries the write on a timer. Once shown, this marker only
+   * clears the next time `save()` actually runs again for this entry — the
+   * user typing more (a fresh `scheduleSave`), or this entry crossing
+   * `MOUNT_ROOT_MARGIN` again (a `flushSave` via `unmountEditor`, or the
+   * reposition/removed paths in `applyChangesNow`). A write that starts
+   * failing and is then never touched again by either of those can leave
+   * this marker showing indefinitely, outliving the actual failure once
+   * whatever caused it (e.g. a permissions problem) is fixed. Acceptable for
+   * the MVP: building an automatic retry timer is a deliberately deferred
+   * scope decision, not an oversight.
    */
   private showSaveError(rendered: RenderedEntry): void {
     if (rendered.el.querySelector(".journal-entry-error")) return;
@@ -1501,6 +1573,19 @@ export class JournalView extends ItemView {
         if (action.flush && rendered) {
           await this.flushSave(rendered);
           if (this.closed || generation !== this.generation) return;
+
+          if (this.isDirty(rendered)) {
+            // The flush did not reach disk (the write is still failing) even
+            // though the file itself is still there, just elsewhere (a
+            // rename/move out of the journal folder, not a genuine delete —
+            // `action.flush` is only true when `fileStillExists`). Tearing
+            // this rendering down now would destroy the editor and replace
+            // the on-screen text with the stale `savedBody`, the same loss
+            // `unmountEditor`'s decline exists to prevent. Leave the
+            // (mispositioned) entry mounted and still showing its "not
+            // saved" marker; the next successful flush removes it correctly.
+            continue;
+          }
         }
         if (this.removeRenderedEntry(change.path)) dayGroupsDirty = true;
         continue;
@@ -1530,6 +1615,17 @@ export class JournalView extends ItemView {
           if (action.flush && rendered) {
             await this.flushSave(rendered);
             if (this.closed || generation !== this.generation) return;
+
+            if (this.isDirty(rendered)) {
+              // Same reasoning as the "removed" branch above: the write is
+              // still failing, so tearing the current rendering down and
+              // re-inserting a fresh one from disk would discard exactly the
+              // text the "not saved" marker promises is still safe. Leave
+              // this entry at its old position, still marked, until a write
+              // actually succeeds — a briefly wrong position is a far
+              // smaller harm than losing what the user wrote.
+              break;
+            }
           }
           if (this.removeRenderedEntry(path)) dayGroupsDirty = true;
           this.insertEntryInPlace(change.entry);
@@ -1586,11 +1682,20 @@ export class JournalView extends ItemView {
   /**
    * Tears down one rendered entry's editor/DOM and forgets it. Used for a
    * genuine deletion, the stale old-path half of a rename, and — after an
-   * explicit flush — as half of repositioning a "moved" entry. Any pending
-   * edit worth keeping has already been flushed by the caller
-   * (`applyChangesNow`) before this runs; this method itself never flushes,
+   * explicit flush that confirmed the entry is no longer dirty — as half of
+   * repositioning a "moved" entry (see `applyChangesNow`'s "removed"/
+   * "reposition" handling, both of which bail before reaching this call if
+   * the flush left the entry still dirty). This method itself never flushes,
    * so it stays safe to call unconditionally even when the underlying file
    * is genuinely gone.
+   *
+   * A genuine deletion is the one path here that can still reach a dirty
+   * entry: `applyChangesNow` never flushes before deleting (`action.flush`
+   * is only true when the file still exists elsewhere), so any edit still
+   * inside the debounce window, or already failed, is discarded for real —
+   * there is no file left to write it to. `logUnsavedTextIfLost` gives the
+   * user a last chance to recover that text from the developer console
+   * before it goes.
    *
    * Returns whether anything was actually removed. Deliberately does NOT
    * call `removeEmptyDayGroups` itself — see `applyChangesNow`'s doc — the
@@ -1601,6 +1706,7 @@ export class JournalView extends ItemView {
     if (!rendered) return false;
 
     if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+    this.logUnsavedTextIfLost(rendered);
     rendered.editor?.destroy();
     rendered.renderComponent?.unload();
     rendered.el.remove();

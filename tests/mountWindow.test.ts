@@ -173,6 +173,29 @@ describe("enforceMountLimit", () => {
     expect(order.length).toBe(4);
   });
 
+  it("stops above the cap, evicting nothing, when every remaining candidate is unsaved", () => {
+    // The trade-off documented on MountState.unsaved and at JournalView's
+    // unmountEditor decline: an entry whose write keeps failing pins a mount
+    // slot rather than being forced closed and losing the user's text.
+    // Mixed with one genuinely evictable entry so the loop is shown to evict
+    // exactly that one and then stop — order.length ends up ABOVE max, not
+    // merely unchanged, which is the failure mode a plain "evicts nothing"
+    // check wouldn't distinguish from this one.
+    const order = ["a", "b", "c"];
+    const states: Record<string, MountState> = {
+      a: { mounted: true, focused: false, intersecting: false, unsaved: true },
+      b: { mounted: true, focused: false, intersecting: false },
+      c: { mounted: true, focused: false, intersecting: false, unsaved: true },
+    };
+    const evicted: string[] = [];
+
+    enforceMountLimit(order, 1, statesOf(states), (path) => evicted.push(path));
+
+    expect(evicted).toEqual(["b"]);
+    expect(order).toEqual(["a", "c"]);
+    expect(order.length).toBeGreaterThan(1);
+  });
+
   it("terminates on a large adversarial mix without evicting a focused entry", () => {
     // 200 candidates, one focused, cap far below the count: this is the
     // shape most likely to reveal an O(n^2)-but-still-terminating loop
