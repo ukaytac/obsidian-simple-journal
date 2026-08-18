@@ -146,3 +146,46 @@ the timeline.
 - Reading `embed.editMode` before calling `showEditor()`. It is undefined.
 - Expecting `embed.data` to hold the body. It is an empty string.
 - Expecting `get()` to return the body without frontmatter. It does not.
+
+## Mobile (Task 18) — not yet measured on a device
+
+Everything above was measured on desktop only. Task 18 added mobile-only
+timing and gesture code in `JournalView.createEntryEl` (the keyboard-scroll
+correction and the long-press menu) reasoning from documented, public
+behaviour — `Platform.isMobile`, `focusin`/`focusout`, `touchstart`/`touchmove`
+/`touchend`/`touchcancel`, `scrollIntoView` — rather than anything in this
+file's undocumented-internals territory. Still, none of it has run against a
+real phone or tablet, so the following need a device before they can be
+trusted rather than merely reasoned about:
+
+- **The 300ms keyboard-scroll delay and the 500ms long-press threshold** are
+  both guesses, not measurements. If the on-screen keyboard's open animation
+  takes meaningfully longer than 300ms on a real device, the correction fires
+  before the viewport has actually finished shrinking and undershoots; if
+  500ms reads as too fast or too slow against the platform's own long-press
+  convention, it will feel wrong next to the OS's other long-press gestures.
+- **Whether `window.visualViewport`'s `resize` event fires on keyboard open
+  inside Obsidian's mobile shell** — a WKWebView on iOS, a different WebView
+  on Android — was deliberately left unused rather than guessed at (see the
+  "KNOWN LIMITATION" comment on the `focusin` listener in
+  `JournalView.createEntryEl`). If it turns out to fire reliably on both, a
+  future pass could scroll the actual caret into view above the keyboard
+  instead of `scrollIntoView`-ing the whole entry element, which is a no-op
+  once the entry already spans the scrollport (the long-entry case this
+  exists for).
+- **The long-press gesture's feel against the platform's own scroll and
+  text-selection gestures.** The bail on `.journal-entry-body` and the
+  `touchmove`/`touchend`/`touchcancel` cancellation are reasoned to avoid
+  fighting native scrolling and the editor's own selection handling, but
+  whether a real 500ms hold ever gets far enough to register before a
+  scroll's own `touchmove` cancels it — or, conversely, whether it ever
+  fires unwantedly during an intended scroll — is unverified.
+- **The `hover: none` vs. `.is-mobile` opacity stacking** (see `styles.css`):
+  the entry-actions button is expected to render at 0.5 opacity at rest and
+  1 while focused on the real mobile app, and at full opacity (the older
+  `hover: none` rule) on any other touch device that isn't `.is-mobile`
+  (e.g. a touchscreen laptop running desktop Obsidian). Only measured by
+  reading the CSS cascade, not by looking at a rendered page.
+
+See `docs/manual-testing.md`'s mobile section for the checklist items these
+map to.

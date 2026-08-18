@@ -110,6 +110,25 @@ interface RenderedEntry {
    * safely on disk.
    */
   saveToken: number;
+  /**
+   * Mobile only: handle for the delayed `scrollIntoView` that corrects for
+   * the on-screen keyboard shrinking the viewport after focus (see
+   * `createEntryEl`). Kept on the entry, not a closure-local variable, so
+   * every path that tears this entry down or genuinely moves focus away
+   * from it — `touchstart` on it, `focusout`, `removeRenderedEntry`,
+   * `clearTimeline` — can cancel a still-pending correction before it fires
+   * against a row the user has already left or that no longer exists.
+   * Always `null` on desktop.
+   */
+  keyboardScrollHandle: number | null;
+  /**
+   * Mobile only: handle for the long-press timer that opens the entry menu
+   * (the touch equivalent of `contextmenu`; see `createEntryEl`). Kept on
+   * the entry for the same reason as `keyboardScrollHandle` — so a teardown
+   * mid-press can cancel it instead of popping the menu for a row that's
+   * being deleted or reloaded out from under it. Always `null` on desktop.
+   */
+  longPressHandle: number | null;
 }
 
 export class JournalView extends ItemView {
@@ -331,6 +350,7 @@ export class JournalView extends ItemView {
       // now leaves — see `logUnsavedTextIfLost`'s doc on why it also covers
       // this case.
       this.logUnsavedTextIfLost(this.composer);
+      this.clearMobileTimers(this.composer);
       this.composer.editor?.destroy();
       this.composer = null;
     }
@@ -348,6 +368,7 @@ export class JournalView extends ItemView {
       // be discarded for real — log it before destroying so the developer
       // console is the last available place to recover it from.
       this.logUnsavedTextIfLost(rendered);
+      this.clearMobileTimers(rendered);
       rendered.editor?.destroy();
       rendered.editor = null;
       rendered.renderComponent?.unload();
@@ -781,6 +802,8 @@ export class JournalView extends ItemView {
       intersecting: false,
       opToken: 0,
       saveToken: 0,
+      keyboardScrollHandle: null,
+      longPressHandle: null,
     };
 
     button.onClick((event) => this.showEntryMenu(rendered, event));
@@ -816,10 +839,44 @@ export class JournalView extends ItemView {
       // RenderedEntry's whole lifetime — binding on every mount would stack a
       // fresh listener on top of every previous one, each still reachable
       // through the very node that never got replaced.
+      //
+      // KNOWN LIMITATION: `scrollIntoView({block: "nearest"})` is a no-op
+      // once `rendered.el` already spans the scrollport — exactly the case
+      // for an entry taller than the screen, where the caret can still sit
+      // under the keyboard after this "corrects" nothing. Fixing that
+      // properly means scrolling to the caret (or the visible viewport
+      // edge), not the entry element — which for the embedded editor means
+      // reaching into CM6 for a coordinate, and for either editor means
+      // knowing that `window.visualViewport`'s `resize` event actually fires
+      // on keyboard open inside Obsidian's mobile shell, on both iOS and
+      // Android, which cannot be confirmed without a device. Building that
+      // on a guess risks the same outcome as the embedded editor's deleted
+      // self-reload guard (see ObsidianEmbedEditor's "Self-reload" doc) — a
+      // heuristic over behaviour this file cannot observe. Left as a
+      // documented gap rather than machinery over an assumption; see
+      // `docs/manual-testing.md`'s mobile section for the device check.
       rendered.bodyEl.addEventListener("focusin", () => {
-        window.setTimeout(() => {
+        if (rendered.keyboardScrollHandle !== null) window.clearTimeout(rendered.keyboardScrollHandle);
+        rendered.keyboardScrollHandle = window.setTimeout(() => {
+          rendered.keyboardScrollHandle = null;
           rendered.el.scrollIntoView({ block: "nearest" });
         }, 300);
+      });
+
+      // A blur that actually leaves the entry body cancels the pending
+      // correction above — the keyboard closing (or focus moving to a
+      // different entry, which mounts its own timer) makes scrolling back to
+      // THIS entry wrong, not merely unnecessary. Mirrors
+      // `ObsidianEmbedEditor`'s own focusout guard: only a `relatedTarget`
+      // outside `bodyEl` counts as a real blur, not CM6 shifting focus
+      // between its own internal nodes.
+      rendered.bodyEl.addEventListener("focusout", (event) => {
+        const related = (event as FocusEvent).relatedTarget as Node | null;
+        if (related && rendered.bodyEl.contains(related)) return;
+        if (rendered.keyboardScrollHandle !== null) {
+          window.clearTimeout(rendered.keyboardScrollHandle);
+          rendered.keyboardScrollHandle = null;
+        }
       });
 
       // `contextmenu` does not fire from a tap on iOS, so a long-press on
@@ -827,14 +884,36 @@ export class JournalView extends ItemView {
       // right-click above. Bails immediately on a touch that starts inside
       // `.journal-entry-body`: that surface is an editing surface first, and
       // a long-press there is the editor's own text-selection gesture, not a
-      // request for this menu.
-      let pressTimer: number | null = null;
-
+      // request for this menu. Also bails inside `.journal-entry-actions`:
+      // that button already opens this same menu on tap, and without this a
+      // long-press on it would open the menu at 500ms and the touch's own
+      // `touchend`-driven `click` would then open a second one.
+      //
+      // `instanceof Element`, not `HTMLElement`, matching the `contextmenu`
+      // handler above and for the same reason: an SVG target (a Mermaid
+      // diagram, an embedded SVG) is an `Element` but not an `HTMLElement`,
+      // and `closest()` is on `Element` — the narrower check would let a
+      // long-press on SVG content inside the body skip the bail.
       el.addEventListener("touchstart", (event) => {
-        const target = event.target;
-        if (target instanceof HTMLElement && target.closest(".journal-entry-body")) return;
+        // A new touch on this entry — whether it turns out to be a scroll, a
+        // selection, or a long-press — means the user is now actively
+        // gesturing here, not passively waiting for the keyboard-open
+        // correction above to fire. Without this, focusing this entry and
+        // then immediately flick-scrolling away (well within the 300ms
+        // window) gets yanked back to it a moment later.
+        if (rendered.keyboardScrollHandle !== null) {
+          window.clearTimeout(rendered.keyboardScrollHandle);
+          rendered.keyboardScrollHandle = null;
+        }
 
-        pressTimer = window.setTimeout(() => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".journal-entry-body, .journal-entry-actions")) {
+          return;
+        }
+
+        if (rendered.longPressHandle !== null) window.clearTimeout(rendered.longPressHandle);
+        rendered.longPressHandle = window.setTimeout(() => {
+          rendered.longPressHandle = null;
           const touch = event.touches[0];
           if (!touch) return;
           this.showEntryMenu(
@@ -847,8 +926,8 @@ export class JournalView extends ItemView {
       // Any of these means the touch was a scroll, a drag, or otherwise not
       // a stationary press — cancel before the timer fires.
       const cancelPress = () => {
-        if (pressTimer !== null) window.clearTimeout(pressTimer);
-        pressTimer = null;
+        if (rendered.longPressHandle !== null) window.clearTimeout(rendered.longPressHandle);
+        rendered.longPressHandle = null;
       };
 
       el.addEventListener("touchend", cancelPress);
@@ -979,6 +1058,12 @@ export class JournalView extends ItemView {
       window.clearTimeout(rendered.saveHandle);
       rendered.saveHandle = null;
     }
+    // Deletion is confirmed and the row is about to sit dimmed and inert
+    // (below) until the vault event or the fallback tears it down for real
+    // — a still-armed long-press timer popping the actions menu open on it
+    // in the meantime, or a keyboard-scroll correction firing for it, would
+    // both be acting on a row that's already gone.
+    this.clearMobileTimers(rendered);
     rendered.el.addClass("is-deleting");
     // The flush above may have failed (the write was already failing before
     // the user opened this menu at all) — a user confirming "Delete entry"
@@ -1276,6 +1361,31 @@ export class JournalView extends ItemView {
       "— recover it from this line before it is lost:",
       rendered.editor?.getValue(),
     );
+  }
+
+  /**
+   * Cancels this entry's pending mobile-only timers — the keyboard-visibility
+   * scroll and the long-press menu (see `createEntryEl`) — if either is
+   * armed. A no-op on desktop, where both fields stay `null` forever.
+   *
+   * Called from every path that tears an entry's DOM/editor down, or is
+   * about to: `clearTimeline` (both the composer special-case and the normal
+   * loop), `removeRenderedEntry`, `confirmDelete`, and
+   * `discardEmptyComposer`. Without this, either timer can fire minutes
+   * later against a row that's already gone — `scrollIntoView` on a detached
+   * element, or `showEntryMenu` reopening the actions menu (and reaching for
+   * `rendered.entry.file`, possibly already trashed) for an entry the user
+   * just deleted or that a reload already discarded.
+   */
+  private clearMobileTimers(rendered: RenderedEntry): void {
+    if (rendered.keyboardScrollHandle !== null) {
+      window.clearTimeout(rendered.keyboardScrollHandle);
+      rendered.keyboardScrollHandle = null;
+    }
+    if (rendered.longPressHandle !== null) {
+      window.clearTimeout(rendered.longPressHandle);
+      rendered.longPressHandle = null;
+    }
   }
 
   /**
@@ -1846,6 +1956,7 @@ export class JournalView extends ItemView {
 
     if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
     this.logUnsavedTextIfLost(rendered);
+    this.clearMobileTimers(rendered);
     rendered.editor?.destroy();
     rendered.renderComponent?.unload();
     rendered.el.remove();
@@ -2246,6 +2357,7 @@ export class JournalView extends ItemView {
     if (this.composer !== rendered) return;
     if (isMeaningful(rendered.editor?.getValue() ?? "")) return;
 
+    this.clearMobileTimers(rendered);
     rendered.editor?.destroy();
     rendered.el.remove();
     this.composer = null;

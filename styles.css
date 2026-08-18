@@ -264,3 +264,17 @@
 .is-mobile .journal-entry-actions {
   opacity: 0.5;
 }
+
+/* `.journal-entry-actions:focus-within` above has the same specificity
+   (two class-level selectors) as the dimming rule immediately above this
+   one, so without this override, source order alone would let the dimming
+   rule win and leave the button at 0.5 opacity even while it (or something
+   inside it) actually holds focus — e.g. an external keyboard tabbing to it,
+   or assistive tech. Deliberately full opacity, not dimmed, whenever
+   focused: hiding a focused control is an accessibility regression the
+   mobile-only dimming above must never cause. One extra class-level
+   selector than the dimming rule, so this always wins over it regardless of
+   source order. */
+.is-mobile .journal-entry-actions:focus-within {
+  opacity: 1;
+}

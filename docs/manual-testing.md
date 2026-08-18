@@ -47,3 +47,37 @@ the loop-suppression and repositioning decisions are. Confirm by hand:
       also with a live editor, confirming the mount/paging observers set up
       on the empty timeline are still working normally rather than only
       working once by accident.
+
+## Mobile (Task 18)
+
+None of this can be verified without a phone or tablet — see
+`docs/editor-embed-api.md`'s "Mobile" section for why each item is
+unverified rather than merely untested.
+
+- [ ] **A long entry keeps its caret visible above the keyboard.** Open (or
+      create) an entry with enough lines to exceed the screen's height, and
+      focus it near its END (tap near the last line, or use "New journal
+      entry" and type several screens' worth of lines). Confirm the caret
+      stays visible once the keyboard opens. This is the known gap: the
+      keyboard-scroll correction scrolls the entry's element into view, which
+      is a no-op once that element already spans the scrollport — so this
+      specific case (a long entry, focused near the end) is the one most
+      likely to still show the caret hidden under the keyboard.
+- [ ] **Tune the 300ms keyboard-scroll delay and the 500ms long-press
+      threshold** (`JournalView.createEntryEl`) against how the real keyboard
+      animation and the OS's own long-press convention actually feel.
+- [ ] **Check whether `window.visualViewport`'s `resize` event fires** when
+      the keyboard opens, on both iOS and Android, inside Obsidian's mobile
+      shell (see `docs/editor-embed-api.md`). If it fires reliably on both,
+      a caret-relative scroll (rather than scrolling the whole entry) becomes
+      possible.
+- [ ] **Long-press an entry's timestamp area** (not its text body) and
+      confirm it opens the actions menu without fighting a normal scroll or
+      the editor's own text-selection gesture, and that it does not also
+      pop the menu twice when the always-visible `⋯` button is long-pressed
+      instead of tapped.
+- [ ] **Compare the entry-actions button's dimness** against a non-mobile
+      touch device if one is available (e.g. a touchscreen laptop): the
+      button should sit at reduced (0.5) opacity at rest on the real mobile
+      app, full opacity while it holds focus, and full opacity at rest
+      everywhere else that only matches `hover: none`.
