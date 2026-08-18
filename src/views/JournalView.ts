@@ -1336,8 +1336,57 @@ export class JournalView extends ItemView {
         new Notice(
           `Journal Entries: failed to save "${rendered.entry.file.path}". See the developer console for details.`,
         );
+        this.showSaveError(rendered);
       },
     );
+
+    // `savedBody` now equals `value` on both a successful write and a
+    // no-op skip (value already matched disk) — the only case it does NOT
+    // equal `value` is a failed write, where `saveIfChanged` hands back the
+    // unchanged original. Clearing here on the skip path too is correct, not
+    // just harmless: it covers the entry being edited back to the last
+    // known-good text after a prior failure, which never re-enters `write`
+    // (value === savedBody), but is genuinely no longer "unsaved".
+    if (rendered.savedBody === value) this.clearSaveError(rendered);
+  }
+
+  /**
+   * Marks the entry as unsaved next to its timestamp. The editor keeps the
+   * text — nothing is lost — and the next successful (or no-op, see `save`)
+   * write clears the marker. Guarded against a duplicate: `save` can call
+   * this repeatedly (every retried failure) for the same still-broken entry.
+   *
+   * `role="status"` (implicit `aria-live="polite"`) so assistive tech
+   * announces it the moment it appears, since nothing moves focus here.
+   * Inserted before `.journal-entry-actions`, not appended to the header:
+   * `createSpan`/`createDiv` always append, and the actions element is
+   * already last among the header's children (see `createEntryEl`) — a plain
+   * append would land the marker to the right of the (auto-margined, always
+   * right-aligned) actions button instead of next to the timestamp.
+   */
+  private showSaveError(rendered: RenderedEntry): void {
+    if (rendered.el.querySelector(".journal-entry-error")) return;
+
+    const header = rendered.el.querySelector(".journal-entry-header");
+    if (!header) return;
+
+    const marker = createSpan({
+      cls: "journal-entry-error",
+      text: "not saved",
+      attr: {
+        role: "status",
+        "aria-label": "This entry could not be written to disk. See the developer console.",
+      },
+    });
+
+    const actions = header.querySelector(".journal-entry-actions");
+    if (actions) header.insertBefore(marker, actions);
+    else header.appendChild(marker);
+  }
+
+  /** Removes the failure marker `showSaveError` added, if present. */
+  private clearSaveError(rendered: RenderedEntry): void {
+    rendered.el.querySelector(".journal-entry-error")?.remove();
   }
 
   /**

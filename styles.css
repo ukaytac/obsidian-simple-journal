@@ -76,6 +76,16 @@
   display: none;
 }
 
+/* Persistent failure marker (see JournalView.showSaveError/clearSaveError) —
+   shown next to the timestamp when a write to disk fails, cleared on the
+   next successful (or no-op) write. Not part of .journal-entry-actions:
+   this must stay visible at rest, not only on hover/focus. */
+.journal-entry-error {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-error);
+  margin-left: var(--size-2-2);
+}
+
 .journal-entry-menu-button {
   padding: 0 var(--size-2-2);
   height: var(--size-4-5);
