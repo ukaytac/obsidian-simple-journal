@@ -3,6 +3,7 @@ import { EntryRepository } from "./journal/entryRepository";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
+import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/CalendarView";
 import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
 
@@ -24,6 +25,7 @@ export default class JournalEntriesPlugin extends Plugin {
     this.addChild(this.journal);
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
+    this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));
 
     this.addRibbonIcon("book-open", "Open journal", () => {
@@ -54,6 +56,16 @@ export default class JournalEntriesPlugin extends Plugin {
       id: "go-to-today",
       name: "Go to today",
       callback: () => void this.goToToday(),
+    });
+
+    // No ribbon icon for this — the ribbon already has two (Open journal,
+    // New journal entry), and CLAUDE.md warns against ribbon/UI clutter.
+    // Not opened automatically alongside the journal, either: this is an
+    // optional companion view, not part of the MVP's core flow.
+    this.addCommand({
+      id: "open-calendar",
+      name: "Open calendar",
+      callback: () => void this.openCalendar(),
     });
 
     // Lets a phone home-screen shortcut (or any other launcher) capture a
@@ -138,6 +150,46 @@ export default class JournalEntriesPlugin extends Plugin {
     if (view) await view.goToToday();
   }
 
+  /**
+   * Opens the calendar view in the right sidebar, reusing an existing leaf
+   * when one exists — same shape as `openJournal`. Returns null if
+   * `getRightLeaf` itself returns null (no right split exists to create a
+   * leaf in — not expected in Obsidian's normal layout, but the API is
+   * documented as nullable) or if the leaf's view isn't a CalendarView by
+   * the time this resolves.
+   */
+  async openCalendar(): Promise<CalendarView | null> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR);
+    let leaf: WorkspaceLeaf;
+
+    if (existing.length > 0) {
+      leaf = existing[0];
+    } else {
+      const rightLeaf = this.app.workspace.getRightLeaf(false);
+      if (!rightLeaf) return null;
+      leaf = rightLeaf;
+      await leaf.setViewState({ type: VIEW_TYPE_CALENDAR, active: true });
+    }
+
+    await this.app.workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    return view instanceof CalendarView ? view : null;
+  }
+
+  /**
+   * Opens (or reveals) the journal view and calls `goToDate` on it — the
+   * calendar sidebar's click handler goes through this rather than reaching
+   * into `openJournal`/`JournalView` itself, mirroring `newEntry`/
+   * `goToToday`'s existing shape. A day with no entries still navigates:
+   * `goToDate`/`anchorPosition` naturally land on the nearest older entry,
+   * which is the correct reading of "take me to this point in time" (see
+   * `JournalView.goToDate`'s doc).
+   */
+  async goToDateInJournal(date: Date): Promise<void> {
+    const view = await this.openJournal();
+    if (view) await view.goToDate(date);
+  }
+
   refreshJournal(): void {
     this.journal.rebuild();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL)) {
@@ -146,6 +198,16 @@ export default class JournalEntriesPlugin extends Plugin {
       // rather than throw, or one deferred leaf would abort the whole loop.
       const view = leaf.view;
       if (view instanceof JournalView) void view.reload();
+    }
+    // `rebuild()` above replaces the index directly, without going through
+    // `JournalService`'s normal `onChange` batching — so a `CalendarView`,
+    // which only re-renders from its `onChange` subscription, would
+    // otherwise show stale dots until some unrelated vault event happened to
+    // fire later. Refreshed here explicitly, same reasoning as the
+    // JournalView loop above.
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR)) {
+      const view = leaf.view;
+      if (view instanceof CalendarView) view.refresh();
     }
   }
 }

@@ -279,6 +279,110 @@
   opacity: 1;
 }
 
+/* Calendar sidebar (CalendarView). Same writing-surface restraint as the
+   timeline above: no borders, cards, or shadows — everything comes from
+   Obsidian CSS variables so light/dark theme parity is automatic. */
+.journal-calendar-view {
+  padding: var(--size-4-4) var(--size-4-3);
+}
+
+.journal-calendar-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--size-4-4);
+}
+
+.journal-calendar-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-2);
+  min-width: 0;
+}
+
+.journal-calendar-month-name {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.journal-calendar-year {
+  font-size: var(--font-ui-small);
+  color: var(--text-faint);
+}
+
+.journal-calendar-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+}
+
+.journal-calendar-weekdays,
+.journal-calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.journal-calendar-weekday {
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  padding-bottom: var(--size-4-2);
+}
+
+.journal-calendar-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--size-2-1);
+  aspect-ratio: 1;
+  cursor: pointer;
+  border-radius: var(--radius-s);
+}
+
+.journal-calendar-day:hover {
+  background: var(--background-modifier-hover);
+}
+
+.journal-calendar-day-blank {
+  cursor: default;
+}
+
+.journal-calendar-day-blank:hover {
+  background: transparent;
+}
+
+.journal-calendar-day-number {
+  font-size: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-normal);
+}
+
+/* A day with no entries reads as quieter than one with content — mirrors the
+   timeline's own restraint (nothing but the timestamp visible at rest). */
+.journal-calendar-day.is-empty .journal-calendar-day-number {
+  color: var(--text-faint);
+}
+
+.journal-calendar-day.is-today .journal-calendar-day-number {
+  color: var(--text-accent);
+  font-weight: var(--font-semibold);
+}
+
+.journal-calendar-day-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-accent);
+}
+
+/* Hidden (not removed) for a day with no entries, so its layout space is
+   still reserved and every row's day numbers stay vertically aligned. */
+.journal-calendar-day-dot-hidden {
+  visibility: hidden;
+}
+
 /* CodeMirror lays the gutter out as a flex sibling of the content, so it takes
    real horizontal space even when Obsidian renders nothing visible in it —
    that is the indent that pushed entry text right of its own timestamp. The
