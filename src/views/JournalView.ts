@@ -2159,12 +2159,31 @@ export class JournalView extends ItemView {
    * has run still only ever open one composer, because the second
    * `openComposer` runs strictly after the first (same serialized chain as
    * every other timeline mutation) and finds `this.composer` already set.
+   *
+   * REQUIRED, per CLAUDE.md's "Creating a New Entry": if the timeline is
+   * anchored to a past date (`goToDate`), this must move the user back to
+   * today before opening the composer — otherwise the anchor stays set, and
+   * the very next `reload()` for any unrelated reason (a settings change, a
+   * lost-cursor re-anchor in `nextPage`, anything) would exclude the entry
+   * just written, since it is newer than the stale anchor. The file itself
+   * would still be safe on disk, but it would silently vanish from the
+   * timeline with no explanation — worse than the anchor merely being
+   * inconvenient.
+   *
+   * Only reached when no composer is open yet — the fast-path return above
+   * guards this, and `goToDate`/`reload()` never runs (an already-open
+   * composer is never torn down) just because this command fires again
+   * while one is up.
    */
   async startNewEntry(): Promise<void> {
     if (this.composer) {
       this.composer.editor?.focus();
       this.scrollToTop();
       return;
+    }
+
+    if (this.anchorDate !== null) {
+      await this.goToDate(null);
     }
 
     await this.enqueueTimelineMutation(() => this.openComposer());
@@ -2457,9 +2476,11 @@ export class JournalView extends ItemView {
    * the journal's newest entry) is actually visible rather than leaving the
    * viewport wherever it happened to be before this ran.
    *
-   * There is no command wired to this yet — it exists for a future date
-   * picker to call. `goToToday` is the only current caller, using `null` to
-   * clear a stale anchor.
+   * There is no command wired to a non-null date yet — a future date picker
+   * is the intended caller for that. `null` is already exercised: `goToToday`
+   * uses it to clear a stale anchor, and `startNewEntry` uses it so capturing
+   * a new entry while anchored to past history moves back to today first
+   * (see its doc).
    */
   async goToDate(date: Date | null): Promise<void> {
     this.anchorDate = date;

@@ -228,6 +228,26 @@ Nothing automated can watch where the caret actually lands after that swap.
       confirm: a Notice appears, the typed text is still visible in the
       composer, and typing further retries the create rather than silently
       dropping the text or duplicating the composer.
+- [ ] **Capturing a new entry clears a stale anchor.** `startNewEntry`'s
+      anchor-clearing check (`if (this.anchorDate !== null) await
+      this.goToDate(null);`) is plain `JournalView` orchestration, not part of
+      any pure, independently-tested module — this needs a live view. Anchor
+      the timeline to an old month (there's no date picker yet, so call
+      `view.goToDate(new Date(2024, 0, 1))` from the console, or temporarily
+      invoke it from a debug command), then run **New journal entry** and
+      type a sentence. Confirm: the composer appears at today's position (not
+      buried under the old anchor), the entry is created normally, and then
+      force an unrelated reload (toggle the journal folder setting, or call
+      `plugin.refreshJournal()` from the console) — the entry you just wrote
+      must still be visible afterward, not silently excluded because the
+      anchor was still pointing at 2024.
+- [ ] **Re-invoking while a composer is open doesn't touch the anchor.**
+      Anchor to an old month, run **New journal entry** (this clears the
+      anchor per the check above), then — while the composer is still open
+      and uncommitted — run **New journal entry** again. Confirm it simply
+      refocuses the same composer with no visible reload/flicker; this is the
+      fast-path branch at the top of `startNewEntry`, which must return
+      before ever reaching the anchor-clearing check.
 
 ## 7. Entry actions
 
