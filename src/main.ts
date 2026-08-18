@@ -34,7 +34,7 @@ export default class JournalEntriesPlugin extends Plugin {
     // can put a reachable shortcut — the "+" new-file menu has no public API.
     // Capture is the primary flow, so it needs its own entry there rather than
     // living only in the command palette.
-    this.addRibbonIcon("pencil-line", "New journal entry", () => {
+    this.addRibbonIcon("plus", "New journal entry", () => {
       void this.newEntry();
     });
 

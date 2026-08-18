@@ -316,3 +316,15 @@
   min-height: 0 !important;
   max-width: none !important;
 }
+
+/* Same cascade problem as the padding block above, one rule short: the
+   `display: none` on the gutter was a two-selector rule and lost to
+   Obsidian's own. CodeMirror lays the gutter out as a flex sibling of the
+   content, so while it is still displayed it reserves its full width and
+   pushes every entry's first character right of its own timestamp. */
+.journal-entry-embed .cm-gutters,
+.journal-entry-embed .cm-gutter {
+  display: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+}
