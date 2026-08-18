@@ -304,3 +304,18 @@ and the real decline-to-unmount path together.
         "uncommitted composer" with the text you typed. Confirm no empty or
         partial file was created in the journal folder — Lazy Creation still
         applies; teardown must not commit on the way out.
+  - [ ] **Renaming a dirty entry's file re-keys the row instead of
+        duplicating it.** Not exercised by the automated suite: the re-key
+        touches `this.rendered`, `this.mountOrder`, and the element's
+        `data-path` together — live `JournalView` instance state and real
+        DOM, with no extracted pure seam the way `decideChangeAction`
+        (`applyChange.ts`) or `pickEvictionCandidate` (`mountWindow.ts`) have.
+        Repeat the read-only setup (type, break permissions, type again,
+        marker appears) so the entry is dirty, then — from the File
+        Explorer, NOT from the journal view — rename that entry's `.md`
+        file to a different (still-valid) timestamp filename in the same
+        folder. Confirm: exactly ONE row for it remains in the timeline (no
+        duplicate), it still shows the text you typed, and it is still
+        marked **not saved**. Restore permissions and type once more;
+        confirm the marker clears and the file on disk (at its new name)
+        now matches the editor.

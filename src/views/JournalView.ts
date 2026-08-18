@@ -1603,41 +1603,42 @@ export class JournalView extends ItemView {
             // delete — `action.flush` is only true when `fileStillExists`).
             // Tearing this rendering down now would destroy the editor and
             // replace the on-screen text with the stale `savedBody`, the
-            // same loss `unmountEditor`'s decline exists to prevent. Leave
-            // this rendering in place, still showing its "not saved" marker,
-            // rather than lose the text.
+            // same loss `unmountEditor`'s decline exists to prevent.
             //
-            // KNOWN LIMITATION, deliberately left as-is (judged, not missed):
-            // nothing re-runs this cleanup once a later write succeeds — not
-            // even the next successful flush, since that only clears the
-            // marker and re-renders static content in place; it has no
-            // notion that this row is supposed to go away or move. This
-            // self-heals only on the next full `reload()`.
+            // A plain decline is not enough here, unlike the "reposition"
+            // branch below: `change.path` is only the STALE key this
+            // rendering happens to still be filed under in `this.rendered`
+            // (Obsidian mutates the renamed `TFile` in place, so `rendered`
+            // already IS the current file — only our own bookkeeping is
+            // behind). A rename always pairs this "removed" with a same-batch
+            // upsert for the file's new path (see
+            // `JournalService.applyRenameSource`); if this rendering is left
+            // keyed at the old path, that paired upsert finds nothing at the
+            // new path and inserts a SECOND, independent rendering — two live
+            // editors bound to the same `TFile`, both polling, both able to
+            // write, fighting over the same file. That is worse than the
+            // loss this decline exists to prevent, not merely "briefly
+            // wrong" — so re-key instead of just leaving it behind:
+            const newPath = rendered.entry.file.path;
+            this.rendered.delete(change.path);
+            this.rendered.set(newPath, rendered);
+            const mountIndex = this.mountOrder.indexOf(change.path);
+            if (mountIndex >= 0) this.mountOrder[mountIndex] = newPath;
+            rendered.el.dataset.path = newPath;
+            // `dayGroups` is untouched: a rename/move changes neither
+            // `entry.created` nor which day group this element already sits
+            // in, only the path bookkeeping above.
             //
-            // For a rename that keeps the file recognized as a journal entry
-            // at its new path, this is worse than "briefly wrong": `this`
-            // (old-path) rendering stays alive under `change.path` in
-            // `this.rendered`, but the SAME batch's paired upsert for the
-            // file's new path (always emitted alongside a rename's
-            // "removed" — see `JournalService.applyRenameSource`) finds
-            // nothing keyed at the new path and inserts a FRESH rendering
-            // there instead — a second, independent editor bound to the same
-            // underlying `TFile`. (For a move out of the journal folder,
-            // there is no such companion upsert — see `JournalService.flush`
-            // — so that case really is just this one stale-but-correctly-
-            // positioned row, not a duplicate.)
-            //
-            // A cheap fix was considered and rejected as not actually cheap:
-            // re-keying `this.rendered`/`el.dataset.path` to the entry's
-            // current path here would need `this.mountOrder`'s stored path
-            // string kept in sync too (it's read by `mountStateOf` and
-            // `enforceMountLimit` via the same string), and a
-            // save()-success-triggered re-trigger would need to safely
-            // re-enter `enqueueTimelineMutation`'s serialized chain from a
-            // callback that runs completely outside it today, plus
-            // re-validate `this.rendered` hasn't changed by the time it
-            // runs. Both are real fixes, not few-line ones — left as a known
-            // limitation rather than built here.
+            // With `this.rendered` now correctly keyed at `newPath`, the
+            // paired upsert due later in this SAME batch finds `state.exists
+            // === true` and either no-ops (dirty, per `decideChangeAction`'s
+            // "content" case) or hits the "reposition" branch below — either
+            // way, no duplicate. For a move OUT of the journal folder there
+            // is no companion upsert at all (see `JournalService.flush`'s
+            // "not an entry" branch), so this re-keyed row simply stays,
+            // still holding the user's text and still marked, until a write
+            // succeeds — the correct outcome: dropping it would discard
+            // exactly the text this whole decline exists to protect.
             continue;
           }
         }
@@ -1683,13 +1684,21 @@ export class JournalView extends ItemView {
               // a duplicate row: "reposition" only fires when the file's
               // PATH is unchanged (its `created` changed from elsewhere —
               // e.g. a Properties-pane edit — with no rename involved), so
-              // `rendered` stays reachable at the same map key. It is,
-              // however, the same KNOWN LIMITATION as the "removed" branch:
-              // nothing re-runs this once a later write succeeds — the row
-              // keeps its stale day-group placement and its stale `.created`
-              // until the next full `reload()`; see that branch's doc for
-              // why a cheap re-trigger was considered and rejected as not
-              // actually cheap.
+              // `rendered` stays reachable at the same map key regardless —
+              // there is no stale bookkeeping for a paired change to trip
+              // over, so no re-key is needed here.
+              //
+              // KNOWN LIMITATION, deliberately left as-is: nothing re-runs
+              // this once a later write succeeds — the row keeps its stale
+              // day-group placement and its stale `.created` until the next
+              // full `reload()`. A save()-success-triggered re-trigger would
+              // need to safely re-enter `enqueueTimelineMutation`'s
+              // serialized chain from a callback that runs completely
+              // outside it today, plus re-validate `this.rendered` hasn't
+              // changed by the time it runs — not a few-line fix, and (unlike
+              // the "removed" branch's duplicate-editor risk) the harm here
+              // is only a stale position, not two editors fighting over one
+              // file — acceptable for the MVP.
               break;
             }
           }
