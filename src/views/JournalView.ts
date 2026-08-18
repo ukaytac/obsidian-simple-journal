@@ -323,6 +323,14 @@ export class JournalView extends ItemView {
     // `commitComposer` — which both re-check `this.composer === rendered` —
     // see this as already torn down regardless of when they happen to run.
     if (this.composer) {
+      // Not committing it here on the way out: creating a file during
+      // teardown is a worse failure mode than losing an unsent draft, and
+      // committing only on meaningful input (CLAUDE.md's Lazy Creation) is a
+      // product rule, not merely this method's default. Best this can do is
+      // leave the same console trace every other unavoidable-discard path
+      // now leaves — see `logUnsavedTextIfLost`'s doc on why it also covers
+      // this case.
+      this.logUnsavedTextIfLost(this.composer);
       this.composer.editor?.destroy();
       this.composer = null;
     }
@@ -923,6 +931,12 @@ export class JournalView extends ItemView {
       rendered.saveHandle = null;
     }
     rendered.el.addClass("is-deleting");
+    // The flush above may have failed (the write was already failing before
+    // the user opened this menu at all) — a user confirming "Delete entry"
+    // is deliberately discarding the FILE, but very likely still believes
+    // their last edit was saved. Without this, that's the one path where a
+    // failed save leaves no trace anywhere once the row is gone.
+    this.logUnsavedTextIfLost(rendered);
     rendered.editor?.destroy();
     rendered.editor = null;
 
@@ -1192,16 +1206,24 @@ export class JournalView extends ItemView {
    * nothing pending to lose. Called immediately before a caller destroys
    * this entry's editor on a path that, unlike `unmountEditor`'s decline,
    * has no option to keep it mounted instead: the timeline itself is coming
-   * down (`clearTimeline`), or the underlying file is genuinely gone
-   * (`removeRenderedEntry`). Logging the actual unsaved body — not just the
-   * path — is the last recovery path available to the user in either case.
+   * down (`clearTimeline`), the underlying file is genuinely gone
+   * (`removeRenderedEntry`), or the user just confirmed deleting it
+   * themselves (`confirmDelete`) — very possibly believing their last edit
+   * had already saved. Logging the actual unsaved body — not just the path —
+   * is the last recovery path available to the user in any of these cases.
+   *
+   * Also used, unmodified, for the uncommitted composer (see `clearTimeline`):
+   * its `savedBody` never leaves `""`, so this reduces to "holds any text at
+   * all" there — close enough to `isMeaningful` for a last-resort log, and
+   * `rendered.entry.file` being null already falls through to the label
+   * below rather than needing a separate composer-specific message.
    */
   private logUnsavedTextIfLost(rendered: RenderedEntry): void {
     if (!this.isDirty(rendered)) return;
 
     console.error(
       "Journal Entries: discarding unsaved text for",
-      rendered.entry.file?.path ?? "(an entry with no file)",
+      rendered.entry.file?.path ?? "(uncommitted composer)",
       "— recover it from this line before it is lost:",
       rendered.editor?.getValue(),
     );
@@ -1577,13 +1599,45 @@ export class JournalView extends ItemView {
           if (this.isDirty(rendered)) {
             // The flush did not reach disk (the write is still failing) even
             // though the file itself is still there, just elsewhere (a
-            // rename/move out of the journal folder, not a genuine delete —
-            // `action.flush` is only true when `fileStillExists`). Tearing
-            // this rendering down now would destroy the editor and replace
-            // the on-screen text with the stale `savedBody`, the same loss
-            // `unmountEditor`'s decline exists to prevent. Leave the
-            // (mispositioned) entry mounted and still showing its "not
-            // saved" marker; the next successful flush removes it correctly.
+            // rename or a move out of the journal folder, not a genuine
+            // delete — `action.flush` is only true when `fileStillExists`).
+            // Tearing this rendering down now would destroy the editor and
+            // replace the on-screen text with the stale `savedBody`, the
+            // same loss `unmountEditor`'s decline exists to prevent. Leave
+            // this rendering in place, still showing its "not saved" marker,
+            // rather than lose the text.
+            //
+            // KNOWN LIMITATION, deliberately left as-is (judged, not missed):
+            // nothing re-runs this cleanup once a later write succeeds — not
+            // even the next successful flush, since that only clears the
+            // marker and re-renders static content in place; it has no
+            // notion that this row is supposed to go away or move. This
+            // self-heals only on the next full `reload()`.
+            //
+            // For a rename that keeps the file recognized as a journal entry
+            // at its new path, this is worse than "briefly wrong": `this`
+            // (old-path) rendering stays alive under `change.path` in
+            // `this.rendered`, but the SAME batch's paired upsert for the
+            // file's new path (always emitted alongside a rename's
+            // "removed" — see `JournalService.applyRenameSource`) finds
+            // nothing keyed at the new path and inserts a FRESH rendering
+            // there instead — a second, independent editor bound to the same
+            // underlying `TFile`. (For a move out of the journal folder,
+            // there is no such companion upsert — see `JournalService.flush`
+            // — so that case really is just this one stale-but-correctly-
+            // positioned row, not a duplicate.)
+            //
+            // A cheap fix was considered and rejected as not actually cheap:
+            // re-keying `this.rendered`/`el.dataset.path` to the entry's
+            // current path here would need `this.mountOrder`'s stored path
+            // string kept in sync too (it's read by `mountStateOf` and
+            // `enforceMountLimit` via the same string), and a
+            // save()-success-triggered re-trigger would need to safely
+            // re-enter `enqueueTimelineMutation`'s serialized chain from a
+            // callback that runs completely outside it today, plus
+            // re-validate `this.rendered` hasn't changed by the time it
+            // runs. Both are real fixes, not few-line ones — left as a known
+            // limitation rather than built here.
             continue;
           }
         }
@@ -1624,6 +1678,18 @@ export class JournalView extends ItemView {
               // this entry at its old position, still marked, until a write
               // actually succeeds — a briefly wrong position is a far
               // smaller harm than losing what the user wrote.
+              //
+              // Unlike the "removed" branch, this is NOT at risk of becoming
+              // a duplicate row: "reposition" only fires when the file's
+              // PATH is unchanged (its `created` changed from elsewhere —
+              // e.g. a Properties-pane edit — with no rename involved), so
+              // `rendered` stays reachable at the same map key. It is,
+              // however, the same KNOWN LIMITATION as the "removed" branch:
+              // nothing re-runs this once a later write succeeds — the row
+              // keeps its stale day-group placement and its stale `.created`
+              // until the next full `reload()`; see that branch's doc for
+              // why a cheap re-trigger was considered and rejected as not
+              // actually cheap.
               break;
             }
           }

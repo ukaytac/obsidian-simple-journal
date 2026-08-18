@@ -288,3 +288,19 @@ and the real decline-to-unmount path together.
         many other entries compete for mount slots. Restore permissions and
         let a write succeed, then scroll far away again — confirm this entry
         can now be unmounted/evicted like any other.
+  - [ ] **Deleting an entry while its write is failing still leaves a
+        recoverable trace.** Repeat the read-only setup (type, break
+        permissions, type again, marker appears), then open that entry's
+        actions menu and choose **Delete entry**, confirming the prompt.
+        Before the row disappears, check the developer console: a
+        `console.error` line names the entry's path and prints the exact
+        text you typed — the only remaining record of it, since the file
+        itself is about to be trashed. Restore permissions afterward.
+  - [ ] **Closing the journal with an unsent composer draft leaves a
+        recoverable trace.** Run **New journal entry**, type something, then
+        immediately close the journal view/tab before the composer commits
+        to a file (this window is narrow — a fast close right after typing).
+        Check the developer console for a `console.error` line labeled
+        "uncommitted composer" with the text you typed. Confirm no empty or
+        partial file was created in the journal folder — Lazy Creation still
+        applies; teardown must not commit on the way out.
