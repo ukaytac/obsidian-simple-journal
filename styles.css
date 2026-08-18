@@ -48,6 +48,22 @@
   font-variant-numeric: tabular-nums;
 }
 
+.journal-entry-actions {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 100ms ease-in-out;
+}
+
+.journal-entry:hover .journal-entry-actions,
+.journal-entry-actions:focus-within {
+  opacity: 1;
+}
+
+.journal-entry-menu-button {
+  padding: 0 var(--size-2-2);
+  height: var(--size-4-5);
+}
+
 /* Marks the open composer (see JournalView.openComposer) so it reads as
    "in progress" while it has no file yet — reverts to the normal
    .journal-entry-time color the moment commitComposer gives it one. */

@@ -1,4 +1,14 @@
-import { Component, ItemView, MarkdownRenderer, Notice, Platform, type TFile, WorkspaceLeaf } from "obsidian";
+import {
+  ButtonComponent,
+  Component,
+  ItemView,
+  MarkdownRenderer,
+  Menu,
+  Notice,
+  Platform,
+  type TFile,
+  WorkspaceLeaf,
+} from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
 import { compareEntries, pageAfter } from "../services/entryIndex";
@@ -699,12 +709,21 @@ export class JournalView extends ItemView {
     const headerEl = el.createDiv({ cls: "journal-entry-header" });
     headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
 
+    // Hidden until hover/focus (see styles.css) — the timeline is a writing
+    // surface, not a dashboard, so nothing but the timestamp is visible at rest.
+    const actionsEl = headerEl.createDiv({ cls: "journal-entry-actions" });
+    const button = new ButtonComponent(actionsEl)
+      .setIcon("more-horizontal")
+      .setTooltip("Entry actions")
+      .setClass("clickable-icon");
+    button.buttonEl.addClass("journal-entry-menu-button");
+
     // markdown-rendered matches Obsidian's own preview scope, so lists,
     // code fences, blockquotes, tables and callouts pick up its styling
     // (and whatever a theme layers on top of it) instead of browser defaults.
     const bodyEl = el.createDiv({ cls: "journal-entry-body markdown-rendered" });
 
-    return {
+    const rendered: RenderedEntry = {
       entry,
       el,
       bodyEl,
@@ -718,6 +737,113 @@ export class JournalView extends ItemView {
       intersecting: false,
       opToken: 0,
     };
+
+    button.onClick((event) => this.showEntryMenu(rendered, event));
+
+    // Bound on the entry element, not the body: `.journal-entry-body` holds
+    // the live editor (or its static rendering), and its own context menu —
+    // spell-check suggestions, the editor's paste items — must reach the
+    // user untouched. Only the chrome around it (the header, the padding
+    // outside the body) opens the entry-actions menu on right-click.
+    el.addEventListener("contextmenu", (event) => {
+      if (event.target instanceof HTMLElement && event.target.closest(".journal-entry-body")) return;
+      event.preventDefault();
+      this.showEntryMenu(rendered, event);
+    });
+
+    return rendered;
+  }
+
+  /**
+   * Builds and shows the entry-actions menu, from either the hover button or
+   * a right-click on the entry's own chrome (see `createEntryEl`).
+   *
+   * Bails silently for the uncommitted composer (`rendered.entry.file` is
+   * null until `commitComposer` gives it a real file) — there is no source
+   * note to open, no link to copy, and nothing to delete yet.
+   */
+  private showEntryMenu(rendered: RenderedEntry, event: MouseEvent): void {
+    const file = rendered.entry.file;
+    if (!file) return;
+
+    const menu = new Menu();
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Open source note")
+        .setIcon("file-text")
+        .onClick(() => {
+          void this.app.workspace.getLeaf("tab").openFile(file);
+        }),
+    );
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Copy link to entry")
+        .setIcon("link")
+        .onClick(() => {
+          const link = this.app.fileManager.generateMarkdownLink(file, "");
+          void navigator.clipboard.writeText(link);
+          new Notice("Link copied");
+        }),
+    );
+
+    menu.addSeparator();
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Delete entry")
+        .setIcon("trash")
+        .onClick(() => {
+          void this.confirmDelete(rendered);
+        }),
+    );
+
+    menu.showAtMouseEvent(event);
+  }
+
+  /**
+   * Confirms, then deletes an entry's underlying file via the vault's normal
+   * trash behaviour.
+   *
+   * Only the parts of teardown that can't safely wait are done here,
+   * synchronously, before the trash call: the pending debounced save is
+   * cancelled (nothing should write to a file that's about to be trashed)
+   * and the live editor is destroyed (so it stops holding/polling a file
+   * that's about to disappear out from under it). The rest — unobserving
+   * the element, removing it from `mountOrder`, dropping the `dayGroups` key
+   * if this was the day's last entry, and tearing the DOM node itself down —
+   * is deliberately left to `applyChangesNow`'s normal "removed" handling,
+   * which runs once the vault's own `delete` event reaches `JournalService`
+   * and arrives back here as a `JournalChange` (see this method's call site
+   * in `showEntryMenu` and `removeRenderedEntry`, which that path calls).
+   * Doing that teardown a second time here, ahead of the event, would race
+   * the version the event handling itself already does correctly.
+   */
+  private async confirmDelete(rendered: RenderedEntry): Promise<void> {
+    const file = rendered.entry.file;
+    if (!file) return;
+
+    const confirmed = window.confirm(
+      `Delete this journal entry?\n\n${file.path}\n\nIt goes to the trash configured in Obsidian's settings.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
+      rendered.editor?.destroy();
+      rendered.editor = null;
+
+      await this.plugin.repository.deleteEntry(file);
+      // The vault's "delete" event reaches JournalService, which emits a
+      // "removed" JournalChange that applyChangesNow routes to
+      // removeRenderedEntry — that's what actually clears the DOM and
+      // this.rendered/mountOrder/dayGroups for this path.
+    } catch (error) {
+      console.error("Journal Entries: could not delete entry", error);
+      new Notice("Journal Entries: could not delete the entry.");
+      void this.mountEditor(rendered);
+    }
   }
 
   /**
