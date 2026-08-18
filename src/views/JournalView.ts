@@ -876,10 +876,8 @@ export class JournalView extends ItemView {
    * all) — meanwhile `el` is still `observe()`d by `mountObserver`, so an
    * intersection flip could otherwise call `mountEditor` on a path whose
    * file no longer exists. The `setTimeout` below bounds how long a deleted
-   * entry can sit as a dimmed, inert row: if `removeRenderedEntry` hasn't
-   * already claimed it (checked by identity — `this.rendered.get(path) ===
-   * rendered` — so a *different* entry later created at the same path is
-   * never mistaken for this one) by then, this removes it directly.
+   * entry can sit as a dimmed, inert row; see `handleDeleteFallback` for what
+   * it actually does once that bound is hit.
    */
   private async confirmDelete(rendered: RenderedEntry): Promise<void> {
     const file = rendered.entry.file;
@@ -906,9 +904,47 @@ export class JournalView extends ItemView {
     rendered.editor = null;
 
     window.setTimeout(() => {
-      if (this.rendered.get(file.path) !== rendered) return;
-      if (this.removeRenderedEntry(file.path)) this.removeEmptyDayGroups();
+      void this.enqueueTimelineMutation(() => this.handleDeleteFallback(file, rendered));
     }, DELETE_FALLBACK_MS);
+  }
+
+  /**
+   * Runs `DELETE_FALLBACK_MS` after a confirmed deletion, enqueued onto the
+   * same serialized chain as every other timeline mutation (`reload()`,
+   * `applyChanges()`) rather than acting immediately — this is a timeline
+   * mutation like any other, and bypassing the chain would contradict the
+   * invariant documented at `applyChanges`, even though no concrete
+   * interleaving with a genuine wrong outcome was found.
+   *
+   * `this.rendered.get(file.path) !== rendered` covers two cases alike: the
+   * vault's own "delete" event already reached `removeRenderedEntry` for
+   * this path (the common, successful case), or a *different* entry has
+   * since been created at the same path — checked by identity so neither is
+   * mistaken for "still pending."
+   *
+   * Before removing anything, the file's continued existence is checked
+   * directly (again by identity, same reasoning as `renderedStateFor`'s
+   * `fileStillExists`). `promptForDeletion` resolving `true` only means the
+   * user confirmed — its own doc covers the prompt and the boolean, not
+   * that the trash necessarily succeeded afterward (system trash disabled,
+   * permissions, or, undocumented, a version where it turns out to only
+   * prompt). If the file survived, removing the row anyway would make the
+   * timeline silently misrepresent the vault until the next reload — instead
+   * this restores the entry (drops `is-deleting`, remounts its editor) and
+   * tells the user deletion failed.
+   */
+  private async handleDeleteFallback(file: TFile, rendered: RenderedEntry): Promise<void> {
+    if (this.closed) return;
+    if (this.rendered.get(file.path) !== rendered) return;
+
+    if (this.app.vault.getAbstractFileByPath(file.path) === file) {
+      rendered.el.removeClass("is-deleting");
+      new Notice("Journal Entries: could not delete the entry.");
+      void this.mountEditor(rendered);
+      return;
+    }
+
+    if (this.removeRenderedEntry(file.path)) this.removeEmptyDayGroups();
   }
 
   /**

@@ -233,3 +233,28 @@ effect of outside a real window). Verify by hand:
       a Notice appears, the typed text is still visible in the composer, and
       typing further retries the create rather than silently dropping the
       text or duplicating the composer.
+
+---
+
+# Manual testing: entry actions (Task 16)
+
+`JournalView.confirmDelete` relies on `FileManager.promptForDeletion` to both
+confirm the deletion and perform the trash. Its JSDoc documents only the
+prompt and the returned boolean — that it also performs the deletion
+afterward is real Obsidian behaviour, but nothing in `obsidian.d.ts` commits
+to it, so it needs confirming once against a live vault rather than assumed
+from the type signature alone.
+
+- [ ] **Deleting an entry actually reaches the trash.** From the timeline,
+      open an entry's actions menu (hover button or right-click on its
+      chrome) and choose **Delete entry**. Confirm the prompt. Then check:
+      the file is gone from its original location in the File Explorer, the
+      row disappears from the timeline, and the file is present in whichever
+      trash Obsidian is configured to use (`.trash/` in the vault, or the
+      system trash/Recycle Bin).
+      - **If the file is NOT actually trashed** — i.e. `promptForDeletion`
+        only prompts and never performs the deletion — then
+        `confirmDelete` needs its own explicit trash call after a confirmed
+        prompt (e.g. `this.app.fileManager.trashFile(file)`), and
+        `handleDeleteFallback`'s existence check would otherwise restore
+        every deleted entry a moment later, defeating deletion entirely.
