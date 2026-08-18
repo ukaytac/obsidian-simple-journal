@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "../src/journal/entry";
 import {
+  anchorPosition,
+  anchorSeed,
   compareEntries,
   findByPath,
   insertSorted,
@@ -210,5 +212,55 @@ describe("pageAfter", () => {
 
   it("returns null when the cursor is no longer in the list", () => {
     expect(pageAfter(list, "Journal/deleted.md", 1)).toBeNull();
+  });
+});
+
+describe("anchorPosition and anchorSeed", () => {
+  const list = [aug12_2241, aug12_1723, aug12_0934, aug11_2110];
+
+  it("anchoring to the day of the newest entries includes all of them", () => {
+    expect(anchorPosition(list, new Date(2026, 7, 12))).toBe(0);
+    expect(anchorSeed(list, new Date(2026, 7, 12))).toBeNull();
+  });
+
+  it("anchoring to an older day excludes every entry from the newer day", () => {
+    // Only aug11_2110 (index 3) is at or before the end of 11 August.
+    expect(anchorPosition(list, new Date(2026, 7, 11))).toBe(3);
+    expect(anchorSeed(list, new Date(2026, 7, 11))).toBe(aug12_0934.file.path);
+  });
+
+  it("anchoring newer than every entry includes everything (position 0, no seed)", () => {
+    expect(anchorPosition(list, new Date(2026, 7, 13))).toBe(0);
+    expect(anchorSeed(list, new Date(2026, 7, 13))).toBeNull();
+  });
+
+  it("anchoring older than every entry excludes everything", () => {
+    expect(anchorPosition(list, new Date(2026, 7, 10))).toBe(list.length);
+    expect(anchorSeed(list, new Date(2026, 7, 10))).toBe(aug11_2110.file.path);
+  });
+
+  it("anchoring to an empty day lands on the nearest older entry, not a dead end", () => {
+    // A gap day (11 August) with no entries at all, between two days that do
+    // have entries — anchoring here should behave like anchoring to the
+    // nearest entry at or before it, not come back empty.
+    const gappy = [aug12_2241, entry("2026-08-10-08-00-00", new Date(2026, 7, 10, 8, 0, 0))];
+    const aug10 = gappy[1];
+
+    expect(anchorPosition(gappy, new Date(2026, 7, 11))).toBe(1);
+    expect(anchorSeed(gappy, new Date(2026, 7, 11))).toBe(aug12_2241.file.path);
+    // Confirms the seed actually pages to the right next entry.
+    expect(pageAfter(gappy, anchorSeed(gappy, new Date(2026, 7, 11)), 5)).toEqual([aug10]);
+  });
+
+  it("anchoring an empty journal excludes everything without throwing", () => {
+    expect(anchorPosition([], new Date(2026, 7, 12))).toBe(0);
+    expect(anchorSeed([], new Date(2026, 7, 12))).toBeNull();
+  });
+
+  it("treats an entry exactly at the anchor boundary as included", () => {
+    const boundary = entry("2026-08-11-23-59-59", new Date(2026, 7, 11, 23, 59, 59));
+    const withBoundary = [aug12_2241, boundary];
+    expect(anchorPosition(withBoundary, new Date(2026, 7, 11))).toBe(1);
+    expect(anchorSeed(withBoundary, new Date(2026, 7, 11))).toBe(aug12_2241.file.path);
   });
 });

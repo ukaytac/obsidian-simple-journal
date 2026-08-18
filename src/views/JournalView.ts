@@ -11,7 +11,7 @@ import {
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type JournalEntriesPlugin from "../main";
-import { compareEntries, pageAfter } from "../services/entryIndex";
+import { anchorPosition, anchorSeed, compareEntries, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import { decideChangeAction, type RenderedState } from "./applyChange";
@@ -155,6 +155,19 @@ export class JournalView extends ItemView {
   private mountObserver: IntersectionObserver | null = null;
   private index: JournalEntry[] = [];
   private lastLoadedPath: string | null = null;
+  /**
+   * When set, the timeline is anchored to this calendar day (`goToDate`):
+   * paging starts at the newest entry at or before its end, and entries
+   * newer than it are excluded from the timeline entirely — see
+   * `reloadNow`'s `anchorSeed` seed and `insertEntryInPlace`'s
+   * `anchorPosition`-based bounds check, both of which read this field.
+   * `null` (the default) means "start from the newest entry," the original
+   * unanchored behaviour. Survives a `reload()` on purpose: a settings
+   * change or a lost-cursor re-anchor (see `nextPage`) should not silently
+   * un-anchor a view the user explicitly navigated to a date in. Only
+   * `goToDate` ever assigns this.
+   */
+  private anchorDate: Date | null = null;
   private loading = false;
   /**
    * True while `onSentinelVisible` is processing a callback that it itself
@@ -287,7 +300,11 @@ export class JournalView extends ItemView {
     await this.clearTimeline();
 
     this.index = this.plugin.journal.getEntries();
-    this.lastLoadedPath = null;
+    // With no anchor this is `null` — page one, exactly as before. With an
+    // anchor, seed the cursor with the entry immediately before where the
+    // anchored day starts, so the very first `loadNextPage()` yields the
+    // anchor's page rather than the newest entries in the whole journal.
+    this.lastLoadedPath = this.anchorDate ? anchorSeed(this.index, this.anchorDate) : null;
     this.installMountObserver();
 
     if (this.index.length === 0) {
@@ -303,6 +320,14 @@ export class JournalView extends ItemView {
     }
 
     await this.loadNextPage();
+
+    // The index itself isn't empty, but an anchor older than every entry in
+    // it excludes all of them (see `anchorPosition`'s doc) — the first page
+    // then loads nothing. Distinct from the `index.length === 0` branch
+    // above: that one never calls `loadNextPage` at all, this one already
+    // did and it legitimately came back with nothing to show.
+    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null);
+
     this.installSentinel();
   }
 
@@ -649,10 +674,18 @@ export class JournalView extends ItemView {
     this.mountObserver = null;
   }
 
-  private renderEmptyState(): void {
+  /**
+   * `anchored` distinguishes a genuinely empty journal from an anchored
+   * (`goToDate`) view that excludes every entry because the anchor is older
+   * than everything in it — the index isn't empty in that case, so "no
+   * journal entries yet" would be misleading.
+   */
+  private renderEmptyState(anchored = false): void {
     this.timelineEl.createDiv({
       cls: "journal-empty",
-      text: "No journal entries yet. Run “New journal entry” to write the first one.",
+      text: anchored
+        ? "Nothing on or before this date."
+        : "No journal entries yet. Run “New journal entry” to write the first one.",
     });
   }
 
@@ -2004,23 +2037,44 @@ export class JournalView extends ItemView {
    * and the entry would never become eligible for the viewport-driven
    * unmount that keeps the mounted set bounded.
    *
-   * The in-range check is `position >= loadedCount`, not `>`: with
-   * `loadedCount` entries loaded (indices `0..loadedCount-1`), `loadedCount`
-   * itself is the first index NOT yet loaded — `pageAfter`'s next page
-   * starts there. `>` would let that boundary entry (and only that one)
-   * through: this method would insert it AND `appendEntry` would later
-   * insert it again as part of the next page, each holding its own
-   * `RenderedEntry`/DOM node/editor for the same path — one leaked
-   * indefinitely, since only the map's most recent entry for that path is
-   * ever reachable to tear down.
+   * The in-range check is `position - offset >= loadedCount`, not `>`: with
+   * `loadedCount` entries loaded starting at `offset` (indices
+   * `offset..offset+loadedCount-1`), `offset+loadedCount` itself is the
+   * first index NOT yet loaded — `pageAfter`'s next page starts there. `>`
+   * would let that boundary entry (and only that one) through: this method
+   * would insert it AND `appendEntry` would later insert it again as part of
+   * the next page, each holding its own `RenderedEntry`/DOM node/editor for
+   * the same path — one leaked indefinitely, since only the map's most
+   * recent entry for that path is ever reachable to tear down.
+   *
+   * `offset` — `anchorPosition(this.index, this.anchorDate)` when an anchor
+   * is active, `0` otherwise — is where the loaded window actually starts.
+   * Without it, an anchored timeline's loaded window no longer begins at
+   * index 0, so comparing a raw `position` against `loadedCount` alone would
+   * misjudge entries near either edge: one just past the anchor boundary but
+   * still within the loaded page would wrongly be treated as "not yet
+   * loaded" and dropped until the next scroll, while one far below the
+   * loaded window could wrongly be treated as "in range" and inserted twice
+   * once paging actually reached it. Recomputed fresh on every call rather
+   * than cached at anchor time, so it never drifts stale as entries newer
+   * than the anchor are created or removed elsewhere in the same session.
+   *
+   * A position strictly before `offset` is newer than the anchor and must
+   * never render at all, regardless of the loaded window — checked first,
+   * unconditionally (not gated on `this.sentinelEl` like the in-range check
+   * below), since exclusion here is permanent, not a paging state.
    */
   private insertEntryInPlace(entry: JournalEntry): void {
     if (this.rendered.has(entry.file.path)) return;
 
     const position = this.index.indexOf(entry);
-    const loadedCount = this.rendered.size;
     if (position < 0) return;
-    if (position >= loadedCount && this.sentinelEl) return;
+
+    const offset = this.anchorDate ? anchorPosition(this.index, this.anchorDate) : 0;
+    if (position < offset) return;
+
+    const loadedCount = this.rendered.size;
+    if (position - offset >= loadedCount && this.sentinelEl) return;
 
     // The empty-state message (`renderEmptyState`) is only ever present when
     // nothing is rendered yet, so this is a cheap no-op on every insert past
@@ -2377,5 +2431,57 @@ export class JournalView extends ItemView {
     // a long timeline, where an animated scroll would traverse the entire
     // height and ignores prefers-reduced-motion.
     this.contentEl.scrollTo({ top: 0 });
+  }
+
+  /**
+   * Anchors the timeline to `date`, or clears the anchor when `date` is
+   * `null`.
+   *
+   * With a date, this reloads so that paging starts at the newest entry at
+   * or before the end of that calendar day — that entry lands at the top of
+   * the timeline, with older entries below it exactly as in an unanchored
+   * timeline. Entries newer than the anchor are simply not rendered (see
+   * `anchorSeed`/`anchorPosition` in `entryIndex.ts`, and
+   * `insertEntryInPlace`'s anchor-aware bounds check for how a later vault
+   * event respects the same exclusion). If the anchored day itself has no
+   * entries, this naturally lands on the nearest older entry instead of a
+   * dead end — the user asked to go to a point in time, not to a specific
+   * entry that may not exist.
+   *
+   * With `null`, this clears the anchor and reloads from the newest entry,
+   * identical to the pre-anchor `reload()` behaviour.
+   *
+   * Goes through the same serialized `reload()`/`enqueueTimelineMutation`
+   * chain as every other timeline rebuild — no separate locking needed here.
+   * Scrolls to the top afterward so the anchor's newest entry (or, cleared,
+   * the journal's newest entry) is actually visible rather than leaving the
+   * viewport wherever it happened to be before this ran.
+   *
+   * There is no command wired to this yet — it exists for a future date
+   * picker to call. `goToToday` is the only current caller, using `null` to
+   * clear a stale anchor.
+   */
+  async goToDate(date: Date | null): Promise<void> {
+    this.anchorDate = date;
+    await this.reload();
+    this.scrollToTop();
+  }
+
+  /**
+   * Moves to the newest entry, clearing any active anchor first. A plain
+   * `scrollToTop()` only moves the viewport within whatever is currently
+   * loaded — if the timeline is anchored to a past date (`goToDate`), the
+   * newest entry may not even be loaded, so scrolling alone would leave a
+   * user anchored to, say, last year exactly where they were. Only reloads
+   * (via `goToDate(null)`) when an anchor is actually active, so the common
+   * case — already unanchored, just scrolled down — stays a cheap scroll.
+   */
+  async goToToday(): Promise<void> {
+    if (this.anchorDate === null) {
+      this.scrollToTop();
+      return;
+    }
+
+    await this.goToDate(null);
   }
 }

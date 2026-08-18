@@ -101,3 +101,63 @@ export function pageAfter(
 
   return list.slice(index + 1, index + 1 + limit);
 }
+
+/**
+ * Position in `list` (sorted newest→oldest by `compareEntries`) of the first
+ * entry at or before the end of `date`'s calendar day — where an anchored
+ * timeline ("Go to date") starts. Entries before this position are strictly
+ * newer than the anchor and must never render in an anchored timeline; see
+ * `JournalView.goToDate` and `insertEntryInPlace`'s anchor-aware bounds
+ * check, which both depend on this being the live, current position rather
+ * than one cached at anchor time — the count of entries newer than the
+ * anchor can change (a new entry created while anchored, one deleted, etc.),
+ * and recomputing this fresh each time is what keeps that comparison correct
+ * without drifting stale.
+ *
+ * Binary search, not `findIndex`: `list` is already sorted for exactly this
+ * predicate (monotonically "newer than the anchor" then "at or before it"),
+ * and this can run once per vault-event batch against a journal with tens of
+ * thousands of entries.
+ *
+ * Returns `list.length` when every entry is newer than the anchor (an
+ * anchored view of a date with nothing at or before it is empty), and `0`
+ * when every entry already qualifies (the anchor is at or after the newest
+ * entry — behaviourally identical to no anchor at all).
+ */
+export function anchorPosition(list: readonly JournalEntry[], date: Date): number {
+  const endOfDay = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    23,
+    59,
+    59,
+    999,
+  ).getTime();
+
+  let low = 0;
+  let high = list.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (list[mid].created.getTime() > endOfDay) low = mid + 1;
+    else high = mid;
+  }
+
+  return low;
+}
+
+/**
+ * The `pageAfter` cursor that seeds an anchored timeline: the path of the
+ * entry immediately before `anchorPosition`, or `null` when that position is
+ * 0 — nothing to skip, so paging starts exactly like an unanchored reload.
+ *
+ * If the anchored day itself has no entries, `anchorPosition` naturally
+ * lands on the nearest older entry instead of a dead end — anchoring to a
+ * point in time, not to a specific entry, is the intended behaviour (see
+ * `JournalView.goToDate`'s doc).
+ */
+export function anchorSeed(list: readonly JournalEntry[], date: Date): string | null {
+  const position = anchorPosition(list, date);
+  return position === 0 ? null : list[position - 1].file.path;
+}

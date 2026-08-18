@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
@@ -55,6 +55,39 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Go to today",
       callback: () => void this.goToToday(),
     });
+
+    // Lets a phone home-screen shortcut (or any other launcher) capture a
+    // thought in one tap: `obsidian://journal-new` reuses the exact same
+    // path as the command/ribbon icon below, just triggered externally.
+    //
+    // `onLayoutReady` covers the URI arriving before the workspace has
+    // finished laying out — e.g. this cold-launching the app rather than
+    // hitting an already-running one — by running immediately if the layout
+    // is already ready, or queuing until it is (`@since 0.11.0`, same as
+    // `registerObsidianProtocolHandler` itself; both are safely under this
+    // plugin's declared `minAppVersion`). `newEntry()` already handles "no
+    // journal view open yet" via `openJournal()`, so nothing here duplicates
+    // that.
+    //
+    // Which vault actually receives this URI at all is decided by Obsidian
+    // itself, outside this plugin's control: without a `?vault=` query
+    // parameter the OS routes it to whichever vault last had focus, and if
+    // that vault doesn't have this plugin enabled, nothing here ever runs —
+    // there is no hook available to detect or redirect that case from
+    // inside a single vault's plugin instance.
+    this.registerObsidianProtocolHandler("journal-new", () => {
+      this.app.workspace.onLayoutReady(() => {
+        this.newEntry().catch((error) => {
+          console.error(
+            "Journal Entries: could not create a new entry from the obsidian://journal-new link",
+            error,
+          );
+          new Notice(
+            "Journal Entries: could not open a new entry from the link. See the developer console for details.",
+          );
+        });
+      });
+    });
   }
 
   onunload(): void {
@@ -102,7 +135,7 @@ export default class JournalEntriesPlugin extends Plugin {
 
   async goToToday(): Promise<void> {
     const view = await this.openJournal();
-    if (view) view.scrollToTop();
+    if (view) await view.goToToday();
   }
 
   refreshJournal(): void {
