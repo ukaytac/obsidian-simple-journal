@@ -258,3 +258,33 @@ from the type signature alone.
         prompt (e.g. `this.app.fileManager.trashFile(file)`), and
         `handleDeleteFallback`'s existence check would otherwise restore
         every deleted entry a moment later, defeating deletion entirely.
+
+# Manual testing: save failure handling (Task 17)
+
+`JournalView.save`/`unmountEditor` only get one honest signal that a write
+actually failed: the real filesystem. Fake it with permissions, not with a
+mocked repository, so this exercises the real `Notice`, the real marker DOM,
+and the real decline-to-unmount path together.
+
+- [ ] **A failed write shows a persistent marker, and scrolling away and back
+      does not lose the text.** Type in an entry, then — before the 500ms
+      debounce fires — make its file read-only from a terminal:
+      `chmod 444 "$VAULT/Journal/2026/08/<some entry>.md"`. Type once more and
+      wait a second: a red **not saved** marker appears next to that entry's
+      timestamp, the developer console logs the failure, and a transient
+      `Notice` appears. Now scroll the entry well out of view (past
+      `MOUNT_ROOT_MARGIN`) and back. Confirm: the marker is still there, and
+      the text you typed is still in the editor, unchanged — not replaced by
+      the last-saved (pre-failure) disk content. This is the case
+      `unmountEditor`'s dirty-check decline exists for; if the text reverts
+      to the old saved body instead, that decline regressed.
+  - [ ] **Restore and confirm recovery.** Restore permissions
+        (`chmod 644 …`) and type once more in the same entry. Confirm the
+        marker disappears and the file on disk now matches the editor.
+  - [ ] **The recovered entry becomes evictable again.** With many entries
+        open (more than `MAX_MOUNTED_EDITORS`), repeat the read-only steps on
+        one entry, then scroll it far away without restoring permissions —
+        confirm it stays mounted (a live editor, not static text) even while
+        many other entries compete for mount slots. Restore permissions and
+        let a write succeed, then scroll far away again — confirm this entry
+        can now be unmounted/evicted like any other.

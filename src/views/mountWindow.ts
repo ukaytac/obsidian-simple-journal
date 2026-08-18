@@ -20,6 +20,16 @@ export interface MountState {
   focused: boolean;
   /** True if the entry's element currently intersects the viewport. */
   intersecting: boolean;
+  /**
+   * True if the editor holds text that hasn't reached disk (see
+   * `JournalView.isDirty`) — most likely a failed write still showing its
+   * "not saved" marker. Never evicted, same as `focused`: forcing this
+   * editor closed would fall back to stale disk content and silently drop
+   * the very text the marker promises is still safe. Optional, defaulting
+   * to evictable (`false`/`undefined`), so callers/fixtures that predate
+   * this field are unaffected.
+   */
+  unsaved?: boolean;
 }
 
 /**
@@ -31,11 +41,17 @@ export interface MountState {
  * eviction actually targets entries far from the viewport rather than
  * whichever happened to finish mounting first (e.g. on the very first page
  * load, before the user has scrolled at all, when many entries can finish
- * mounting within the same tick). Never picks a focused entry. Falls back to
- * the oldest-mounted intersecting entry only when nothing off-screen is
- * evictable. Returns null when nothing is safely evictable at all —
- * `order` is empty, every candidate's state is missing/unmounted, or every
- * mounted candidate is focused.
+ * mounting within the same tick). Never picks a focused entry, or one whose
+ * text hasn't reached disk yet (`unsaved`) — see `MountState.unsaved`'s doc.
+ * Falls back to the oldest-mounted intersecting entry only when nothing
+ * off-screen is evictable. Returns null when nothing is safely evictable at
+ * all — `order` is empty, every candidate's state is missing/unmounted, or
+ * every mounted candidate is focused or unsaved.
+ *
+ * A candidate excluded only for being `unsaved` is not retried once no
+ * evictable entry remains: this can leave the mounted count above `max` for
+ * as long as its write keeps failing (`enforceMountLimit`'s loop simply
+ * stops when this returns null). That is intentional — see `MountState.unsaved`.
  */
 export function pickEvictionCandidate(
   order: readonly string[],
@@ -45,7 +61,7 @@ export function pickEvictionCandidate(
 
   for (const path of order) {
     const state = stateOf(path);
-    if (!state?.mounted || state.focused) continue;
+    if (!state?.mounted || state.focused || state.unsaved) continue;
 
     if (!state.intersecting) return path;
     if (fallback === null) fallback = path;

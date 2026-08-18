@@ -77,6 +77,40 @@ describe("pickEvictionCandidate", () => {
 
     expect(pickEvictionCandidate(order, states)).toBe("a");
   });
+
+  it("never picks an unsaved candidate, even if it is off-screen and unfocused", () => {
+    // "a" holds text that failed to save (see JournalView.isDirty) — evicting
+    // it would destroy the editor and fall back to stale disk content,
+    // silently discarding exactly the text its "not saved" marker promises
+    // is still safe. "b" is on-screen but otherwise fine, so it becomes the
+    // fallback instead.
+    const order = ["a", "b"];
+    const states = statesOf({
+      a: { mounted: true, focused: false, intersecting: false, unsaved: true },
+      b: { mounted: true, focused: false, intersecting: true },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBe("b");
+  });
+
+  it("returns null when every mounted candidate is focused or unsaved", () => {
+    const order = ["a", "b"];
+    const states = statesOf({
+      a: { mounted: true, focused: true, intersecting: false },
+      b: { mounted: true, focused: false, intersecting: false, unsaved: true },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBeNull();
+  });
+
+  it("treats a missing `unsaved` field as evictable (false), not as pinned", () => {
+    const order = ["a"];
+    const states = statesOf({
+      a: { mounted: true, focused: false, intersecting: false },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBe("a");
+  });
 });
 
 describe("enforceMountLimit", () => {

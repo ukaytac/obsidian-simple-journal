@@ -1151,9 +1151,32 @@ export class JournalView extends ItemView {
   }
 
   /**
+   * Whether `rendered`'s live editor currently holds text that hasn't
+   * reached disk — its value differs from `savedBody`, the body last
+   * confirmed written. Shared by `renderedStateFor` (decideChangeAction's
+   * "is there something worth flushing" check), `mountStateOf`
+   * (`pickEvictionCandidate`'s "never evict this" check), and
+   * `unmountEditor` (its own "never discard this" check) so all three use
+   * the same definition of "dirty" rather than three that could drift apart.
+   */
+  private isDirty(rendered: RenderedEntry): boolean {
+    return rendered.editor ? rendered.editor.getValue() !== rendered.savedBody : false;
+  }
+
+  /**
    * Resolves a path's current mount state for `mountWindow`'s pure selection
    * logic — the only bridge between that DOM/Obsidian-free module and this
    * view's actual `rendered` map.
+   *
+   * `unsaved` mirrors `unmountEditor`'s own decline check (see its doc): a
+   * dirty editor is one `enforceMountLimit` must never pick as an eviction
+   * victim. Without this, the cap would splice the path out of `mountOrder`
+   * and call `unmountEditor` anyway, which would then decline and re-add it
+   * via `ensureMountOrderContains` — correct in isolation, but only after
+   * `flushSave` ran a real (possibly failing) write for no reason, and only
+   * by chance before some other mount pushed the count over the cap again in
+   * the meantime. Excluding it here, at selection time, avoids that churn
+   * entirely rather than merely surviving it.
    */
   private mountStateOf(path: string): MountState | undefined {
     const rendered = this.rendered.get(path);
@@ -1163,6 +1186,7 @@ export class JournalView extends ItemView {
       mounted: true,
       focused: rendered.editor.hasFocus(),
       intersecting: rendered.intersecting,
+      unsaved: this.isDirty(rendered),
     };
   }
 
@@ -1251,6 +1275,29 @@ export class JournalView extends ItemView {
       // remount it — leave it mounted rather than destroying a now-visible
       // entry's live editor out from under the user. Keep it tracked in
       // mountOrder for the same reason as the focused case above.
+      this.ensureMountOrderContains(rendered.entry.file.path);
+      return;
+    }
+
+    if (this.isDirty(rendered)) {
+      // The flush above did not get this text onto disk — almost always
+      // because `saveIfChanged`'s write failed and `save()` is showing the
+      // "not saved" marker (see `showSaveError`), though this also covers the
+      // (currently unreachable) case of a fresh edit racing the flush.
+      // Destroying the editor and falling back to `renderStatic`'s disk read
+      // would silently replace the on-screen text with the last known-good
+      // (and now stale) saved body — exactly the loss the marker promises
+      // hasn't happened. Decline the unmount and keep the editor live so the
+      // user can keep editing/retrying; a later unmount attempt (another
+      // scroll past this entry) retries the flush, and once a write actually
+      // succeeds this stops being dirty and unmounts/evicts normally.
+      //
+      // This can pin an entry past `MAX_MOUNTED_EDITORS` if its write keeps
+      // failing — accepted: `mountStateOf`'s `unsaved` field already tells
+      // `pickEvictionCandidate` never to select such an entry as a victim in
+      // the first place, so this is a rare fallback for this path being
+      // reached some other way, not the primary defense. Losing the user's
+      // words is worse than one extra live editor.
       this.ensureMountOrderContains(rendered.entry.file.path);
       return;
     }
@@ -1530,7 +1577,7 @@ export class JournalView extends ItemView {
     return {
       exists: true,
       focused: rendered.editor?.hasFocus() ?? false,
-      dirty: rendered.editor ? rendered.editor.getValue() !== rendered.savedBody : false,
+      dirty: this.isDirty(rendered),
       fileStillExists:
         this.app.vault.getAbstractFileByPath(rendered.entry.file.path) === rendered.entry.file,
     };
