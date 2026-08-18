@@ -278,3 +278,41 @@
 .is-mobile .journal-entry-actions:focus-within {
   opacity: 1;
 }
+
+/* CodeMirror lays the gutter out as a flex sibling of the content, so it takes
+   real horizontal space even when Obsidian renders nothing visible in it —
+   that is the indent that pushed entry text right of its own timestamp. The
+   timeline has no use for fold arrows or line numbers, so the gutter goes.
+   `.cm-line`'s own 6px is removed for the same reason: an entry's first
+   character should sit exactly under the day header, not a few pixels in. */
+.journal-entry-embed .cm-gutters {
+  display: none;
+}
+
+.journal-entry-embed .cm-line {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Obsidian's own editor rules are written as `.markdown-source-view.mod-cm6
+   .cm-sizer { … }` and friends — three class selectors, which outrank the
+   two-selector neutralisers above. That is why the entry text still sat right
+   of its own timestamp on desktop and why a huge blank band appeared above it
+   on mobile: our padding resets were losing the cascade to the app's, and the
+   app's are sized for a full note pane.
+   Rather than guess at every one of Obsidian's selectors, these declarations
+   win outright. `!important` is scoped inside `.journal-entry-embed`, so it
+   cannot reach a real note's editor anywhere else in the app. */
+.journal-entry-embed .cm-editor,
+.journal-entry-embed .cm-scroller,
+.journal-entry-embed .cm-sizer,
+.journal-entry-embed .cm-contentContainer,
+.journal-entry-embed .cm-content,
+.journal-entry-embed .cm-line,
+.journal-entry-embed .markdown-source-view,
+.journal-entry-embed .markdown-embed-content {
+  padding: 0 !important;
+  margin: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+}

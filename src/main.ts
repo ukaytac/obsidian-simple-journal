@@ -30,6 +30,14 @@ export default class JournalEntriesPlugin extends Plugin {
       void this.openJournal();
     });
 
+    // On mobile the ribbon is the "..." menu, which is the only place a plugin
+    // can put a reachable shortcut — the "+" new-file menu has no public API.
+    // Capture is the primary flow, so it needs its own entry there rather than
+    // living only in the command palette.
+    this.addRibbonIcon("pencil-line", "New journal entry", () => {
+      void this.newEntry();
+    });
+
     this.addCommand({
       id: "open-journal",
       name: "Open journal",
