@@ -236,3 +236,31 @@
 .journal-entry-embed .cm-editor.cm-focused {
   outline: none;
 }
+
+/* Mobile: larger touch targets and a bit more breathing room between
+   entries, per CLAUDE.md's "same timeline, same code paths" — not a
+   redesign, just sizing. Padding is on the body's own box, not on the
+   editor content inside it (the textarea and the CM6 panes both keep
+   padding: 0 — see above), so it does not change what either editor
+   measures for its own height. */
+.is-mobile .journal-timeline {
+  padding: var(--size-4-4) var(--size-4-4) 50vh;
+}
+
+.is-mobile .journal-entry {
+  margin-bottom: var(--size-4-8);
+}
+
+.is-mobile .journal-entry-body {
+  padding: var(--size-4-2) 0;
+}
+
+/* Now that long-press opens the same menu (see JournalView.createEntryEl),
+   the always-on button from the `hover: none` rule above can sit dimmer
+   rather than fully opaque — still discoverable, less like a permanent
+   dashboard control. More specific than that rule, so this wins wherever
+   both apply; a touch-capable desktop that isn't `is-mobile` still gets the
+   fully-opaque button from the rule above. */
+.is-mobile .journal-entry-actions {
+  opacity: 0.5;
+}

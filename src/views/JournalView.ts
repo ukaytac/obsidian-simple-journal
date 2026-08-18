@@ -507,8 +507,9 @@ export class JournalView extends ItemView {
       },
       {
         root: this.contentEl,
-        // Start loading before the sentinel is actually on screen.
-        rootMargin: "600px 0px",
+        // Start loading before the sentinel is actually on screen. Mobile
+        // scrolls more slowly and repaints later, so start earlier there.
+        rootMargin: Platform.isMobile ? "1200px 0px" : "600px 0px",
       },
     );
 
@@ -806,6 +807,54 @@ export class JournalView extends ItemView {
       event.preventDefault();
       this.showEntryMenu(rendered, event);
     });
+
+    if (Platform.isMobile) {
+      // The on-screen keyboard shrinks the viewport after focus; scroll the
+      // focused entry back into view once that has happened. Bound once here
+      // (rather than in mountEditor, which runs again every time this entry
+      // re-enters the mount window) since `bodyEl` is the same node for this
+      // RenderedEntry's whole lifetime — binding on every mount would stack a
+      // fresh listener on top of every previous one, each still reachable
+      // through the very node that never got replaced.
+      rendered.bodyEl.addEventListener("focusin", () => {
+        window.setTimeout(() => {
+          rendered.el.scrollIntoView({ block: "nearest" });
+        }, 300);
+      });
+
+      // `contextmenu` does not fire from a tap on iOS, so a long-press on
+      // the entry's own chrome is the touch equivalent of the desktop
+      // right-click above. Bails immediately on a touch that starts inside
+      // `.journal-entry-body`: that surface is an editing surface first, and
+      // a long-press there is the editor's own text-selection gesture, not a
+      // request for this menu.
+      let pressTimer: number | null = null;
+
+      el.addEventListener("touchstart", (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest(".journal-entry-body")) return;
+
+        pressTimer = window.setTimeout(() => {
+          const touch = event.touches[0];
+          if (!touch) return;
+          this.showEntryMenu(
+            rendered,
+            new MouseEvent("contextmenu", { clientX: touch.clientX, clientY: touch.clientY }),
+          );
+        }, 500);
+      });
+
+      // Any of these means the touch was a scroll, a drag, or otherwise not
+      // a stationary press — cancel before the timer fires.
+      const cancelPress = () => {
+        if (pressTimer !== null) window.clearTimeout(pressTimer);
+        pressTimer = null;
+      };
+
+      el.addEventListener("touchend", cancelPress);
+      el.addEventListener("touchmove", cancelPress);
+      el.addEventListener("touchcancel", cancelPress);
+    }
 
     return rendered;
   }
