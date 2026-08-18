@@ -1618,28 +1618,43 @@ export class JournalView extends ItemView {
             // editors bound to the same `TFile`, both polling, both able to
             // write, fighting over the same file. That is worse than the
             // loss this decline exists to prevent, not merely "briefly
-            // wrong" — so re-key instead of just leaving it behind:
-            const newPath = rendered.entry.file.path;
-            this.rendered.delete(change.path);
-            this.rendered.set(newPath, rendered);
-            const mountIndex = this.mountOrder.indexOf(change.path);
-            if (mountIndex >= 0) this.mountOrder[mountIndex] = newPath;
-            rendered.el.dataset.path = newPath;
-            // `dayGroups` is untouched: a rename/move changes neither
-            // `entry.created` nor which day group this element already sits
-            // in, only the path bookkeeping above.
+            // wrong" — so re-key instead of just leaving it behind.
             //
-            // With `this.rendered` now correctly keyed at `newPath`, the
-            // paired upsert due later in this SAME batch finds `state.exists
-            // === true` and either no-ops (dirty, per `decideChangeAction`'s
-            // "content" case) or hits the "reposition" branch below — either
-            // way, no duplicate. For a move OUT of the journal folder there
-            // is no companion upsert at all (see `JournalService.flush`'s
-            // "not an entry" branch), so this re-keyed row simply stays,
-            // still holding the user's text and still marked, until a write
-            // succeeds — the correct outcome: dropping it would discard
-            // exactly the text this whole decline exists to protect.
-            continue;
+            // Guarded on the destination being free: `this.rendered.set`
+            // would otherwise silently overwrite whatever is ALREADY
+            // rendered at `newPath` — reachable within one debounce window
+            // if a different entry at that exact path is deleted while this
+            // rename lands first. That victim's DOM node and (if mounted)
+            // its still-polling editor would then be orphaned — unreachable
+            // from `this.rendered`, so nothing could ever tear it down; it
+            // would keep running for the rest of the session. Falling
+            // through to the existing removal path when occupied is safe:
+            // it still logs this entry's text before it's dropped, rather
+            // than silently destroying the other row.
+            const newPath = rendered.entry.file.path;
+            if (!this.rendered.has(newPath)) {
+              this.rendered.delete(change.path);
+              this.rendered.set(newPath, rendered);
+              const mountIndex = this.mountOrder.indexOf(change.path);
+              if (mountIndex >= 0) this.mountOrder[mountIndex] = newPath;
+              rendered.el.dataset.path = newPath;
+              // `dayGroups` is untouched: a rename/move changes neither
+              // `entry.created` nor which day group this element already
+              // sits in, only the path bookkeeping above.
+              //
+              // With `this.rendered` now correctly keyed at `newPath`, the
+              // paired upsert due later in this SAME batch finds
+              // `state.exists === true` and either no-ops (dirty, per
+              // `decideChangeAction`'s "content" case) or hits the
+              // "reposition" branch below — either way, no duplicate. For a
+              // move OUT of the journal folder there is no companion upsert
+              // at all (see `JournalService.flush`'s "not an entry" branch),
+              // so this re-keyed row simply stays, still holding the user's
+              // text and still marked, until a write succeeds — the correct
+              // outcome: dropping it would discard exactly the text this
+              // whole decline exists to protect.
+              continue;
+            }
           }
         }
         if (this.removeRenderedEntry(change.path)) dayGroupsDirty = true;
