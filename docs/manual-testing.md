@@ -1,58 +1,331 @@
-# Manual testing
+# Manual test checklist
 
-Checks that need a real Obsidian instance because they depend on real vault/UI
-behaviour the unit tests' mocks and pure-logic extraction can't observe. Grows
-as later tasks add cases; see also `docs/manual-testing-editor.md` for the
-`TextareaEditor` resize checks.
+Checks that need a real Obsidian instance, because they depend on real vault,
+UI, focus, timing, or rendering behaviour that the unit tests' mocks and
+pure-logic extraction can't observe. Run this list against a scratch vault
+before every release, on desktop and on mobile.
 
-## Journal folder rename (Task 14)
+See also `docs/manual-testing-editor.md` for checks scoped to the two
+`EntryEditor` implementations themselves (`TextareaEditor` resize behaviour,
+and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
+Everything else — timeline, mount window, composer, entry actions, saving,
+and vault events — lives here.
 
-`JournalService` cannot observe, from the API alone, whether Obsidian fires a
-`vault.on("rename")` event for every descendant file when a FOLDER is renamed,
-or only one event for the folder itself. `JournalService.rebuild()` is
-idempotent either way — a plain re-derivation of the index from
-`EntryRepository.listEntries()` — so the folder-rename handler triggers it
-unconditionally rather than depending on the answer. Confirm the real behaviour:
+## Coverage against CLAUDE.md's 21 testing priorities
 
-- [ ] **Rename the configured journal folder itself** (e.g. `Journal` ->
-      `Journal2`) while the journal view is open, with a mix of entries loaded
-      and scrolled past. The timeline reloads and shows every entry at its new
-      location; nothing is duplicated, and nothing silently disappears.
-- [ ] **Rename an ancestor folder that contains the journal folder** (e.g. the
-      vault folder holding `Journal/` itself). Same expectation.
-- [ ] **Rename a subfolder inside the journal folder** (e.g. `Journal/2026` ->
-      `Journal/2026-old`). Same expectation.
-- [ ] **Rename a folder unrelated to the journal folder** while the view is
-      open. No reload happens (check the console/dev tools for an unexpected
-      full rebuild) and the timeline is undisturbed.
-- [ ] Repeat the first case while an entry is mid-edit (typing, not yet saved).
-      The in-flight text is not lost — it's flushed to disk at the entry's new
-      location before the timeline reloads.
+| # | Case | Automated | Manual |
+| - | --- | --- | --- |
+| 1 | Create one entry | ✅ `entryRepository.test.ts` | — |
+| 2 | Several entries same day | ✅ `entryRepository.test.ts`, `entryIndex.test.ts` | — |
+| 3 | Entries within the same second | ✅ `entryRepository.test.ts` (collision suffix) | ✅ §1 Same-second entries |
+| 4 | Entries across multiple days | ✅ `entryRepository.test.ts`, `entryIndex.test.ts` | — |
+| 5 | Entry with valid `created` | ✅ `entryDate.test.ts`, `entryRepository.test.ts` | — |
+| 6 | Entry without `created` | ✅ `entryDate.test.ts` | — |
+| 7 | Entry with malformed `created` | ✅ `entryDate.test.ts`, `entryRepository.test.ts` | — |
+| 8 | Entry with arbitrary frontmatter | ✅ `markdownDoc.test.ts`, `entryRepository.test.ts` | — |
+| 9 | Editing does not destroy frontmatter | ✅ `markdownDoc.test.ts`, `entryRepository.test.ts` | ✅ §2 Frontmatter survives editing |
+| 10 | Editing from another pane updates the journal | ✅ `journalService.test.ts` | ✅ §4 Editing from another pane |
+| 11 | Deleting an entry updates the timeline | ✅ `journalService.test.ts` | ✅ §4 / §7 promptForDeletion |
+| 12 | Restarting Obsidian preserves everything | — | ✅ §2 Restart persistence |
+| 13 | Empty composer creates no garbage file | ✅ `composerCommit.test.ts` | ✅ §2 Empty composer |
+| 14 | Unicode and Turkish characters | ✅ `entryRepository.test.ts` | ✅ §3 Unicode |
+| 15 | Wikilinks remain valid | ✅ `entryRepository.test.ts` (byte round-trip) | ✅ §3 Wikilinks (rendering/backlinks) |
+| 16 | Markdown formatting remains intact | ✅ `entryRepository.test.ts` (byte round-trip) | ✅ §3 Markdown formatting (rendering) |
+| 17 | Days ordered newest → oldest | ✅ `entryIndex.test.ts`, `entryRepository.test.ts` | — |
+| 18 | Entries within a day ordered newest → oldest | ✅ `entryIndex.test.ts`, `entryRepository.test.ts` | — |
+| 19 | New entry appears at the top | ✅ `entryIndex.test.ts`, `applyChange.test.ts` | ✅ §1 New entry at the top |
+| 20 | External timestamp change repositions the entry | ✅ `journalService.test.ts` ("moved") | ✅ §4 Externally changed timestamp |
+| 21 | Loading older entries preserves scroll position | — | ✅ §1 Loading older entries |
 
-## First entry in a previously empty journal (Task 14)
+Every priority has at least one covering layer. **12 and 21 are manual-only**
+— a real app restart and real scroll-anchoring physics can't be simulated in
+the Vitest/jsdom environment. Everything else has automated coverage of its
+pure logic (ordering, parsing, frontmatter splitting, debounced event
+handling) plus a manual check of the corresponding real-Obsidian-rendered
+behaviour (search/backlinks/graph, live preview, the actual save/trash APIs).
 
-`insertEntryInPlace` (the path an "added" change from `JournalService` takes,
-including the one the new-entry composer will use once Task 15 lands) is not
-covered by any unit test — it's inline DOM/`IntersectionObserver` logic in
-`JournalView`, not extracted behind the pure `decideChangeAction` seam the way
-the loop-suppression and repositioning decisions are. Confirm by hand:
+---
 
-- [ ] **Open the journal on a vault with zero entries.** The "No journal
-      entries yet" message appears.
-- [ ] **Create the first entry** (by hand, or via the command once it creates
-      files) while that view stays open. The empty-state message disappears,
-      the entry appears with the full live editor mounted — not static,
-      dead-looking text — and typing into it works immediately.
-- [ ] **Create a second entry** shortly after. It appears above the first,
-      also with a live editor, confirming the mount/paging observers set up
-      on the empty timeline are still working normally rather than only
-      working once by accident.
+## 1. Creating, ordering, and paging
 
-## Mobile (Task 18)
+- [ ] **Same-second entries.** Run **New journal entry** twice within one
+      second and type in both. Two files exist, the second suffixed `-2`, and
+      neither overwrote the other.
+- [ ] **New entry appears at the top.** Run **New journal entry** and type.
+      The entry appears above every other entry from today.
+- [ ] **Loading older entries does not disturb scroll position.** Scroll down
+      until a page of older entries loads. The content under the cursor does
+      not jump.
+- [ ] **Go to today.** Scroll far into the past, run **Go to today**. The view
+      returns to the top.
+
+## 2. Data integrity and persistence
+
+- [ ] **Frontmatter survives editing.** Add `mood: calm` and `tags: [journal]`
+      to an entry's frontmatter by hand. Edit the entry's body from the
+      timeline. Both properties are unchanged, in the same order.
+- [ ] **Restarting Obsidian preserves everything.** Write several entries,
+      quit Obsidian completely, reopen. Every entry is present, in the same
+      order, with the same text.
+- [ ] **Empty composer creates no file.** Run **New journal entry**, type
+      nothing, click away. No file appears anywhere in the vault.
+- [ ] **A committed entry is never auto-deleted.** Write an entry, then delete
+      all of its text. The file still exists.
+- [ ] **Frontmatter delimiter with trailing whitespace.** Open question since
+      an early task: `splitFrontmatter`'s opening/closing `---` delimiters
+      must match exactly (`/^---\r?\n/`), so a delimiter line with trailing
+      spaces (`---   \n`) is treated as *not* frontmatter — the whole document
+      becomes body. By hand, add trailing whitespace after an entry's opening
+      or closing `---` (e.g. via a plain text editor outside Obsidian), then:
+      check whether Obsidian's own Properties panel still recognises the
+      block as frontmatter, and then edit that entry from the timeline and
+      confirm whether the `created` property survives or gets silently
+      swallowed into the body. If Obsidian itself tolerates the trailing
+      whitespace, `splitFrontmatter`'s regex needs to as well.
+
+## 3. Content fidelity
+
+- [ ] **Unicode and Turkish characters.** Type
+      `İstanbul'da yağmur yağıyordu — ışıklar süzülüyordu 🌧️` into an entry.
+      Reopen the file: the text is byte-identical.
+- [ ] **Wikilinks remain valid.** Type `[[Some Note]]` in an entry. It renders
+      as a link, resolves on click, and appears in the target note's
+      backlinks pane.
+- [ ] **Markdown formatting remains intact.** Type a list, a code block, a
+      heading, bold, and italics. All render correctly and the raw file
+      contains ordinary Markdown.
+- [ ] **The entry is an ordinary note.** The entry appears in Search, in the
+      graph, and in Properties. A Dataview or Bases query over the journal
+      folder finds it.
+
+## 4. External vault changes
+
+- [ ] **Editing from another pane updates the journal.** Open an entry's
+      source file beside the journal. Type in the source pane. The timeline
+      entry updates within about a second.
+- [ ] **The reverse does not loop.** Type continuously in the timeline for 30
+      seconds. The editor never loses focus, the text never resets, and the
+      developer console shows no repeated event storm.
+- [ ] **Deleting an entry updates the timeline.** Delete an entry file from
+      the File Explorer. It disappears from the timeline, and its day header
+      disappears if it was that day's last entry.
+- [ ] **Externally changed timestamp repositions the entry.** Edit an entry's
+      `created` property to a date two weeks ago. The entry moves to that day,
+      in the right position within it.
+- [ ] **Journal folder rename.** `JournalService` cannot observe, from the API
+      alone, whether Obsidian fires a `vault.on("rename")` event for every
+      descendant file when a FOLDER is renamed, or only one event for the
+      folder itself. `JournalService.rebuild()` is idempotent either way, so
+      the folder-rename handler triggers it unconditionally rather than
+      depending on the answer. Confirm the real behaviour:
+  - [ ] **Rename the configured journal folder itself** (e.g. `Journal` ->
+        `Journal2`) while the journal view is open, with a mix of entries
+        loaded and scrolled past. The timeline reloads and shows every entry
+        at its new location; nothing is duplicated, nothing silently
+        disappears.
+  - [ ] **Rename an ancestor folder that contains the journal folder.** Same
+        expectation.
+  - [ ] **Rename a subfolder inside the journal folder** (e.g.
+        `Journal/2026` -> `Journal/2026-old`). Same expectation.
+  - [ ] **Rename a folder unrelated to the journal folder** while the view is
+        open. No reload happens (check the console for an unexpected full
+        rebuild) and the timeline is undisturbed.
+  - [ ] Repeat the first case while an entry is mid-edit (typing, not yet
+        saved). The in-flight text is not lost — it's flushed to disk at the
+        entry's new location before the timeline reloads.
+- [ ] **First entry in a previously empty journal.** `insertEntryInPlace` (the
+      path an "added" change takes, including the new-entry composer) is
+      inline DOM/`IntersectionObserver` logic in `JournalView`, not covered by
+      any unit test. Confirm by hand:
+  - [ ] **Open the journal on a vault with zero entries.** The "No journal
+        entries yet" message appears.
+  - [ ] **Create the first entry** while that view stays open. The empty-state
+        message disappears, the entry appears with the full live editor
+        mounted — not static, dead-looking text — and typing into it works
+        immediately.
+  - [ ] **Create a second entry** shortly after. It appears above the first,
+        also with a live editor, confirming the mount/paging observers set up
+        on the empty timeline are still working normally rather than only
+        working once by accident.
+
+## 5. Timeline mount/unmount window
+
+`JournalView`'s editor mount/unmount decision (`mountObserver`, an
+`IntersectionObserver` rooted on the timeline pane) and the pure
+selection/termination logic behind its `MAX_MOUNTED_EDITORS` backstop
+(`src/views/mountWindow.ts`) are covered by `tests/mountWindow.test.ts` with
+fabricated state. What that suite cannot cover is real scroll physics, real
+focus/blur timing, and a real `IntersectionObserver` reacting to a real
+layout — verify these by hand, with a vault of at least a few hundred entries
+(enough to scroll well past `MAX_MOUNTED_EDITORS`, i.e. past 60 entries on
+desktop or 25 on mobile).
+
+- [ ] **Scroll past the cap and back; entries at the top are live again, text
+      intact.** Scroll continuously downward until you're well past the mount
+      cap (at most `MAX_MOUNTED_EDITORS` mounted `.journal-entry-embed`/
+      `.journal-entry-textarea` elements at any point). Note the exact text of
+      a couple of entries near the top, then scroll back up. Confirm: the
+      entries at the top are directly editable again (not click-to-edit, not
+      static Markdown), and their text is byte-for-byte what it was before —
+      nothing lost or duplicated across the unmount → static → remount round
+      trip.
+- [ ] **Scrolling past unedited entries touches zero files.** Note the current
+      modification time of twenty or so consecutive entries you have not
+      edited this session. Scroll past all of them — enough to mount and then
+      unmount each one — without typing anything. Confirm not one of their
+      modification times changed. This is the check that would catch a
+      regression of the spurious-write bug (`savedBody` no longer matching
+      what the editor's `getValue()` reports as unchanged, e.g. a line-ending
+      mismatch on a CRLF file).
+- [ ] **A focused editor keeps focus and its text when scrolled out of view.**
+      Click into an entry near the top, place the cursor mid-sentence, and
+      without clicking away, scroll it out of the viewport and past
+      `MOUNT_ROOT_MARGIN`. Confirm the entry does *not* revert to static
+      rendering while it holds focus. Click elsewhere to blur it, then scroll
+      back: it correctly unmounted after the blur, and its text — including
+      whatever you typed before scrolling — was saved and is intact.
+- [ ] **Does `focusout` fire for reasons other than "the user clicked a
+      different entry"?** Two cases neither the automated suite nor a code
+      read can settle: (1) does it fire when the whole Obsidian window loses
+      OS-level focus (switching to another app); (2) does it fire when a
+      CM6-internal popup takes focus (in-editor search, `[[` autocomplete)?
+      Check by focusing an off-screen-eligible entry (scrolled near the
+      `MOUNT_ROOT_MARGIN` edge), then (a) switch to a different application
+      and back, (b) trigger the in-editor search panel or `[[` autocomplete
+      and dismiss it, and in each case confirm the entry is still a live
+      editor with focus afterward, not reverted to static text.
+- [ ] **Do the `400px`/`900px` margins feel right?** With real scrolling
+      (mouse wheel, trackpad, and — on mobile — a flick gesture), confirm an
+      entry becomes editable *before* it's needed, and the number of
+      simultaneously mounted editors at a normal scroll speed doesn't feel
+      wasteful. Adjust `MOUNT_ROOT_MARGIN` in `JournalView.ts` if either feels
+      off.
+
+## 6. New entry composer
+
+`JournalView.commitComposer` swaps the composer's plain `TextareaEditor` for
+the real editor mid-keystroke — the file doesn't exist until the first
+meaningful character, so nothing else can mount the embedded editor sooner.
+Nothing automated can watch where the caret actually lands after that swap.
+
+- [ ] **The swap doesn't eat a keystroke.** Run **New journal entry**, then
+      type a sentence at a normal typing speed without pausing (fast enough
+      that several characters land before the file is likely to have been
+      created). Confirm every character you typed appears in order once the
+      swap to the real editor completes.
+- [ ] **The caret lands at the end, not the start.** Type a full sentence into
+      a fresh composer (enough to trigger the file-creation swap), then
+      immediately keep typing without pausing. Confirm the continuation
+      appears **after** what you already typed, not at the beginning.
+- [ ] **The swapped-in editor visibly has focus.** After the swap, confirm the
+      blinking cursor is visible in the entry — check this with both the
+      embedded editor available and, if you can force the fallback, the
+      plain-textarea fallback too, since `focus("end")` is implemented
+      separately in each.
+- [ ] **Typed content survives a failed create.** If you can simulate
+      `EntryRepository.createEntry` throwing (e.g. temporarily make the
+      configured journal folder path invalid), type into a fresh composer and
+      confirm: a Notice appears, the typed text is still visible in the
+      composer, and typing further retries the create rather than silently
+      dropping the text or duplicating the composer.
+
+## 7. Entry actions
+
+`JournalView.confirmDelete` relies on `FileManager.promptForDeletion` to both
+confirm the deletion and perform the trash. Its JSDoc documents only the
+prompt and the returned boolean — that it also performs the deletion
+afterward is real Obsidian behaviour, undocumented in `obsidian.d.ts`, so it
+needs confirming once against a live vault rather than assumed from the type
+signature alone.
+
+- [ ] **Deleting an entry actually reaches the trash.** From the timeline,
+      open an entry's actions menu (hover button or right-click on its
+      chrome) and choose **Delete entry**. Confirm the prompt. Then check:
+      the file is gone from its original location in the File Explorer, the
+      row disappears from the timeline, and the file is present in whichever
+      trash Obsidian is configured to use (`.trash/` in the vault, or the
+      system trash/Recycle Bin).
+      - **If the file is NOT actually trashed** — i.e. `promptForDeletion`
+        only prompts and never performs the deletion — then `confirmDelete`
+        needs its own explicit trash call after a confirmed prompt (e.g.
+        `this.app.fileManager.trashFile(file)`), and `handleDeleteFallback`'s
+        existence check would otherwise restore every deleted entry a moment
+        later, defeating deletion entirely.
+
+## 8. Saving
+
+`JournalView.save`/`unmountEditor` only get one honest signal that a write
+actually failed: the real filesystem. Fake it with permissions, not with a
+mocked repository, so this exercises the real `Notice`, the real marker DOM,
+and the real decline-to-unmount path together.
+
+- [ ] **A failed write shows a persistent marker, and scrolling away and back
+      does not lose the text.** Type in an entry, then — before the 500ms
+      debounce fires — make its file read-only from a terminal:
+      `chmod 444 "$VAULT/Journal/2026/08/<some entry>.md"`. Type once more and
+      wait a second: a red **not saved** marker appears next to that entry's
+      timestamp, the developer console logs the failure, and a transient
+      `Notice` appears. Scroll the entry well out of view (past
+      `MOUNT_ROOT_MARGIN`) and back. Confirm: the marker is still there, and
+      the text you typed is still in the editor, unchanged — not replaced by
+      the last-saved (pre-failure) disk content.
+- [ ] **Restore and confirm recovery.** Restore permissions
+      (`chmod 644 …`) and type once more in the same entry. Confirm the
+      marker disappears and the file on disk now matches the editor.
+- [ ] **The recovered entry becomes evictable again.** With many entries open
+      (more than `MAX_MOUNTED_EDITORS`), repeat the read-only steps on one
+      entry, then scroll it far away without restoring permissions — confirm
+      it stays mounted even while many other entries compete for mount slots.
+      Restore permissions and let a write succeed, then scroll far away again
+      — confirm this entry can now be unmounted/evicted like any other.
+- [ ] **Deleting an entry while its write is failing still leaves a
+      recoverable trace.** Repeat the read-only setup (type, break
+      permissions, type again, marker appears), then open that entry's
+      actions menu and choose **Delete entry**, confirming the prompt. Before
+      the row disappears, check the developer console: a `console.error` line
+      names the entry's path and prints the exact text you typed. Restore
+      permissions afterward.
+- [ ] **Closing the journal with an unsent composer draft leaves a
+      recoverable trace.** Run **New journal entry**, type something, then
+      immediately close the journal view/tab before the composer commits to a
+      file. Check the developer console for a `console.error` line labeled
+      "uncommitted composer" with the text you typed. Confirm no empty or
+      partial file was created in the journal folder.
+- [ ] **Renaming a dirty entry's file re-keys the row instead of duplicating
+      it.** Not exercised by the automated suite: the re-key touches
+      `this.rendered`, `this.mountOrder`, and the element's `data-path`
+      together — live `JournalView` instance state and real DOM. Repeat the
+      read-only setup so the entry is dirty, then — from the File Explorer,
+      NOT from the journal view — rename that entry's `.md` file to a
+      different (still-valid) timestamp filename in the same folder. Confirm:
+      exactly ONE row for it remains in the timeline (no duplicate), it still
+      shows the text you typed, and it is still marked **not saved**. Restore
+      permissions and type once more; confirm the marker clears and the file
+      on disk (at its new name) now matches the editor.
+
+## 9. Editing surface
+
+- [ ] **Full editor features.** Inside a timeline entry: `[[` opens link
+      autocomplete, live preview renders formatting as you type, and editor
+      commands from the command palette apply to the focused entry. (See
+      `docs/manual-testing-editor.md` for the detailed fidelity and
+      external-write checks.)
+- [ ] **Fallback path.** Temporarily force the fallback by editing
+      `hasEmbeddedEditorApi` to `return false`, rebuild, and reload. A notice
+      appears once, entries are editable as plain text, and saving still
+      works. Revert the change afterwards.
+
+## 10. Themes and platforms
+
+- [ ] Light theme and dark theme both look native; no unreadable text, no
+      stray borders or shadows.
+- [ ] At least one community theme renders acceptably.
+
+### Mobile
 
 None of this can be verified without a phone or tablet — see
-`docs/editor-embed-api.md`'s "Mobile" section for why each item is
-unverified rather than merely untested.
+`docs/editor-embed-api.md`'s "Mobile" section for why each item is unverified
+rather than merely untested.
 
 - [ ] **A long entry keeps its caret visible above the keyboard.** Open (or
       create) an entry with enough lines to exceed the screen's height, and
@@ -68,16 +341,18 @@ unverified rather than merely untested.
       animation and the OS's own long-press convention actually feel.
 - [ ] **Check whether `window.visualViewport`'s `resize` event fires** when
       the keyboard opens, on both iOS and Android, inside Obsidian's mobile
-      shell (see `docs/editor-embed-api.md`). If it fires reliably on both,
-      a caret-relative scroll (rather than scrolling the whole entry) becomes
-      possible.
+      shell. If it fires reliably on both, a caret-relative scroll (rather
+      than scrolling the whole entry) becomes possible.
 - [ ] **Long-press an entry's timestamp area** (not its text body) and
       confirm it opens the actions menu without fighting a normal scroll or
-      the editor's own text-selection gesture, and that it does not also
-      pop the menu twice when the always-visible `⋯` button is long-pressed
+      the editor's own text-selection gesture, and that it does not also pop
+      the menu twice when the always-visible `⋯` button is long-pressed
       instead of tapped.
 - [ ] **Compare the entry-actions button's dimness** against a non-mobile
       touch device if one is available (e.g. a touchscreen laptop): the
       button should sit at reduced (0.5) opacity at rest on the real mobile
       app, full opacity while it holds focus, and full opacity at rest
       everywhere else that only matches `hover: none`.
+- [ ] **Paging works on mobile.** Entries render, the keyboard does not cover
+      the focused entry, long-press opens the actions menu, and scrolling
+      down loads older entries without jumping.

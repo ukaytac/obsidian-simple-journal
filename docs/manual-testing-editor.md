@@ -1,12 +1,19 @@
-# Manual testing: TextareaEditor resize
+# Manual testing: the EntryEditor implementations
 
-`TextareaEditor.resize()` depends on real layout (`offsetParent`, `scrollHeight`),
-which jsdom reports as `null`/`0` unconditionally — so `tests/textareaEditor.test.ts`
-deliberately does not exercise it; a jsdom test would bail out on every case
-and pass green without proving anything. Verify these by hand in a real
-Obsidian window instead, using a fresh entry with a few lines of text.
+Checks scoped to `TextareaEditor` and `ObsidianEmbedEditor` themselves — the
+two `EntryEditor` implementations behind `src/views/EntryEditor.ts`. Anything
+about how `JournalView` mounts, saves, or paginates entries lives in
+`docs/manual-testing.md` instead; this file is only what's specific to the
+editors' own internals, none of which is exercisable in jsdom:
+`TextareaEditor.resize()` depends on real layout (`offsetParent`,
+`scrollHeight`, both `null`/`0` in jsdom), and `ObsidianEmbedEditor` depends on
+the real internal embed registry, a real CodeMirror 6 instance, and Obsidian's
+actual save/debounce pipeline. Verify these by hand in a real Obsidian window,
+using a fresh entry with a few lines of text.
 
-## Shrink paths (fast-path guard must NOT skip these)
+## TextareaEditor: resize
+
+### Shrink paths (fast-path guard must NOT skip these)
 
 - [ ] **External setValue shrinking content.** Open the same entry in a second
       pane (or edit the underlying file directly). Delete a paragraph from the
@@ -22,14 +29,14 @@ Obsidian window instead, using a fresh entry with a few lines of text.
 - [ ] **Multi-line paste into short content.** Reverse case: paste several
       lines into a one-line entry. The box grows immediately to fit.
 
-## IME
+### IME
 
 - [ ] **IME composition.** Using an IME (Japanese/Chinese/Korean input, or any
       composed input method), compose a multi-character candidate in an entry
       that's near a line wrap. The box resizes correctly as composition
       grows/shrinks the pre-edit text, and again once the candidate commits.
 
-## Width changes
+### Width changes
 
 - [ ] **Divider drag re-wraps text.** With an entry whose text wraps across
       several lines, drag the split divider to narrow the journal pane, or open
@@ -38,7 +45,7 @@ Obsidian window instead, using a fresh entry with a few lines of text.
       Nothing automated can cover this: it depends on `onResize()` firing for a
       size change rather than a visibility change.
 
-## Background-tab recovery
+### Background-tab recovery
 
 - [ ] **Mounting while the tab is in the background, then switching back.**
       Open the journal in one tab, switch to a different tab so the journal's
@@ -48,16 +55,7 @@ Obsidian window instead, using a fresh entry with a few lines of text.
       on `onResize()`) — it isn't clipped or left at a stale, oversized height
       waiting for the next keystroke.
 
----
-
-# Manual testing: ObsidianEmbedEditor
-
-None of this is exercisable in jsdom: it depends on the real internal embed
-registry, a real CodeMirror 6 instance, and Obsidian's actual save/debounce
-pipeline (Task 13+), none of which `tests/obsidianEmbedEditor.test.ts`'s fake
-embed can stand in for. Verify these by hand in a real Obsidian window.
-
-## External writes: does the embed actually reload?
+## ObsidianEmbedEditor: external writes — does the embed actually reload?
 
 `ObsidianEmbedEditor` neutralises the embed's `onFileChanged` hook so this
 editor's buffer stays authoritative while mounted (see the source file's top
@@ -90,8 +88,17 @@ checklist exists to answer, not a mechanism to verify:
         and a write is known to be in flight. Content-and-timestamp matching
         is not an option again: it was tried here and removed specifically
         because it cannot be made correct.
+- [ ] **Typing continuously past the autosave debounce drops nothing, with no
+      external write in the picture.** Isolates the debounce itself from the
+      external-write question above. Open an entry and type at a normal pace
+      for at least 2–3 seconds without pausing — long enough for the 500ms
+      save debounce (`JournalView`'s save path) to fire multiple times mid-
+      sentence. Confirm every character lands in order, the editor never
+      loses focus or its selection, and the developer console shows no
+      repeated event storm (a symptom of the save loop clobbering the
+      editor's own buffer).
 
-## Editing fidelity
+## ObsidianEmbedEditor: editing fidelity
 
 - [ ] **`[[` autocomplete.** Type `[[` inside an entry. The real Obsidian
       link suggester appears and lists actual vault files (not a plain-text
@@ -100,7 +107,7 @@ checklist exists to answer, not a mechanism to verify:
       fences, callouts) renders inline as you'd see in any other Obsidian
       note in Live Preview mode — not as raw source text.
 
-## No titles, no renaming (CLAUDE.md "no titles" rule)
+## ObsidianEmbedEditor: no titles, no renaming (CLAUDE.md "no titles" rule)
 
 - [ ] **No title or properties panel visible.** Open an entry with several
       frontmatter properties (e.g. `created` plus a couple of extra keys).
@@ -113,209 +120,3 @@ checklist exists to answer, not a mechanism to verify:
       underlying file. (Renaming the file from the File Explorer or the
       command palette, outside the timeline, is unaffected and still works
       normally.)
-
----
-
-# Manual testing: the viewport-driven mount window
-
-`JournalView`'s editor mount/unmount decision (`mountObserver`, an
-`IntersectionObserver` rooted on the timeline pane) and the pure
-selection/termination logic behind its `MAX_MOUNTED_EDITORS` backstop
-(`src/views/mountWindow.ts`) are covered by `tests/mountWindow.test.ts` with
-fabricated state. What that suite cannot cover is real scroll physics, real
-focus/blur timing, and a real `IntersectionObserver` reacting to a real
-layout — verify these by hand, in a real Obsidian window, with a vault of at
-least a few hundred entries (enough to scroll well past `MAX_MOUNTED_EDITORS`,
-i.e. past 60 entries on desktop or 25 on mobile).
-
-- [ ] **Scroll past the cap and back; entries at the top are live again, text
-      intact.** Open the journal, then scroll continuously downward until
-      you're well past the mount cap (the console should show at most
-      `MAX_MOUNTED_EDITORS` mounted `.journal-entry-embed`/`.journal-entry-textarea`
-      elements at any point — the entries scrolled past should have quietly
-      reverted to static rendering). Before scrolling back, note the exact
-      text of a couple of entries near the top. Scroll back up to today.
-      Confirm: the entries at the top are directly editable again (not
-      click-to-edit, not static Markdown) — `mountObserver` re-mounts them the
-      moment they re-enter `MOUNT_ROOT_MARGIN` — and their text is byte-for-byte
-      what it was before you scrolled away (nothing was lost or duplicated
-      across the unmount → static → remount round trip).
-- [ ] **Scrolling past unedited entries touches zero files.** Note the
-      current modification time (in the file explorer, or your OS's file
-      info) of twenty or so consecutive entries you have not edited this
-      session. Scroll past all of them — enough to mount and then unmount
-      each one via `mountObserver` — without typing anything. Confirm not
-      one of their modification times changed. This is the check that would
-      catch a regression of the spurious-write bug (`savedBody` no longer
-      matching what the editor's `getValue()` reports as unchanged, e.g. a
-      line-ending mismatch on a CRLF file): the seeding wiring lives in
-      `mountEditor`/`save()`, which no automated test can reach without a
-      real `JournalView`.
-- [ ] **A focused editor keeps focus and its text when scrolled out of view.**
-      Click into an entry near the top and place the cursor mid-sentence.
-      Without clicking away (so the entry keeps keyboard focus), scroll it
-      out of the viewport and past `MOUNT_ROOT_MARGIN` — far enough that an
-      ordinary (unfocused) entry at that position would already have
-      unmounted. Confirm the entry does *not* revert to static rendering
-      while it holds focus (`unmountEditor` skips a focused editor
-      unconditionally). Now click elsewhere in the document to blur it, then
-      scroll back to check that entry: it correctly unmounted after the blur
-      (via `wireEditor`'s `onBlur` callback, since it was still off-screen at
-      that point) and its text — including whatever you typed before
-      scrolling — was saved and is intact.
-- [ ] **Does `focusout` fire for reasons other than "the user clicked a
-      different entry"?** `ObsidianEmbedEditor`'s blur handling is a
-      `focusout` listener on the embed's container, filtered by
-      `relatedTarget` (see its source). Two cases neither the automated
-      suite nor a code read can settle: (1) does it fire when the whole
-      Obsidian window loses OS-level focus (switching to another app) —
-      `relatedTarget` would be `null` there just as it is for a real blur,
-      which the current filter can't distinguish from "moved outside the
-      container"; (2) does it fire when a CM6-internal popup takes focus
-      (the in-editor search panel, an autocomplete/suggestion dropdown)? If
-      either fires `onBlur`, `wireEditor`'s "second chance" unmount
-      (`if (!rendered.intersecting) void this.unmountEditor(rendered)`)
-      would tear down and revert to static rendering an entry the user
-      still considers "in", the moment it's also off-screen — e.g. tabbing
-      to another app mid-sentence while scrolled past the margin. Check by:
-      focusing an off-screen-eligible entry (scroll it near the
-      `MOUNT_ROOT_MARGIN` edge), then (a) switch to a different application
-      and back, (b) trigger the in-editor search panel or `[[` autocomplete
-      and dismiss it, and in each case confirm the entry is still a live
-      editor with focus afterward, not reverted to static text.
-- [ ] **Do the `400px`/`900px` margins feel right?** With real scrolling
-      (mouse wheel, trackpad, and — on mobile — a flick gesture), confirm an
-      entry becomes editable *before* it's needed, not exactly as it scrolls
-      into view (a visible "pop-in" or a moment of lag before `[[` works
-      would mean the margin is too small for that input method), and that
-      the number of simultaneously mounted `.journal-entry-embed`/
-      `.journal-entry-textarea` elements at a normal scroll speed doesn't
-      feel wasteful relative to what's actually on screen (too large a
-      margin). Adjust `MOUNT_ROOT_MARGIN` in `JournalView.ts` if either feels
-      off.
-
----
-
-# Manual testing: the new-entry composer's focus/caret handover (Task 15)
-
-`JournalView.commitComposer` swaps the composer's plain `TextareaEditor` for
-the real editor mid-keystroke — the file doesn't exist until the first
-meaningful character, so nothing else can mount the embedded editor sooner.
-Nothing automated can watch where the caret actually lands after that swap
-(jsdom has no real CM6 instance, and `focus("end")`'s CM6 half is a
-`cm.dispatch({selection: ...})` call this plugin can't observe the visible
-effect of outside a real window). Verify by hand:
-
-- [ ] **The swap doesn't eat a keystroke.** Run **New journal entry**, then
-      type a sentence at a normal typing speed without pausing (fast enough
-      that several characters land before the file is likely to have been
-      created). Confirm every character you typed appears in the entry, in
-      order, once the swap to the real editor completes — nothing dropped
-      during the brief window where the old textarea has been destroyed but
-      the new editor hasn't mounted yet.
-- [ ] **The caret lands at the end, not the start.** Type a full sentence
-      into a fresh composer (enough to trigger the file-creation swap), then
-      *immediately* keep typing without pausing or clicking. Confirm the
-      continuation appears **after** what you already typed, not inserted at
-      the beginning of the document — i.e. the real editor's caret was
-      placed at the end of the seeded text, not left at its default (start
-      of document) position.
-- [ ] **The swapped-in editor visibly has focus.** After the swap, confirm
-      the blinking cursor is visible in the entry (not just that typing
-      happens to work) — check this with both the embedded editor available
-      and, if you can force the fallback (see the embed-availability tests
-      above), with the plain-textarea fallback too, since `focus("end")` is
-      implemented separately in each.
-- [ ] **Typed content survives a failed create.** If you can simulate
-      `EntryRepository.createEntry` throwing (e.g. temporarily make the
-      configured journal folder path invalid, or revoke write permission on
-      the vault folder on desktop), type into a fresh composer and confirm:
-      a Notice appears, the typed text is still visible in the composer, and
-      typing further retries the create rather than silently dropping the
-      text or duplicating the composer.
-
----
-
-# Manual testing: entry actions (Task 16)
-
-`JournalView.confirmDelete` relies on `FileManager.promptForDeletion` to both
-confirm the deletion and perform the trash. Its JSDoc documents only the
-prompt and the returned boolean — that it also performs the deletion
-afterward is real Obsidian behaviour, but nothing in `obsidian.d.ts` commits
-to it, so it needs confirming once against a live vault rather than assumed
-from the type signature alone.
-
-- [ ] **Deleting an entry actually reaches the trash.** From the timeline,
-      open an entry's actions menu (hover button or right-click on its
-      chrome) and choose **Delete entry**. Confirm the prompt. Then check:
-      the file is gone from its original location in the File Explorer, the
-      row disappears from the timeline, and the file is present in whichever
-      trash Obsidian is configured to use (`.trash/` in the vault, or the
-      system trash/Recycle Bin).
-      - **If the file is NOT actually trashed** — i.e. `promptForDeletion`
-        only prompts and never performs the deletion — then
-        `confirmDelete` needs its own explicit trash call after a confirmed
-        prompt (e.g. `this.app.fileManager.trashFile(file)`), and
-        `handleDeleteFallback`'s existence check would otherwise restore
-        every deleted entry a moment later, defeating deletion entirely.
-
-# Manual testing: save failure handling (Task 17)
-
-`JournalView.save`/`unmountEditor` only get one honest signal that a write
-actually failed: the real filesystem. Fake it with permissions, not with a
-mocked repository, so this exercises the real `Notice`, the real marker DOM,
-and the real decline-to-unmount path together.
-
-- [ ] **A failed write shows a persistent marker, and scrolling away and back
-      does not lose the text.** Type in an entry, then — before the 500ms
-      debounce fires — make its file read-only from a terminal:
-      `chmod 444 "$VAULT/Journal/2026/08/<some entry>.md"`. Type once more and
-      wait a second: a red **not saved** marker appears next to that entry's
-      timestamp, the developer console logs the failure, and a transient
-      `Notice` appears. Now scroll the entry well out of view (past
-      `MOUNT_ROOT_MARGIN`) and back. Confirm: the marker is still there, and
-      the text you typed is still in the editor, unchanged — not replaced by
-      the last-saved (pre-failure) disk content. This is the case
-      `unmountEditor`'s dirty-check decline exists for; if the text reverts
-      to the old saved body instead, that decline regressed.
-  - [ ] **Restore and confirm recovery.** Restore permissions
-        (`chmod 644 …`) and type once more in the same entry. Confirm the
-        marker disappears and the file on disk now matches the editor.
-  - [ ] **The recovered entry becomes evictable again.** With many entries
-        open (more than `MAX_MOUNTED_EDITORS`), repeat the read-only steps on
-        one entry, then scroll it far away without restoring permissions —
-        confirm it stays mounted (a live editor, not static text) even while
-        many other entries compete for mount slots. Restore permissions and
-        let a write succeed, then scroll far away again — confirm this entry
-        can now be unmounted/evicted like any other.
-  - [ ] **Deleting an entry while its write is failing still leaves a
-        recoverable trace.** Repeat the read-only setup (type, break
-        permissions, type again, marker appears), then open that entry's
-        actions menu and choose **Delete entry**, confirming the prompt.
-        Before the row disappears, check the developer console: a
-        `console.error` line names the entry's path and prints the exact
-        text you typed — the only remaining record of it, since the file
-        itself is about to be trashed. Restore permissions afterward.
-  - [ ] **Closing the journal with an unsent composer draft leaves a
-        recoverable trace.** Run **New journal entry**, type something, then
-        immediately close the journal view/tab before the composer commits
-        to a file (this window is narrow — a fast close right after typing).
-        Check the developer console for a `console.error` line labeled
-        "uncommitted composer" with the text you typed. Confirm no empty or
-        partial file was created in the journal folder — Lazy Creation still
-        applies; teardown must not commit on the way out.
-  - [ ] **Renaming a dirty entry's file re-keys the row instead of
-        duplicating it.** Not exercised by the automated suite: the re-key
-        touches `this.rendered`, `this.mountOrder`, and the element's
-        `data-path` together — live `JournalView` instance state and real
-        DOM, with no extracted pure seam the way `decideChangeAction`
-        (`applyChange.ts`) or `pickEvictionCandidate` (`mountWindow.ts`) have.
-        Repeat the read-only setup (type, break permissions, type again,
-        marker appears) so the entry is dirty, then — from the File
-        Explorer, NOT from the journal view — rename that entry's `.md`
-        file to a different (still-valid) timestamp filename in the same
-        folder. Confirm: exactly ONE row for it remains in the timeline (no
-        duplicate), it still shows the text you typed, and it is still
-        marked **not saved**. Restore permissions and type once more;
-        confirm the marker clears and the file on disk (at its new name)
-        now matches the editor.
