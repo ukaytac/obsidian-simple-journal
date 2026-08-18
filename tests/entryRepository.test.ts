@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { App, TFile } from "obsidian";
+import type { App } from "obsidian";
 import { createFakeApp } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 
@@ -379,14 +379,5 @@ describe("readBody and writeBody", () => {
 
     await repo.writeBody(file, text);
     expect(await repo.readBody(file)).toBe(text);
-  });
-});
-
-describe("deleteEntry", () => {
-  it("uses the file manager so Obsidian's trash setting is respected", async () => {
-    const { fake, repo } = setup();
-    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
-    await repo.deleteEntry(file as TFile);
-    expect(fake.fileManager.trashed.map((f) => f.path)).toEqual([file.path]);
   });
 });

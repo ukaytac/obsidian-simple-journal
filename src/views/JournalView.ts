@@ -55,6 +55,14 @@ const MOUNT_ROOT_MARGIN = Platform.isMobile ? "900px 0px" : "400px 0px";
  */
 const MAX_BURST_PAGES = 10;
 
+/**
+ * How long `confirmDelete` waits for the vault's own "delete" event (routed
+ * through `JournalService`/`applyChangesNow`) to reach `removeRenderedEntry`
+ * before tearing a deleted entry's rendering down directly. See
+ * `confirmDelete`'s doc for why the row can't just wait indefinitely.
+ */
+const DELETE_FALLBACK_MS = 2000;
+
 /** One entry as it currently exists in the DOM. */
 interface RenderedEntry {
   entry: JournalEntry;
@@ -712,6 +720,11 @@ export class JournalView extends ItemView {
     // Hidden until hover/focus (see styles.css) — the timeline is a writing
     // surface, not a dashboard, so nothing but the timestamp is visible at rest.
     const actionsEl = headerEl.createDiv({ cls: "journal-entry-actions" });
+    // The uncommitted composer has no file yet — showEntryMenu no-ops for it
+    // (see its doc), so the button would otherwise sit there tooltipped and
+    // dead. Hidden here; commitComposer unhides it in the same breath it
+    // gives the entry a real file.
+    if (!entry.file) actionsEl.addClass("journal-entry-actions-pending");
     const button = new ButtonComponent(actionsEl)
       .setIcon("more-horizontal")
       .setTooltip("Entry actions")
@@ -741,12 +754,24 @@ export class JournalView extends ItemView {
     button.onClick((event) => this.showEntryMenu(rendered, event));
 
     // Bound on the entry element, not the body: `.journal-entry-body` holds
-    // the live editor (or its static rendering), and its own context menu —
-    // spell-check suggestions, the editor's paste items — must reach the
-    // user untouched. Only the chrome around it (the header, the padding
-    // outside the body) opens the entry-actions menu on right-click.
+    // the live editor (or its static rendering), and — while an editor is
+    // actually mounted — its own context menu (spell-check suggestions, the
+    // editor's paste items) must reach the user untouched. Only the chrome
+    // around it (the header, the padding outside the body) opens the
+    // entry-actions menu on right-click.
+    //
+    // `instanceof Element`, not `HTMLElement`: an SVG target (embedded SVG,
+    // rendered Mermaid output) is an `Element` but not an `HTMLElement`, and
+    // `closest()` is on `Element` — the narrower check let an SVG click
+    // inside the body fall through to `preventDefault` and our own menu.
+    //
+    // The bail is also gated on `rendered.editor !== null`: a
+    // statically-rendered entry (no live editor) has no editor menu to
+    // protect, so a right-click on its text should still open the entry
+    // menu rather than falling through to the generic Electron menu.
     el.addEventListener("contextmenu", (event) => {
-      if (event.target instanceof HTMLElement && event.target.closest(".journal-entry-body")) return;
+      const insideBody = event.target instanceof Element && event.target.closest(".journal-entry-body");
+      if (insideBody && rendered.editor !== null) return;
       event.preventDefault();
       this.showEntryMenu(rendered, event);
     });
@@ -782,9 +807,25 @@ export class JournalView extends ItemView {
         .setTitle("Copy link to entry")
         .setIcon("link")
         .onClick(() => {
+          // `sourcePath` is the note the link will be pasted into — unknowable
+          // here, since this runs from the timeline, not from any particular
+          // note. "" (vault root) is the only value available; there is no
+          // universally-correct one. Under "Shortest path when possible" this
+          // still resolves from anywhere, since entry basenames are unique
+          // (timestamp filenames); under "Relative path to file" the same
+          // link would break if pasted into a note outside the journal root.
           const link = this.app.fileManager.generateMarkdownLink(file, "");
-          void navigator.clipboard.writeText(link);
-          new Notice("Link copied");
+          // `writeText` rejects when the document isn't focused or clipboard
+          // permission is denied — reported honestly rather than assuming
+          // success, since the alternative is telling the user their link
+          // copied when it didn't.
+          navigator.clipboard.writeText(link).then(
+            () => new Notice("Link copied"),
+            (error) => {
+              console.error("Journal Entries: could not copy the entry link", error);
+              new Notice("Journal Entries: could not copy the link. See the developer console for details.");
+            },
+          );
         }),
     );
 
@@ -803,47 +844,71 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Confirms, then deletes an entry's underlying file via the vault's normal
-   * trash behaviour.
+   * Confirms, then deletes an entry's underlying file via
+   * `FileManager.promptForDeletion` — Obsidian's own delete dialog, which
+   * both respects the user's "Confirm file deletion" setting and performs
+   * the trash itself (according to their configured trash behaviour) the
+   * moment it resolves `true`. Preferred over a hand-rolled `window.confirm`
+   * + `trashFile`: the native dialog is unthemed and, being a blocking
+   * native call, freezes every timer in the renderer while it's open —
+   * including the very debounce this method needs to flush.
    *
-   * Only the parts of teardown that can't safely wait are done here,
-   * synchronously, before the trash call: the pending debounced save is
-   * cancelled (nothing should write to a file that's about to be trashed)
-   * and the live editor is destroyed (so it stops holding/polling a file
-   * that's about to disappear out from under it). The rest — unobserving
-   * the element, removing it from `mountOrder`, dropping the `dayGroups` key
-   * if this was the day's last entry, and tearing the DOM node itself down —
-   * is deliberately left to `applyChangesNow`'s normal "removed" handling,
-   * which runs once the vault's own `delete` event reaches `JournalService`
-   * and arrives back here as a `JournalChange` (see this method's call site
-   * in `showEntryMenu` and `removeRenderedEntry`, which that path calls).
-   * Doing that teardown a second time here, ahead of the event, would race
-   * the version the event handling itself already does correctly.
+   * Any pending edit is flushed BEFORE prompting, not after: by the time
+   * `promptForDeletion` resolves `true` the file is already trashed, so
+   * flushing afterward would write into a file that has just moved (or, on
+   * the OS-trash setting, no longer exists at all) instead of the file the
+   * trash actually receives.
+   *
+   * Only the parts of teardown that can't safely wait are done here: the
+   * (already-flushed) debounce timer is cancelled, an `is-deleting` class
+   * dims the row and blocks further interaction with it, and the editor is
+   * destroyed so it stops holding/polling a file that's about to disappear
+   * out from under it. The rest — unobserving the element, removing it from
+   * `mountOrder`, dropping the `dayGroups` key if this was the day's last
+   * entry, and tearing the DOM node itself down — is deliberately left to
+   * `applyChangesNow`'s normal "removed" handling, which runs once the
+   * vault's own `delete` event reaches `JournalService` and arrives back
+   * here as a `JournalChange`, calling `removeRenderedEntry`. Doing that
+   * teardown a second time here, ahead of the event, would race the version
+   * the event handling itself already does correctly.
+   *
+   * That event is not guaranteed to arrive promptly (or, in principle, at
+   * all) — meanwhile `el` is still `observe()`d by `mountObserver`, so an
+   * intersection flip could otherwise call `mountEditor` on a path whose
+   * file no longer exists. The `setTimeout` below bounds how long a deleted
+   * entry can sit as a dimmed, inert row: if `removeRenderedEntry` hasn't
+   * already claimed it (checked by identity — `this.rendered.get(path) ===
+   * rendered` — so a *different* entry later created at the same path is
+   * never mistaken for this one) by then, this removes it directly.
    */
   private async confirmDelete(rendered: RenderedEntry): Promise<void> {
     const file = rendered.entry.file;
     if (!file) return;
 
-    const confirmed = window.confirm(
-      `Delete this journal entry?\n\n${file.path}\n\nIt goes to the trash configured in Obsidian's settings.`,
-    );
-    if (!confirmed) return;
+    await this.flushSave(rendered);
 
+    let confirmed: boolean;
     try {
-      if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
-      rendered.editor?.destroy();
-      rendered.editor = null;
-
-      await this.plugin.repository.deleteEntry(file);
-      // The vault's "delete" event reaches JournalService, which emits a
-      // "removed" JournalChange that applyChangesNow routes to
-      // removeRenderedEntry — that's what actually clears the DOM and
-      // this.rendered/mountOrder/dayGroups for this path.
+      confirmed = await this.app.fileManager.promptForDeletion(file);
     } catch (error) {
       console.error("Journal Entries: could not delete entry", error);
       new Notice("Journal Entries: could not delete the entry.");
-      void this.mountEditor(rendered);
+      return;
     }
+    if (!confirmed) return;
+
+    if (rendered.saveHandle !== null) {
+      window.clearTimeout(rendered.saveHandle);
+      rendered.saveHandle = null;
+    }
+    rendered.el.addClass("is-deleting");
+    rendered.editor?.destroy();
+    rendered.editor = null;
+
+    window.setTimeout(() => {
+      if (this.rendered.get(file.path) !== rendered) return;
+      if (this.removeRenderedEntry(file.path)) this.removeEmptyDayGroups();
+    }, DELETE_FALLBACK_MS);
   }
 
   /**
@@ -1711,6 +1776,9 @@ export class JournalView extends ItemView {
     rendered.entry = { file, created };
     rendered.el.dataset.path = file.path;
     rendered.el.removeClass("journal-entry-composer");
+    // Reveal the actions button now that there's a file for it to act on
+    // (see createEntryEl's doc on why it starts hidden for the composer).
+    rendered.el.querySelector<HTMLElement>(".journal-entry-actions")?.removeClass("journal-entry-actions-pending");
     this.rendered.set(file.path, rendered);
     // savedBody starts matching exactly what createEntry just wrote;
     // resolveComposerContent's own persist (only invoked if typing outran

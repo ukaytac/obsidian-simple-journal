@@ -270,8 +270,4 @@ export class EntryRepository {
       return replaceBody(data, restoreSeparator(frontmatter, body));
     });
   }
-
-  async deleteEntry(file: TFile): Promise<void> {
-    await this.app.fileManager.trashFile(file);
-  }
 }

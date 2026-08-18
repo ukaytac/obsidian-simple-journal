@@ -59,9 +59,34 @@
   opacity: 1;
 }
 
+/* On a touch device there is no hover to reveal this on, and `contextmenu`
+   doesn't fire from a tap either — `opacity: 0` alone would leave the button
+   permanently invisible but still tappable, a tap hazard rather than a
+   hidden affordance. This is the fix for that hazard, not a mobile redesign:
+   long-press is Task 18's job. */
+@media (hover: none) {
+  .journal-entry-actions {
+    opacity: 1;
+  }
+}
+
+/* Hidden for the uncommitted composer, which has no file to act on yet (see
+   JournalView.createEntryEl/commitComposer). */
+.journal-entry-actions-pending {
+  display: none;
+}
+
 .journal-entry-menu-button {
   padding: 0 var(--size-2-2);
   height: var(--size-4-5);
+}
+
+/* Applied the moment deletion is confirmed (see JournalView.confirmDelete),
+   before the vault's own "delete" event has torn the row down for real —
+   dims it and blocks further interaction for however long that takes. */
+.journal-entry.is-deleting {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* Marks the open composer (see JournalView.openComposer) so it reads as
