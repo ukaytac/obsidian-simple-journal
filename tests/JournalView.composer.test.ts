@@ -303,4 +303,101 @@ describe("JournalView composer lifecycle", () => {
     const created = internals(h.view).rendered.get(path).entry.created as Date;
     expect(created.getTime()).toBe(originalCreated.getTime());
   });
+
+  /**
+   * Reproduces the user's reported symptom directly at the mechanism
+   * `reloadNow` exercises — `clearTimeline` then `reestablishComposer`, in
+   * that exact order — rather than through the full `reload()`/`onOpen()`
+   * pipeline: nothing in that pipeline exposes a controllable async gap
+   * between the moment `clearTimeline` snapshots the composer's focus state
+   * and the moment `reestablishComposer` re-checks focus before deciding
+   * whether to restore it, so orchestrating the race deterministically means
+   * driving both steps directly through `internals`. This is the same two
+   * calls `reloadNow` makes, in the same order — a faithful reproduction of
+   * the mechanism, not a literal end-to-end `reload()`/second-`onOpen()`
+   * trigger.
+   *
+   * This harness's fallback `TextareaEditor` has no CodeMirror instance to
+   * stand in for the `.cm-content` the user's real diagnostic trace found
+   * holding focus, so a plain `<textarea>` appended straight to
+   * `document.body` plays that role instead — something else, unrelated to
+   * the composer, that genuinely owns focus by the time the re-establish
+   * runs. That substitution is faithful enough to prove the *mechanism*
+   * (`preserveExternalFocus`'s "something else holds focus" check firing even
+   * though the composer itself was never abandoned) — it does not, and
+   * cannot, prove that a real embedded Markdown editor is what wins the race
+   * in the live app; only a real vault trace can show that.
+   */
+  it("REPRO: an explicit, never-typed-into composer loses the caret to whatever else holds focus once it is re-established", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    const composerBefore = internals(h.view).composer;
+    expect(composerBefore).not.toBeNull();
+    expect(composerBefore.editor.hasFocus()).toBe(true);
+    expect(internals(h.view).composerHasInput).toBe(false);
+
+    // `clearTimeline` snapshots the composer's focus state while it still
+    // genuinely has it — mirroring the real trace, where the composer was
+    // focused at the moment the reload started.
+    const snapshot = await internals(h.view).clearTimeline();
+    expect(snapshot).not.toBeNull();
+    expect(snapshot.hadFocus).toBe(true);
+
+    // Stand-in for "something else holds focus" by the time the rebuild's
+    // own awaits (flushing saves, loading a page) have let it happen — see
+    // this test's doc above for how faithful this substitution is.
+    const stealer = document.createElement("textarea");
+    document.body.appendChild(stealer);
+    stealer.focus();
+    expect(document.activeElement).toBe(stealer);
+
+    await internals(h.view).reestablishComposer(snapshot);
+
+    const composerAfter = internals(h.view).composer;
+    expect(composerAfter).not.toBeNull();
+    // The bug: an explicit, never-typed-into "New journal entry" request
+    // does not keep the caret across a reload that lands before the user's
+    // first keystroke.
+    expect(composerAfter.editor.hasFocus()).toBe(true);
+  });
+
+  /**
+   * The case `preserveExternalFocus` exists to protect, and which the fix
+   * above must not weaken: once the user has genuinely typed something into
+   * the composer, a re-establish must not yank focus away from wherever the
+   * user has since, deliberately, moved it.
+   */
+  it("does not yank focus back into a re-established composer that has been typed in and whose focus is genuinely elsewhere", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    // Whitespace only, deliberately (see the "abandoning" test above):
+    // `composerHasInput` is set on any change, meaningful or not, without
+    // crossing the commit threshold — so the composer is still open, still
+    // uncommitted, but has genuinely been typed into.
+    typeInto(composerTextarea(h.view), "   ");
+    expect(internals(h.view).composerHasInput).toBe(true);
+    expect(internals(h.view).composer).not.toBeNull();
+
+    const snapshot = await internals(h.view).clearTimeline();
+    expect(snapshot).not.toBeNull();
+    expect(snapshot.explicitPending).toBe(false);
+
+    // The user has since moved focus elsewhere, deliberately.
+    const stealer = document.createElement("textarea");
+    document.body.appendChild(stealer);
+    stealer.focus();
+
+    await internals(h.view).reestablishComposer(snapshot);
+
+    const composerAfter = internals(h.view).composer;
+    expect(composerAfter).not.toBeNull();
+    expect(composerAfter.editor.hasFocus()).toBe(false);
+    expect(document.activeElement).toBe(stealer);
+  });
 });

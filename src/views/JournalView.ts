@@ -170,6 +170,22 @@ interface ComposerSnapshot {
   value: string;
   hadFocus: boolean;
   created: Date;
+  /**
+   * Whether this composer was opened by an explicit "New journal entry"
+   * request (as opposed to one `reestablishComposer` itself put back) and
+   * has not yet received a single keystroke — distinct from `hadFocus`,
+   * which only says where the caret happened to be at the exact instant
+   * `clearTimeline` ran, not why. `reestablishComposer` uses this to keep the
+   * intent behind an explicit request alive across a rebuild: a composer the
+   * user just asked for, and has not typed into, still belongs to that
+   * request even if something else (another entry's editor mounting, e.g.)
+   * has since taken focus away from it in the interim — that is background
+   * churn, not the user moving on, and `preserveExternalFocus`'s "something
+   * else holds focus" guard exists to protect the latter, not the former
+   * (see `openComposer`'s use of this field). Always `false` once
+   * `composerHasInput` is `true`, regardless of how the composer was opened.
+   */
+  explicitPending: boolean;
 }
 
 export class JournalView extends ItemView {
@@ -297,6 +313,20 @@ export class JournalView extends ItemView {
    * `discardEmptyComposer` exists to clean up.
    */
   private composerHasInput = false;
+  /**
+   * Whether the currently open composer was opened by an explicit "New
+   * journal entry" request — `startNewEntry`'s own call to `openComposer`,
+   * or a `reestablishComposer` call that is itself carrying that same intent
+   * forward across a rebuild (see `ComposerSnapshot.explicitPending`) — as
+   * opposed to one restored purely because it already held meaningful text
+   * or focus for some other reason. Combined with `composerHasInput` (see
+   * `ComposerSnapshot.explicitPending`'s doc) to decide whether a re-establish
+   * may still claim focus even though something else currently holds it.
+   * Set on every `openComposer` call, fresh or restored — never mutated
+   * afterwards; whether it still "counts" as pending is always computed
+   * together with `composerHasInput` at the point something needs to know.
+   */
+  private composerExplicitRequest = false;
   /**
    * Resolves when `onOpen`'s first `reload()` has finished. Awaited by
    * `startNewEntry` so a composer is never enqueued ahead of the load that
@@ -534,9 +564,15 @@ export class JournalView extends ItemView {
 
     await this.openComposer({
       initialValue: snapshot.value,
-      focus: snapshot.hadFocus,
+      // An explicit, never-typed-into request still wants the caret even if
+      // it had already lost focus to background churn (another entry's
+      // editor mounting, e.g.) by the exact instant `clearTimeline` ran —
+      // `hadFocus` alone would otherwise treat that churn the same as the
+      // user genuinely having moved on. See `explicitPending`'s doc.
+      focus: snapshot.hadFocus || snapshot.explicitPending,
       preserveExternalFocus: true,
       created: snapshot.created,
+      explicitRequest: snapshot.explicitPending,
     });
 
     // Closed while `openComposer`'s own promise settled: it never awaits
@@ -643,6 +679,7 @@ export class JournalView extends ItemView {
         value: this.composer.editor?.getValue() ?? "",
         hadFocus: this.composer.editor?.hasFocus() ?? false,
         created: this.composer.entry.created,
+        explicitPending: this.composerExplicitRequest && !this.composerHasInput,
       };
 
       this.clearMobileTimers(this.composer);
@@ -666,6 +703,11 @@ export class JournalView extends ItemView {
         value: pending.editor?.getValue() ?? "",
         hadFocus: pending.editor?.hasFocus() ?? false,
         created: pending.entry.created,
+        // A claim in flight only ever happens once a keystroke has already
+        // made the text meaningful (see `onComposerInput`) — always past
+        // `composerHasInput`, so this is always `false` here. Spelled out
+        // rather than hardcoded so this stays correct if that ever changes.
+        explicitPending: this.composerExplicitRequest && !this.composerHasInput,
       };
 
       this.clearMobileTimers(pending);
@@ -2498,13 +2540,14 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * `initialValue`/`focus`/`preserveExternalFocus`/`created` are used only
-   * by `reestablishComposer`, to put a composer a reload just tore down (or
-   * a keystroke had already claimed but not yet committed) back with the
-   * text, focus state, and creation time it had. `startNewEntry` always
-   * calls this with the defaults — an empty, focused composer created now,
-   * for a genuinely new entry the user just explicitly asked for, which
-   * always takes focus regardless of `preserveExternalFocus`.
+   * `initialValue`/`focus`/`preserveExternalFocus`/`created`/`explicitRequest`
+   * are used only by `reestablishComposer`, to put a composer a reload just
+   * tore down (or a keystroke had already claimed but not yet committed)
+   * back with the text, focus state, creation time, and explicit-request
+   * status it had. `startNewEntry` always calls this with the defaults — an
+   * empty, focused composer created now, for a genuinely new entry the user
+   * just explicitly asked for, which always takes focus regardless of
+   * `preserveExternalFocus`.
    */
   private async openComposer(
     options: {
@@ -2512,6 +2555,16 @@ export class JournalView extends ItemView {
       focus?: boolean;
       preserveExternalFocus?: boolean;
       created?: Date;
+      /**
+       * Whether this composer is opened for (or on behalf of) an explicit
+       * "New journal entry" request that has not yet been typed into — see
+       * `ComposerSnapshot.explicitPending`. Defaults to `true`: an ordinary
+       * `startNewEntry` call, with no options, is exactly that request.
+       * `reestablishComposer` passes the snapshot's own value instead, so
+       * the intent survives however many rebuilds happen before the first
+       * keystroke.
+       */
+      explicitRequest?: boolean;
     } = {},
   ): Promise<void> {
     // TEMPORARY TRACE — see the command callback in main.ts.
@@ -2530,7 +2583,13 @@ export class JournalView extends ItemView {
       return;
     }
 
-    const { initialValue = "", focus = true, preserveExternalFocus = false, created = new Date() } = options;
+    const {
+      initialValue = "",
+      focus = true,
+      preserveExternalFocus = false,
+      created = new Date(),
+      explicitRequest = true,
+    } = options;
 
     // Same reasoning as insertEntryInPlace: the empty-state message is only
     // ever present when nothing is rendered yet, and this is the only other
@@ -2583,6 +2642,7 @@ export class JournalView extends ItemView {
     // command looks like it merely opened the journal.
     this.composerEverFocused = false;
     this.composerHasInput = false;
+    this.composerExplicitRequest = explicitRequest;
     rendered.bodyEl.addEventListener("focusin", () => {
       this.composerEverFocused = true;
     });
@@ -2616,7 +2676,14 @@ export class JournalView extends ItemView {
     // invocation never sets this, and always takes focus.
     if (preserveExternalFocus) {
       const activeEl = this.contentEl.doc.activeElement;
-      if (activeEl !== null && activeEl !== this.contentEl.doc.body) return;
+      const somethingElseFocused = activeEl !== null && activeEl !== this.contentEl.doc.body;
+      // An explicit "New journal entry" request that has not been typed
+      // into yet keeps its claim on the caret even across a rebuild that
+      // lands before the user's first keystroke — `preserveExternalFocus`
+      // exists to protect a composer the user has genuinely moved away
+      // from (see `ComposerSnapshot.explicitPending`'s doc), which is a
+      // different situation from one nobody has touched at all.
+      if (somethingElseFocused && !explicitRequest) return;
     }
 
     this.scrollToTop();
@@ -2650,11 +2717,34 @@ export class JournalView extends ItemView {
     // contentEl.win, not the global window: in a popout leaf the view lives in
     // its own window, and that is the one whose frames matter here.
     const deadline = Date.now() + COMPOSER_FOCUS_CLAIM_MS;
+    // Mutable, not the original `rendered`/`editor` consts: a reload landing
+    // mid-claim (`clearTimeline` then `reestablishComposer`, both reachable
+    // while this loop is still inside its deadline) tears this exact
+    // `rendered` down and builds a new one. Without following that
+    // replacement, the check below would see `this.composer !== rendered`
+    // forever and this loop would just stop — silently losing the claim
+    // rather than either winning it or genuinely being superseded. A fresh
+    // composer built while `explicitRequest` is still pending already starts
+    // its own claim loop from `editor.focus()` above in that same call, so
+    // this hand-off is only ever load-bearing for the cases that loop didn't
+    // start one for itself (e.g. it was suppressed by `preserveExternalFocus`
+    // for a genuinely-abandoned composer, in which case following it below
+    // finds `this.composerHasInput` true, or the composer, and bails
+    // immediately anyway).
+    let claimedRendered = rendered;
+    let claimedEditor: EntryEditor = editor;
     const claimFocus = () => {
-      if (this.composer !== rendered || this.closed) return;
-      if (this.composerHasInput || editor.hasFocus()) return;
+      if (this.closed) return;
+      const current = this.composer;
+      if (current === null) return;
+      if (current !== claimedRendered) {
+        if (!current.editor) return;
+        claimedRendered = current;
+        claimedEditor = current.editor;
+      }
+      if (this.composerHasInput || claimedEditor.hasFocus()) return;
 
-      editor.focus();
+      claimedEditor.focus();
 
       if (Date.now() < deadline) this.contentEl.win.requestAnimationFrame(claimFocus);
     };
