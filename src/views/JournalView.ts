@@ -35,6 +35,15 @@ export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
 const PAGE_SIZE = 40;
 
 /**
+ * How long `openComposer` keeps re-claiming focus for a freshly opened
+ * composer. Long enough to outlast the initial mount of the loaded entries'
+ * editors, each of which can take focus as Obsidian builds it; short enough
+ * that it is over well before a user could deliberately click elsewhere and
+ * be surprised by the caret moving back.
+ */
+const COMPOSER_FOCUS_CLAIM_MS = 400;
+
+/**
  * Backstop cap on simultaneously mounted editors. The primary mechanism that
  * keeps the mounted set bounded is `mountObserver` reacting to entries
  * entering/leaving the viewport (see `installMountObserver`); this only binds
@@ -2613,15 +2622,44 @@ export class JournalView extends ItemView {
     this.scrollToTop();
     editor.focus();
 
-    // If activation took the focus back before it landed, ask once more on the
-    // next frame. Bounded to a single retry so this can never fight a user who
-    // deliberately clicked away.
+    // Opening the journal to capture an entry activates a freshly created leaf,
+    // and Obsidian takes focus for itself somewhere after `revealLeaf` has
+    // already resolved — so the `focus()` above lands and is then taken away,
+    // leaving the composer visible with the caret somewhere else entirely.
+    //
+    // The condition has to be "is it focused right now", not "was it ever
+    // focused": the earlier version asked the latter, so a focus that landed
+    // and was immediately stolen looked like success and no retry ran. That is
+    // the same wrong question that made the blur-discard fire — see
+    // `discardEmptyComposer`.
+    //
+    // Bounded by a deadline rather than a frame count, because the competitor
+    // is not only leaf activation. A diagnostic run put the caret in a
+    // `.cm-content` — a CodeMirror instance — while the composer sat visible
+    // and unfocused, and the most likely owner is one of the timeline's own
+    // embedded editors: `ObsidianEmbedEditor.mount` calls the embed's
+    // `showEditor()`, and Obsidian focuses the editor it builds. Those mount
+    // one per loaded entry, fire-and-forget, so how many frames they span is
+    // not ours to predict and a fixed attempt count can simply run out.
+    //
+    // Each attempt re-checks, so the retries stop the moment focus is
+    // genuinely ours; input stops them too, so this can never fight a user who
+    // clicked away and started typing somewhere else. The deadline is what
+    // stops it fighting anything else indefinitely.
+    //
     // contentEl.win, not the global window: in a popout leaf the view lives in
     // its own window, and that is the one whose frames matter here.
-    this.contentEl.win.requestAnimationFrame(() => {
-      if (this.composer !== rendered || this.composerEverFocused) return;
-      if (!isMeaningful(editor.getValue())) editor.focus();
-    });
+    const deadline = Date.now() + COMPOSER_FOCUS_CLAIM_MS;
+    const claimFocus = () => {
+      if (this.composer !== rendered || this.closed) return;
+      if (this.composerHasInput || editor.hasFocus()) return;
+
+      editor.focus();
+
+      if (Date.now() < deadline) this.contentEl.win.requestAnimationFrame(claimFocus);
+    };
+
+    this.contentEl.win.requestAnimationFrame(claimFocus);
   }
 
   /**
