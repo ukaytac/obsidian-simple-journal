@@ -114,6 +114,34 @@ mostly cosmetic by comparison.
       cover it. Long-press an entry: the actions menu opens. Scroll: older
       entries load.
 
+## Calendar — needs a running Obsidian, a device, or a screen reader
+
+None of this is settleable from source, and `CalendarView` has no DOM test
+harness (only `calendarGrid.ts` is unit tested), so nothing below is
+regression-guarded.
+
+- [ ] **A hovered empty day paints nothing.** Move the pointer over a day with
+      no dot. No background highlight, no cursor change, no outline. (The rule
+      that suppresses it is inert if Electron never painted the highlight in
+      the first place, so this costs nothing either way — it is worth knowing
+      which.)
+- [ ] **Keyboard focus is visible.** Tab into the calendar. Only days with dots
+      receive focus, and each shows a clear ring.
+- [ ] **Windows high contrast.** With forced-colors active, a focused day still
+      shows an outline rather than nothing.
+- [ ] **A community theme does not restore the chip.** With a theme active,
+      day cells still read as plain numbers at rest and on hover. If one paints
+      through, its hover rule outranks ours and the fix is a scoped
+      `!important` inside `.journal-calendar-days`.
+- [ ] **Screen reader.** With VoiceOver or NVDA: an enabled day reads as its
+      full date plus "has entries. Open in journal."; a disabled day reads as
+      its full date plus "no entries"; today additionally reads as the current
+      date. Check a disabled day in browse or rotor mode, not only via Tab —
+      that is the path that skips it.
+- [ ] **Tap targets on a phone.** Day cells land near 50px square in a
+      phone-width sidebar. Confirm they are comfortable, and that tapping an
+      empty day does nothing at all rather than flashing.
+
 ## Coverage against CLAUDE.md's 21 testing priorities
 
 | # | Case | Automated | Manual |

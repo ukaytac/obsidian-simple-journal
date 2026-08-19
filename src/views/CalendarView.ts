@@ -162,26 +162,29 @@ export class CalendarView extends ItemView {
       if (isToday) dayEl.setAttribute("aria-current", "date");
 
       // A bare day number reads to a screen reader as just "12, button" —
-      // no month, no year, no sense of what activating it does. Only
-      // enabled (has-entries) cells get a label: disabled cells are already
-      // skipped in the tab order, so there is nothing useful to add for
-      // them, and inventing an entry count here would claim precision
-      // `entryDaysInMonth` (a Set of day keys) doesn't have — it only knows
-      // a day has *something*, not how many. Set directly via `aria-label`
-      // rather than `setTooltip` (contrast the `.journal-entry-time`
-      // pattern in JournalView): that button's tooltip is itself a useful
-      // discoverability hint for a single control, but a hover tooltip
-      // firing on every one of up to 31 grid buttons would be exactly the
-      // "visible chrome" this fix is meant to avoid adding.
-      if (hasEntries) {
-        const fullDate = cell.toLocaleDateString("en-US", {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        });
-        dayEl.setAttribute("aria-label", `${fullDate}, has entries. Open in journal.`);
-      }
+      // no month, no year, no sense of what activating it does. Both enabled
+      // and disabled cells are labelled: the tab order skips the disabled
+      // ones, but VoiceOver and NVDA still read them in browse and rotor
+      // mode, where "19, button, unavailable" is just as uninformative.
+      //
+      // Neither label claims an entry count: `entryDaysInMonth` returns a Set
+      // of day keys and knows only that a day has *something*, not how many.
+      //
+      // Set directly via `aria-label` rather than `setTooltip` (contrast the
+      // `.journal-entry-time` pattern in JournalView): that button's tooltip
+      // is itself a useful discoverability hint for a single control, but a
+      // hover tooltip firing on every one of up to 31 grid buttons would be
+      // exactly the "visible chrome" this fix is meant to avoid adding.
+      const fullDate = cell.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+      dayEl.setAttribute(
+        "aria-label",
+        hasEntries ? `${fullDate}, has entries. Open in journal.` : `${fullDate}, no entries.`,
+      );
 
       dayEl.createDiv({ cls: "journal-calendar-day-number", text: String(cell.getDate()) });
       // Always present, not conditionally created — an entryless day's dot
