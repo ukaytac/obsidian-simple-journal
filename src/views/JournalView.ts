@@ -211,6 +211,14 @@ export class JournalView extends ItemView {
    * before the first focus must not count as abandonment.
    */
   private composerEverFocused = false;
+  /**
+   * Resolves when `onOpen`'s first `reload()` has finished. Awaited by
+   * `startNewEntry` so a composer is never enqueued ahead of the load that
+   * would tear it down. Starts resolved so anything reaching it before
+   * `onOpen` has run does not hang — that path cannot produce a usable
+   * composer anyway, since `timelineEl` does not exist yet.
+   */
+  private initialLoad: Promise<void> = Promise.resolve();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -247,7 +255,15 @@ export class JournalView extends ItemView {
     // change can reach `applyChange` once torn down, short of the race
     // `closed` itself guards against.
     this.register(this.plugin.journal.onChange((changes) => this.applyChanges(changes)));
-    await this.reload();
+
+    // Recorded so `startNewEntry` can wait for it. `setViewState` does not
+    // guarantee this method has run, let alone finished, by the time it
+    // resolves — so "open the journal, then start an entry" could otherwise
+    // enqueue the composer *before* this first reload, and `clearTimeline`
+    // would then tear the composer down as part of building the timeline the
+    // composer was supposed to sit on top of.
+    this.initialLoad = this.reload();
+    await this.initialLoad;
   }
 
   async onClose(): Promise<void> {
@@ -392,6 +408,17 @@ export class JournalView extends ItemView {
       // now leaves — see `logUnsavedTextIfLost`'s doc on why it also covers
       // this case.
       this.logUnsavedTextIfLost(this.composer);
+
+      // `logUnsavedTextIfLost` stays quiet for an *empty* composer, which is
+      // exactly the case that made "open the journal and start an entry" look
+      // like it only opened the journal: the composer was built, then swept
+      // away by this teardown, with nothing anywhere saying so. `initialLoad`
+      // closes the ordering hole that caused it; this line is how we find out
+      // if some other path still reaches here with a composer open.
+      if (!isMeaningful(this.composer.editor?.getValue() ?? "")) {
+        console.debug("Journal Entries: discarded an open, empty composer while rebuilding the timeline");
+      }
+
       this.clearMobileTimers(this.composer);
       this.composer.editor?.destroy();
       this.composer = null;
@@ -2504,6 +2531,16 @@ export class JournalView extends ItemView {
    * while one is up.
    */
   async startNewEntry(): Promise<void> {
+    // The first load has to finish before a composer is worth opening. When
+    // this is reached straight out of `openJournal` — the hotkey pressed from
+    // some other note — `onOpen`'s reload may not be on the mutation chain
+    // yet, and a composer enqueued ahead of it gets destroyed by that
+    // reload's `clearTimeline`. The journal then opens with no composer,
+    // which reads as the command having done nothing but open the tab.
+    await this.initialLoad;
+
+    if (this.closed) return;
+
     if (this.composer) {
       this.composer.editor?.focus();
       this.scrollToTop();
