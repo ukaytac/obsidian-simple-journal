@@ -57,7 +57,13 @@
    explicit `:hover` entry below rather than relying on the base rule's
    specificity alone to also win the hover case. */
 .journal-entry-header .journal-entry-time,
-.journal-entry-header .journal-entry-time:hover {
+.journal-entry-header .journal-entry-time:hover,
+/* Obsidian tags whatever the user is pressing on a touch device with
+   `mobile-tap`, and its `button:not(.clickable-icon).mobile-tap` rule is a
+   class ahead of the base reset — so without this, every tap on the timestamp
+   flashes the filled chip back for the duration of the press. The `...` button
+   escapes it by being a `.clickable-icon`; this one has to say so. */
+.journal-entry-header .journal-entry-time.mobile-tap {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -73,6 +79,21 @@
   font-family: inherit;
   line-height: inherit;
   cursor: pointer;
+  /* Obsidian's button base sets `user-select: none`, which the reset above
+     does not clear. Leaving it would make the timestamp the one piece of text
+     in an entry a reader cannot select — a regression from the plain span this
+     replaced. */
+  user-select: text;
+}
+
+/* The focus ring below is a box-shadow, which forced-colors mode discards
+   along with all author colours, and Obsidian's button base sets
+   `outline: none`. Without this, a high-contrast user gets no focus indicator
+   at all. */
+@media (forced-colors: active) {
+  .journal-entry-header .journal-entry-time:focus-visible {
+    outline: 2px solid ButtonText;
+  }
 }
 
 .journal-entry-header .journal-entry-time:hover,
@@ -314,6 +335,14 @@
 .is-mobile .journal-entry-header .journal-entry-time {
   padding: var(--size-4-2) 0;
   margin: calc(-1 * var(--size-4-2)) 0;
+  /* The padding box overflows the header in both directions. Upward it lands in
+     the previous entry's margin, which hit-tests to nothing, so it works.
+     Downward it lands over `.journal-entry-body` — a later, full-width sibling
+     that would otherwise win hit-testing and swallow half the tap target,
+     leaving roughly 24px of the intended 40. Stacking above it restores the
+     whole area. */
+  position: relative;
+  z-index: 1;
 }
 
 /* Now that long-press opens the same menu (see JournalView.createEntryEl),
