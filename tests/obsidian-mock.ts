@@ -48,6 +48,8 @@ export interface FakeEventRef {
 
 export class Component {
   private registeredEvents: FakeEventRef[] = [];
+  /** Callbacks registered via `register()`, run (in order) on `unload()`. */
+  private unloadCallbacks: Array<() => void> = [];
 
   onload(): void {}
   onunload(): void {}
@@ -67,9 +69,23 @@ export class Component {
     this.onunload();
     for (const ref of this.registeredEvents) ref.unregister();
     this.registeredEvents = [];
+    for (const cb of this.unloadCallbacks) cb();
+    this.unloadCallbacks = [];
   }
   registerEvent(ref: FakeEventRef): void {
     this.registeredEvents.push(ref);
+  }
+  /** Registers a plain callback to run once, on `unload()`. */
+  register(cb: () => void): void {
+    this.unloadCallbacks.push(cb);
+  }
+  addChild<T extends Component>(component: T): T {
+    component.load();
+    return component;
+  }
+  removeChild<T extends Component>(component: T): T {
+    component.unload();
+    return component;
   }
 }
 
@@ -296,9 +312,432 @@ export function createFakeApp(): {
 
 export class App {}
 export class Plugin {}
-export class ItemView {}
 export class PluginSettingTab {}
 export class Setting {}
-export class Menu {}
-export class MarkdownRenderer {}
-export class WorkspaceLeaf {}
+
+/**
+ * Minimal stand-in for Obsidian's `Modal`. Not exercised directly by any
+ * test in `tests/JournalView.*.test.ts` (nothing there opens
+ * `ChangeEntryTimeModal`) — this only needs to exist so `class ... extends
+ * Modal` resolves to a real constructor when `JournalView.ts`'s import
+ * graph pulls `ChangeEntryTimeModal` in.
+ */
+export class Modal {
+  contentEl: HTMLElement;
+  titleEl: HTMLElement;
+
+  constructor(public app?: unknown) {
+    this.contentEl = document.createElement("div");
+    this.titleEl = document.createElement("div");
+  }
+  setTitle(title: string): this {
+    this.titleEl.textContent = title;
+    return this;
+  }
+  open(): void {
+    this.onOpen();
+  }
+  close(): void {
+    this.onClose();
+  }
+  onOpen(): void {}
+  onClose(): void {}
+}
+
+/**
+ * Minimal stand-in for Obsidian's `WorkspaceLeaf`. Real Obsidian hands a leaf
+ * to a registered view's constructor and the view reads `app`/other state
+ * off it during construction (see `ItemView` below) — `app` is exposed here
+ * for exactly that, and nothing else on the real leaf's much larger surface
+ * is used by anything this mock supports.
+ */
+export class WorkspaceLeaf {
+  view: unknown = null;
+  constructor(public app?: unknown) {}
+}
+
+/**
+ * Faithful-enough stand-in for `ItemView`/`View`: real fields (`app`, `leaf`,
+ * `containerEl`, `contentEl`) plus `addAction`, so a concrete subclass
+ * (`JournalView`) can be constructed and driven under jsdom. Real Obsidian's
+ * `containerEl` holds a `view-header` and a `view-content` (whose child is
+ * `contentEl`); only `contentEl` itself is modeled here since nothing under
+ * test reads the header.
+ *
+ * Extends `Component` so `this.register(...)`/`this.registerEvent(...)`
+ * (used by `JournalView.onOpen`) work exactly as they do for every other
+ * `Component` in these tests.
+ */
+export class ItemView extends Component {
+  app: unknown;
+  leaf: WorkspaceLeaf;
+  containerEl: HTMLElement;
+  contentEl: HTMLElement;
+
+  constructor(leaf: WorkspaceLeaf) {
+    super();
+    this.leaf = leaf;
+    this.app = leaf.app;
+    this.containerEl = document.createElement("div");
+    this.containerEl.className = "workspace-leaf-content";
+    this.contentEl = document.createElement("div");
+    this.containerEl.appendChild(this.contentEl);
+    // Real Obsidian's containerEl is always attached to the live document;
+    // JournalView never checks `isConnected` today, but attaching here keeps
+    // this mock honest for any future test that does.
+    document.body.appendChild(this.containerEl);
+  }
+
+  /** @since 1.1.0 */
+  addAction(icon: string, title: string, callback: (evt: MouseEvent) => unknown): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "view-action";
+    el.dataset.icon = icon;
+    el.setAttribute("aria-label", title);
+    el.addEventListener("click", callback as (evt: MouseEvent) => void);
+    this.containerEl.appendChild(el);
+    return el;
+  }
+
+  /** `@since 0.9.7`. A no-op here; tests call it directly when they need it. */
+  onResize(): void {}
+}
+
+/** Builder handed to a `Menu.addItem` callback. */
+export class FakeMenuItem {
+  title = "";
+  icon: string | undefined;
+  disabled = false;
+  private clickHandler: (() => void) | null = null;
+
+  setTitle(title: string): this {
+    this.title = title;
+    return this;
+  }
+  setIcon(icon: string): this {
+    this.icon = icon;
+    return this;
+  }
+  setDisabled(disabled: boolean): this {
+    this.disabled = disabled;
+    return this;
+  }
+  onClick(callback: () => void): this {
+    this.clickHandler = callback;
+    return this;
+  }
+  /** Test-only: fires whatever `onClick` registered, if anything. */
+  click(): void {
+    this.clickHandler?.();
+  }
+}
+
+/**
+ * Minimal stand-in for Obsidian's `Menu`. Records every item added via
+ * `addItem` (rather than actually rendering a floating menu, which jsdom has
+ * no layout for) so a test can find and click one directly through
+ * `findItem`/`FakeMenuItem.click()` — e.g. to exercise "Delete entry" without
+ * a real mouse event ever reaching real screen coordinates.
+ */
+export class Menu {
+  items: FakeMenuItem[] = [];
+  shown = false;
+
+  addItem(builder: (item: FakeMenuItem) => void): this {
+    const item = new FakeMenuItem();
+    builder(item);
+    this.items.push(item);
+    return this;
+  }
+  addSeparator(): this {
+    return this;
+  }
+  showAtMouseEvent(_event: MouseEvent): this {
+    this.shown = true;
+    return this;
+  }
+  showAtPosition(_position: { x: number; y: number }): this {
+    this.shown = true;
+    return this;
+  }
+  /** Test-only convenience: the first item whose title matches exactly. */
+  findItem(title: string): FakeMenuItem | undefined {
+    return this.items.find((item) => item.title === title);
+  }
+}
+
+/**
+ * Stand-in for Obsidian's `ButtonComponent`. Real Obsidian's constructor
+ * creates a `<button>` and appends it to `containerEl`; the fluent setters
+ * below cover exactly what `JournalView.createEntryEl` calls.
+ */
+export class ButtonComponent {
+  buttonEl: HTMLButtonElement;
+
+  constructor(containerEl: HTMLElement) {
+    this.buttonEl = document.createElement("button");
+    containerEl.appendChild(this.buttonEl);
+  }
+  setIcon(icon: string): this {
+    this.buttonEl.dataset.icon = icon;
+    return this;
+  }
+  setTooltip(text: string): this {
+    setTooltip(this.buttonEl, text);
+    return this;
+  }
+  setClass(cls: string): this {
+    this.buttonEl.classList.add(cls);
+    return this;
+  }
+  setDisabled(disabled: boolean): this {
+    this.buttonEl.disabled = disabled;
+    return this;
+  }
+  onClick(callback: (evt: MouseEvent) => unknown): this {
+    this.buttonEl.addEventListener("click", callback as (evt: MouseEvent) => void);
+    return this;
+  }
+}
+
+/**
+ * Sets the accessible tooltip Obsidian's real `setTooltip` installs. Real
+ * Obsidian shows this on hover via its own floating-UI popover, which jsdom
+ * cannot render; `aria-label` is what every test actually needs to assert
+ * against (e.g. `createEntryEl`'s time button), so that's what this sets.
+ */
+export function setTooltip(
+  el: HTMLElement,
+  text: string,
+  _options?: { placement?: string; delay?: number },
+): void {
+  el.setAttribute("aria-label", text);
+}
+
+/**
+ * Stand-in for Obsidian's `MarkdownRenderer.render`. Real rendering produces
+ * fully-formatted HTML (lists, embeds, callouts, ...); this mock cannot and
+ * does not attempt that — it only proves `renderStatic` reached this call
+ * with the right text and that `el` ends up populated, which is all the
+ * render-order/paging/reconciliation tests in `tests/JournalView.*.test.ts`
+ * need. Markdown *fidelity* is explicitly NOT something this lets a test
+ * assert.
+ */
+export class MarkdownRenderer {
+  static async render(
+    _app: unknown,
+    markdown: string,
+    el: HTMLElement,
+    _sourcePath: string,
+    _component: unknown,
+  ): Promise<void> {
+    el.textContent = markdown;
+  }
+}
+
+/** `Platform.isMobile` is read once, at `JournalView`'s module load, so
+ * flipping this after import has no effect on that module's own top-level
+ * constants (`MAX_MOUNTED_EDITORS`, `MOUNT_ROOT_MARGIN`) — only on any code
+ * that reads `Platform.isMobile` itself, live, elsewhere. */
+export const Platform = { isMobile: false };
+
+type DomElementInfo = {
+  cls?: string | string[];
+  text?: string;
+  attr?: Record<string, string | number | boolean | null>;
+  title?: string;
+  parent?: Node;
+  prepend?: boolean;
+};
+
+function applyDomElementInfo(el: HTMLElement, info?: DomElementInfo | string): void {
+  if (!info) return;
+  if (typeof info === "string") {
+    for (const cls of info.split(" ").filter(Boolean)) el.classList.add(cls);
+    return;
+  }
+  if (info.cls) {
+    const classes = Array.isArray(info.cls) ? info.cls : info.cls.split(" ").filter(Boolean);
+    for (const cls of classes) el.classList.add(cls);
+  }
+  if (info.text !== undefined) el.textContent = info.text;
+  if (info.title !== undefined) el.setAttribute("title", info.title);
+  if (info.attr) {
+    for (const [key, value] of Object.entries(info.attr)) {
+      if (value === null || value === undefined) continue;
+      if (typeof value === "boolean") {
+        if (value) el.setAttribute(key, "");
+      } else {
+        el.setAttribute(key, String(value));
+      }
+    }
+  }
+  if (info.parent instanceof HTMLElement) {
+    if (info.prepend) info.parent.prepend(el);
+    else info.parent.appendChild(el);
+  }
+}
+
+/**
+ * Installs the subset of Obsidian's runtime DOM patches (`obsidian.d.ts`'s
+ * global `Node`/`Element`/`HTMLElement` augmentations, plus the bare global
+ * `createDiv`/`createSpan`/`createEl` functions) that `JournalView` actually
+ * calls, onto a jsdom window. Plain jsdom has none of these — Obsidian
+ * installs them at runtime onto the real browser's prototypes.
+ *
+ * Deliberately narrower than a full re-implementation of every method
+ * `obsidian.d.ts` declares (`show`/`hide`/`matchParent`/`getCssPropertyValue`/
+ * ...) — only what `JournalView.ts` itself uses. Safe to call more than once
+ * per test file (each assignment is idempotent) and safe to call from a
+ * module that is also loaded under a plain Node environment, since nothing
+ * here runs until this function is actually invoked (never at module
+ * evaluation time).
+ */
+export function installDomHelpers(win: Window & typeof globalThis): void {
+  const nodeProto = win.Node.prototype as unknown as Record<string, unknown>;
+  const elementProto = win.Element.prototype as unknown as Record<string, unknown>;
+
+  Object.defineProperty(win.Node.prototype, "doc", {
+    configurable: true,
+    get(this: Node): Document {
+      return this.ownerDocument ?? win.document;
+    },
+  });
+  Object.defineProperty(win.Node.prototype, "win", {
+    configurable: true,
+    get(this: Node): Window {
+      return (this.ownerDocument?.defaultView as Window | null) ?? win;
+    },
+  });
+
+  function createElImpl(
+    this: HTMLElement,
+    tag: string,
+    info?: DomElementInfo | string,
+  ): HTMLElement {
+    const child = this.ownerDocument.createElement(tag);
+    applyDomElementInfo(child, info);
+    this.appendChild(child);
+    return child;
+  }
+  nodeProto.createEl = createElImpl;
+  nodeProto.createDiv = function (this: HTMLElement, info?: DomElementInfo | string): HTMLElement {
+    return createElImpl.call(this, "div", info);
+  };
+  nodeProto.createSpan = function (this: HTMLElement, info?: DomElementInfo | string): HTMLElement {
+    return createElImpl.call(this, "span", info);
+  };
+
+  elementProto.empty = function (this: Element): void {
+    while (this.firstChild) this.removeChild(this.firstChild);
+  };
+  elementProto.addClass = function (this: Element, ...classes: string[]): void {
+    this.classList.add(...classes);
+  };
+  elementProto.removeClass = function (this: Element, ...classes: string[]): void {
+    this.classList.remove(...classes);
+  };
+  elementProto.hasClass = function (this: Element, cls: string): boolean {
+    return this.classList.contains(cls);
+  };
+  elementProto.toggleClass = function (this: Element, classes: string | string[], value: boolean): void {
+    for (const cls of Array.isArray(classes) ? classes : [classes]) this.classList.toggle(cls, value);
+  };
+  elementProto.setText = function (this: Element, value: string): void {
+    this.textContent = value;
+  };
+  // jsdom has no layout engine, so it implements neither of these — both are
+  // no-ops here, same as they effectively are in a headless CI browser with
+  // nothing to actually scroll.
+  if (typeof elementProto.scrollTo !== "function") {
+    elementProto.scrollTo = function (): void {};
+  }
+  if (typeof elementProto.scrollIntoView !== "function") {
+    elementProto.scrollIntoView = function (): void {};
+  }
+
+  const globalScope = win as unknown as Record<string, unknown>;
+  globalScope.createDiv = (info?: DomElementInfo | string): HTMLElement => {
+    const el = win.document.createElement("div");
+    applyDomElementInfo(el, info);
+    return el;
+  };
+  globalScope.createSpan = (info?: DomElementInfo | string): HTMLElement => {
+    const el = win.document.createElement("span");
+    applyDomElementInfo(el, info);
+    return el;
+  };
+  globalScope.createEl = (tag: string, info?: DomElementInfo | string): HTMLElement => {
+    const el = win.document.createElement(tag);
+    applyDomElementInfo(el, info);
+    return el;
+  };
+
+  globalScope.IntersectionObserver = FakeIntersectionObserver;
+}
+
+/**
+ * Fabricated intersection-observer entry, just enough of the real
+ * `IntersectionObserverEntry` shape for `JournalView`'s two observer
+ * callbacks (`mountObserver`, the paging `observer`) to read `target` and
+ * `isIntersecting` off it.
+ */
+export interface FakeIntersectionObserverEntry {
+  target: Element;
+  isIntersecting: boolean;
+}
+
+/**
+ * Stand-in for the browser's `IntersectionObserver`, which plain jsdom does
+ * not implement at all (no layout engine to drive real intersection
+ * geometry). Real intersection — actual scroll position, actual element
+ * bounds — is NOT modeled or claimed here: this only records which elements
+ * are currently `observe()`d and lets a test fire a fabricated intersection
+ * transition for any of them via `trigger()`. What a test using this can
+ * prove is "given this intersection event, `JournalView` reacts correctly";
+ * it cannot prove that the right real-world scroll position produces that
+ * event in the first place — that remains a manual/real-browser concern.
+ */
+export class FakeIntersectionObserver implements Pick<IntersectionObserver, "observe" | "unobserve" | "disconnect" | "takeRecords" | "root" | "rootMargin" | "thresholds"> {
+  readonly root: Element | Document | null;
+  readonly rootMargin: string;
+  readonly thresholds: ReadonlyArray<number>;
+  observed = new Set<Element>();
+
+  constructor(
+    private readonly callback: IntersectionObserverCallback,
+    options?: IntersectionObserverInit,
+  ) {
+    this.root = (options?.root as Element | Document | null | undefined) ?? null;
+    this.rootMargin = options?.rootMargin ?? "0px";
+    const threshold = options?.threshold ?? 0;
+    this.thresholds = Array.isArray(threshold) ? threshold : [threshold];
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+  disconnect(): void {
+    this.observed.clear();
+  }
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+
+  /** Test-only: delivers a fabricated intersection transition for `states`. */
+  trigger(states: FakeIntersectionObserverEntry[]): void {
+    const entries = states.map(({ target, isIntersecting }) => ({
+      target,
+      isIntersecting,
+      intersectionRatio: isIntersecting ? 1 : 0,
+      boundingClientRect: target.getBoundingClientRect(),
+      intersectionRect: target.getBoundingClientRect(),
+      rootBounds: null,
+      time: Date.now(),
+    })) as unknown as IntersectionObserverEntry[];
+    this.callback(entries, this as unknown as IntersectionObserver);
+  }
+}
