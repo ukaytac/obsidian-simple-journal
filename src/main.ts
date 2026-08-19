@@ -49,7 +49,13 @@ export default class JournalEntriesPlugin extends Plugin {
     this.addCommand({
       id: "new-journal-entry",
       name: "New journal entry",
-      callback: () => void this.newEntry(),
+      callback: () => {
+        // TEMPORARY TRACE — the composer bug has now survived three fixes and
+        // two rounds of the user testing by hand. Logging starts at the
+        // command itself so "did this even fire" is answered first.
+        console.log("[JE] command fired");
+        void this.newEntry();
+      },
     });
 
     this.addCommand({
@@ -186,7 +192,13 @@ export default class JournalEntriesPlugin extends Plugin {
    */
   async newEntry(): Promise<void> {
     try {
+      const leavesBefore = this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL).length;
       const view = await this.openJournal();
+      console.log("[JE] newEntry", {
+        leavesBefore,
+        gotView: Boolean(view),
+        viewCtor: view ? view.constructor.name : null,
+      });
 
       if (!view) {
         console.error("Journal Entries: the journal view was not available after opening it");

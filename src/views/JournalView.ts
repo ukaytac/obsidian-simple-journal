@@ -2463,6 +2463,14 @@ export class JournalView extends ItemView {
    * while one is up.
    */
   async startNewEntry(): Promise<void> {
+    // TEMPORARY TRACE — see the command callback in main.ts.
+    console.log("[JE] startNewEntry in", {
+      closed: this.closed,
+      hasTimelineEl: Boolean(this.timelineEl),
+      composer: Boolean(this.composer),
+      anchorDate: this.anchorDate ? this.anchorDate.toDateString() : null,
+      rendered: this.rendered.size,
+    });
     // The first load has to finish before a composer is worth opening. When
     // this is reached straight out of `openJournal` — the hotkey pressed from
     // some other note — `onOpen`'s reload may not be on the mutation chain
@@ -2505,6 +2513,13 @@ export class JournalView extends ItemView {
       created?: Date;
     } = {},
   ): Promise<void> {
+    // TEMPORARY TRACE — see the command callback in main.ts.
+    console.log("[JE] openComposer in", {
+      closed: this.closed,
+      hasTimelineEl: Boolean(this.timelineEl),
+      timelineInDom: this.timelineEl ? this.timelineEl.isConnected : null,
+      composer: Boolean(this.composer),
+    });
     if (this.closed) return;
 
     if (this.composer) {
@@ -2562,6 +2577,13 @@ export class JournalView extends ItemView {
 
     rendered.editor = editor;
     this.composer = rendered;
+
+    // TEMPORARY TRACE — see the command callback in main.ts.
+    console.log("[JE] composer built", {
+      elInDom: rendered.el.isConnected,
+      bodyInDom: rendered.bodyEl.isConnected,
+      timelineChildren: this.timelineEl.children.length,
+    });
 
     // `focus` is false only when `reestablishComposer` is putting an
     // unfocused composer back after a reload — restoring exactly the state
