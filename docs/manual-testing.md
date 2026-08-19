@@ -94,7 +94,7 @@ review could not settle by reasoning, and the first two are in the data-loss
 class. If any of them fails, stop and report it — the rest of this document is
 mostly cosmetic by comparison.
 
-- [ ] **1. Does the embedded editor reload its own buffer under a write?**
+- [x] **1. Does the embedded editor reload its own buffer under a write?** — **PASSED**, 19 Aug 2026, Obsidian 1.8.9 desktop. Typed continuously while changing the entry's time; no characters lost. The `onFileChanged` neutralisation holds, which three review rounds could not settle by reasoning.
       This is the plugin's single biggest unverified assumption.
       `ObsidianEmbedEditor` neutralises the embed's `onFileChanged` so that only
       this plugin writes and only this plugin decides when the buffer changes.
@@ -109,7 +109,7 @@ mostly cosmetic by comparison.
       file afterwards: every character you typed is present. Any gap means the
       embed self-reloaded and a poll tick read the reload as an edit.
 
-- [ ] **2. Does throwing inside `vault.process` really leave the file alone?**
+- [x] **2. Does throwing inside `vault.process` really leave the file alone?** — **PASSED**, 19 Aug 2026. `Change entry time` on a file whose frontmatter holds a multi-line string containing a false `created:` line was refused with `UnsafeFrontmatterError`, and the file was byte-identical afterwards (md5 `ed8963f8178c0949df70633b06041279` before and after). This settles the assumption the whole refusal mechanism rests on: a throw inside the `vault.process` callback writes nothing.
       The whole refusal mechanism rests on it. Obsidian documents `process` as
       consuming the callback's return value, so a throw should write nothing —
       but "should" is not "does", and the failure mode is the guard destroying
