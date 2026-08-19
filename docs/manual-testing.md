@@ -11,34 +11,38 @@ and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
 Everything else — timeline, mount window, composer, entry actions, saving,
 and vault events — lives here.
 
-## Fixed: the composer did not appear when the journal was not already open
+## Fixed: the composer opened without the caret in it
 
-Reproduction: with the Journal tab **closed**, from any other note, press the
-`New journal entry` hotkey. The journal opened and the timeline rendered, but
-no composer appeared and no caret was placed. From the Journal tab itself the
-same command worked correctly.
+With the Journal tab **closed**, from any other note, the `New journal entry`
+hotkey opened the journal but left the caret elsewhere. From the Journal tab
+itself the same command worked.
 
-Root cause: `clearTimeline` — run by every `reload()`, for any reason (a
-settings change, a folder-rename `"reload"` change, or `JournalView.onOpen`
-running again over the view's life) — unconditionally destroyed an open,
-uncommitted composer with no way back. Whatever reload landed after
-`startNewEntry` had already opened one (the exact trigger in the closed-tab
-case was never confirmed against a live trace) silently swept it away.
+Root cause: `openComposer` focuses the composer and it **does** receive focus,
+on the first frame — a live trace showed `editorHasFocus: true`,
+`activeTag: 'TEXTAREA'`. Something takes focus away shortly afterwards, most
+likely one of the timeline's own embedded editors, since
+`ObsidianEmbedEditor.mount` calls the embed's `showEditor()` and Obsidian
+focuses the editor it builds, one per loaded entry. The retry loop treated
+*currently holding focus* as success and stopped watching at exactly the moment
+it needed to start.
 
-Fix: `clearTimeline` now returns a snapshot (text, focus state, and creation
-time) of the composer it tore down — including one a keystroke had already
-claimed but not yet committed (`pendingComposerCommit`) — and `reloadNow`
-re-establishes a fresh composer from that snapshot once the new timeline is
-built (`reestablishComposer`), committing it immediately if it held
-meaningful text, with its original `created`. Only `onClose` (the view
-genuinely going away) logs the snapshot as lost instead of re-establishing
-it. Covered by `tests/JournalView.composer.test.ts`; the temporary `[JE]`
-console tracing has been removed.
+Fix (`dac8f26`): input is the only success condition. The loop keeps watching
+until its deadline and retakes focus whenever it is lost, stopping on input, on
+the composer being replaced or gone, or on the view closing. Pinned by a
+mutation-verified test — the suite passed at every wrong step before it,
+including the version that quit after the first success.
 
-Already ruled out during diagnosis: the hotkey binding is correct
-(`journal-entries:new-journal-entry` → `Mod+Shift+N`), and the failure was not
-the blur-discard path (that fix shipped separately and changed nothing on its
-own — the underlying `clearTimeline` defect above is what actually mattered).
+Two other real bugs were found and fixed while chasing this, neither of which
+was the cause: a reload could sweep away an open composer (`clearTimeline` now
+snapshots it and `reloadNow` re-establishes it, giving the composer a complete
+persist-or-log story), and the blur-discard fired on a stolen focus (now gated
+on input received rather than on having been focused). Both are worth keeping;
+neither moved the caret.
+
+**Do not re-derive the history from this section** — the full account of what
+each of the six attempts believed, and why four of them shipped without
+changing anything, is in *Case study: the composer that opened without a
+caret* below. It is there for its process lessons, not its narrative.
 
 - [ ] **A composer closed mid-reload with meaningful text logs it.** Not
       unit-testable without a real Obsidian instance: type meaningful text
