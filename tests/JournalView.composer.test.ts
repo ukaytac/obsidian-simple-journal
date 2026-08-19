@@ -263,8 +263,21 @@ describe("JournalView composer lifecycle", () => {
 
     await reloadPromise;
 
-    // Exactly one file: the original claim's own `commitComposer` call must
-    // have recognised it was superseded and not created a second one.
+    // `reloadPromise` settling only means slot A (the reload, including its
+    // own reestablish-and-commit) finished — chain-serialized behind it,
+    // slot B (the original claim's own, now-superseded `commitComposer`
+    // call) is merely *scheduled* at this point, not yet run: resolving the
+    // chain link slot B waits on is itself a further microtask hop past
+    // `reloadPromise`'s own resolution. Without settling past that hop,
+    // this file count would read as 1 regardless of whether the
+    // `claimedGeneration` bail below works at all — asserting here would
+    // pin nothing.
+    await settle();
+    await settle();
+
+    // Exactly one file: the original claim's own `commitComposer` call has
+    // now actually run (flushed by the settles above) and must have
+    // recognised it was superseded, not created a second one.
     expect(h.app.vault.files.size).toBe(1);
     const [path] = h.app.vault.files.keys();
     expect(h.app.vault.contents.get(path)).toContain("typed while a reload was already queued");

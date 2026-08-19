@@ -464,8 +464,16 @@ export class JournalView extends ItemView {
     if (isMeaningful(snapshot.value)) {
       const rendered = this.composer;
       const claimedGeneration = this.generation;
+      // Whether `openComposer` actually ended up focusing this composer —
+      // not `snapshot.hadFocus` on its own, which `preserveExternalFocus`
+      // above may have overridden if something else claimed focus while the
+      // rebuild's awaits were in flight. `commitComposer`'s own trailing
+      // focus call has no such guard, so without threading this through it
+      // would grab focus back regardless — on exactly the path
+      // `preserveExternalFocus` exists to cover.
+      const shouldFocus = rendered.editor?.hasFocus() ?? false;
       this.composer = null;
-      await this.commitComposer(rendered, claimedGeneration);
+      await this.commitComposer(rendered, claimedGeneration, shouldFocus);
     }
   }
 
@@ -2884,10 +2892,38 @@ export class JournalView extends ItemView {
    * the generation it just claimed under in the same synchronous stretch —
    * trivially equal to `this.generation` right now — since that call is not
    * separated from this one by any chain turn to lose a race across.
+   *
+   * `focus` (default `true`, the ordinary keystroke-triggered case, where
+   * the user is actively typing and should keep the caret) lets
+   * `reestablishComposer` suppress the trailing `editor.focus("end")` below
+   * the same way `openComposer`'s `preserveExternalFocus` suppresses its
+   * own focus call — otherwise a re-established *meaningful* draft would
+   * grab focus back regardless of whether anything else had since claimed
+   * it, defeating that guard on exactly the path it exists to cover.
    */
-  private async commitComposer(rendered: RenderedEntry, claimedGeneration: number): Promise<void> {
+  private async commitComposer(rendered: RenderedEntry, claimedGeneration: number, focus = true): Promise<void> {
     if (this.pendingComposerCommit === rendered) this.pendingComposerCommit = null;
-    if (this.closed || claimedGeneration !== this.generation) return;
+
+    if (this.closed) {
+      // The view closed in the gap between `onComposerInput` claiming this
+      // (nulling `this.composer`, before this task's own turn on the
+      // mutation chain) and this task actually starting. `pendingComposerCommit`
+      // is exactly for a *reload* landing in that gap — `clearTimeline`'s own
+      // handling of it (just cleared above) folds the text into a snapshot
+      // `reestablishComposer` goes on to restore, commit, or log. Closing the
+      // tab instead ends the gap with nothing left to catch it: `onClose`'s
+      // own `clearTimeline` call, queued behind this one, finds neither
+      // `this.composer` nor `this.pendingComposerCommit` to work with. This
+      // is the one place left that still knows the text existed.
+      this.logLostComposerDraft(rendered.editor?.getValue() ?? "");
+      return;
+    }
+
+    // A reload — not a close — landed in that same gap instead: already
+    // handled, silently, by whatever `clearTimeline` and `reestablishComposer`
+    // did with the snapshot they captured for this exact rendered entry (see
+    // the doc above). Logging here too would double-report it.
+    if (claimedGeneration !== this.generation) return;
 
     const generation = this.generation;
     const created = rendered.entry.created;
@@ -3011,7 +3047,7 @@ export class JournalView extends ItemView {
     // it (and back) is handled exactly like any other entry.
     this.mountObserver?.observe(rendered.el);
 
-    editor.focus("end");
+    if (focus) editor.focus("end");
   }
 
   /**

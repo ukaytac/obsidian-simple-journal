@@ -57,6 +57,21 @@ own — the underlying `clearTimeline` defect above is what actually mattered).
       `contentEl.doc.activeElement` right before refocusing; confirm it holds
       in a real window (including a popout leaf, per `contentEl.win`'s own
       existing cross-window reasoning).
+- [ ] **The same guard's *ordinary* case — nothing else has taken focus,
+      refocusing the reappearing composer is correct — actually refocuses it
+      in real Obsidian, not just in jsdom.** The harness tests for this pass
+      because destroying the old, focused composer's plain `<textarea>` in
+      jsdom leaves `document.activeElement` as `body`, which
+      `preserveExternalFocus` reads as "nothing else has claimed it." Real
+      Obsidian's own DOM teardown/remount timing for a live pane may differ,
+      and if the journal ever mounts entries through `ObsidianEmbedEditor`
+      rather than the `TextareaEditor` fallback, that embed remounting during
+      the same rebuild could plausibly hold `activeElement` itself for a
+      stretch — which would read as "something else claimed it" and suppress
+      a focus restore the user did want. Reload the journal with a composer
+      open and nothing else focused, and confirm the composer still ends up
+      focused afterwards, on both the fallback and (if available) the
+      embedded editor.
 
 ## Not a bug: ribbon order
 
