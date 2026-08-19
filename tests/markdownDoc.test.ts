@@ -343,6 +343,14 @@ describe("setCreatedProperty: refuses rather than mangles unsafe frontmatter", (
     expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
   });
 
+  it("refuses an empty 'created' followed by a zero-indented block sequence (its value, not a sibling property)", () => {
+    // "- 2026-08-12" starts at column 0, so the plain "next line indented"
+    // check alone would miss this: a YAML block sequence item doesn't need
+    // to be indented relative to its key.
+    const data = "---\ncreated:\n- 2026-08-12\nmood: calm\n---\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
   it("refuses a trailing inline comment on the 'created' line", () => {
     const data = "---\ncreated: 2026-08-12T22:41:52+03:00 # when I wrote this\n---\nBody.\n";
     expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);

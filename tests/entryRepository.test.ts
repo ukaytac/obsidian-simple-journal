@@ -390,12 +390,26 @@ describe("setEntryCreated", () => {
   const newAt = new Date(2026, 7, 13, 9, 0, 0);
   const newCreated = formatCreatedProperty(newAt);
 
+  // `setEntryCreated` now cross-checks the raw text against
+  // `metadataCache.getFileCache()` before writing (see its doc), so a
+  // realistic fixture — unlike a real vault — must populate BOTH: the
+  // fake vault's raw contents, and the fake metadata cache's independent,
+  // hand-populated parse of the same file's frontmatter.
+  function addEntry(
+    fake: ReturnType<typeof createFakeApp>,
+    data: string,
+    frontmatter: Record<string, unknown> | undefined,
+  ) {
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", data);
+    if (frontmatter) fake.metadataCache.frontmatter.set(file.path, frontmatter);
+    return file;
+  }
+
   it("rewrites only the created property's value", async () => {
     const { fake, repo } = setup();
-    const file = fake.vault.addFile(
-      "Journal/2026/08/2026-08-12-22-41-52.md",
-      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
-    );
+    const file = addEntry(fake, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`, {
+      created: "2026-08-12T22:41:52+03:00",
+    });
 
     await repo.setEntryCreated(file, newAt);
 
@@ -404,10 +418,11 @@ describe("setEntryCreated", () => {
 
   it("preserves a user's other frontmatter properties, in order, byte for byte", async () => {
     const { fake, repo } = setup();
-    const file = fake.vault.addFile(
-      "Journal/2026/08/2026-08-12-22-41-52.md",
-      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
-    );
+    const file = addEntry(fake, `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`, {
+      created: "2026-08-12T22:41:52+03:00",
+      mood: "calm",
+      tags: ["journal"],
+    });
 
     await repo.setEntryCreated(file, newAt);
 
@@ -418,10 +433,9 @@ describe("setEntryCreated", () => {
 
   it("does not touch the body", async () => {
     const { fake, repo } = setup();
-    const file = fake.vault.addFile(
-      "Journal/2026/08/2026-08-12-22-41-52.md",
-      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
-    );
+    const file = addEntry(fake, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`, {
+      created: "2026-08-12T22:41:52+03:00",
+    });
 
     await repo.setEntryCreated(file, newAt);
 
@@ -430,10 +444,7 @@ describe("setEntryCreated", () => {
 
   it("inserts a created property when the entry's frontmatter has none (e.g. its timestamp was resolved from the filename or ctime)", async () => {
     const { fake, repo } = setup();
-    const file = fake.vault.addFile(
-      "Journal/2026/08/2026-08-12-22-41-52.md",
-      `---\nmood: "calm"\n---\n${body}`,
-    );
+    const file = addEntry(fake, `---\nmood: "calm"\n---\n${body}`, { mood: "calm" });
 
     await repo.setEntryCreated(file, newAt);
 
@@ -444,24 +455,46 @@ describe("setEntryCreated", () => {
 
   it("does not rename the file", async () => {
     const { fake, repo } = setup();
-    const file = fake.vault.addFile(
-      "Journal/2026/08/2026-08-12-22-41-52.md",
-      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
-    );
+    const file = addEntry(fake, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`, {
+      created: "2026-08-12T22:41:52+03:00",
+    });
 
     await repo.setEntryCreated(file, newAt);
 
     expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
   });
 
-  it("rejects with UnsafeFrontmatterError and writes nothing when the frontmatter is not safe to edit surgically", async () => {
+  it("rejects with UnsafeFrontmatterError and writes nothing when the frontmatter is not safe to edit surgically (setCreatedProperty's own guard)", async () => {
     const { fake, repo } = setup();
     const original = `---\ncreated: |\n  2026-08-12T22:41:52+03:00\n---\n${body}`;
-    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+    // The metadata cache agrees a `created` key exists (a block scalar is
+    // valid YAML, so Obsidian's own parser would report one too) — this
+    // isolates `setCreatedProperty`'s own "block scalar" guard from the
+    // metadata cross-check exercised separately below.
+    const file = addEntry(fake, original, { created: "2026-08-12T22:41:52+03:00\n" });
 
     await expect(repo.setEntryCreated(file, newAt)).rejects.toThrow(UnsafeFrontmatterError);
 
     // Never risk data loss: a refused edit leaves the file byte-identical.
+    expect(fake.vault.contents.get(file.path)).toBe(original);
+  });
+
+  it("rejects a single false-positive 'created:' match with no genuine created key, via the metadata-cache cross-check", async () => {
+    const { fake, repo } = setup();
+    // `setCreatedProperty`'s own "more than one match" guard cannot catch
+    // this alone: there is only ONE line matching `created:` at column 0
+    // (inside `note`'s own multi-line quoted value), and no real `created`
+    // key anywhere else in the block to raise the alarm. Obsidian's own
+    // YAML parser, unlike a line-oriented regex, correctly finds no
+    // top-level `created` key at all here — exactly the disagreement the
+    // cross-check in `setEntryCreated` exists to catch.
+    const original = `---\nnote: "hello\ncreated: bad"\nmood: calm\n---\n${body}`;
+    const file = addEntry(fake, original, { note: 'hello\ncreated: bad', mood: "calm" });
+
+    await expect(repo.setEntryCreated(file, newAt)).rejects.toThrow(UnsafeFrontmatterError);
+
+    // Never risk data loss: `note` and `mood` both survive untouched, and
+    // no `created` is written either.
     expect(fake.vault.contents.get(file.path)).toBe(original);
   });
 });

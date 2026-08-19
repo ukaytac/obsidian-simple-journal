@@ -1,7 +1,15 @@
 import { App, TFile, TFolder } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
-import { replaceBody, restoreSeparator, setCreatedProperty, splitFrontmatter, stripSeparator } from "./markdownDoc";
+import {
+  hasCreatedLine,
+  replaceBody,
+  restoreSeparator,
+  setCreatedProperty,
+  splitFrontmatter,
+  stripSeparator,
+  UnsafeFrontmatterError,
+} from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
 import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../utils/dates";
 
@@ -289,8 +297,49 @@ export class EntryRepository {
    * noticing `created` changed (`JournalService.applyUpsert`'s "moved"
    * case). Marking this a self-write would swallow that event and leave the
    * entry sitting in its old position until the next full reload.
+   *
+   * Before writing, cross-checks the raw text's `created` line against
+   * Obsidian's OWN YAML parse (`metadataCache.getFileCache`) — the same
+   * cache `entryFor` already reads. `setCreatedProperty`'s own
+   * `assertSafeCreatedLine` guard catches an ambiguous match only when a
+   * SECOND, genuine `created` line also exists to raise the alarm; it
+   * cannot catch a single match that is itself a false positive (found
+   * inside another property's own multi-line value) when there is no real
+   * `created` key anywhere else in the block. That shape looks, to a pure
+   * regex, exactly like an ordinary one-line property. The metadata cache
+   * has no such blind spot — it either parsed a `created` key or it didn't
+   * — so disagreement between it and `hasCreatedLine` is precisely the
+   * signal that our match isn't the real property. Refuses (writing
+   * nothing) in two cases:
+   *
+   * - The raw text visibly has a frontmatter block, but the cache reports
+   *   NO frontmatter at all for this file — its YAML parse failed
+   *   entirely (e.g. an unbalanced quote elsewhere in the block), so there
+   *   is nothing to cross-check against.
+   * - `hasCreatedLine` matched a line, but the cache's parsed frontmatter
+   *   has no `created` key. A missing `created` is an ordinary, SUPPORTED
+   *   state on its own — `resolveEntryDate` falls back to the filename or
+   *   `ctime` — so this is only unsafe here because our own match claims
+   *   otherwise; that contradiction is exactly the disagreement being
+   *   caught.
    */
   async setEntryCreated(file: TFile, at: Date): Promise<void> {
-    await this.app.vault.process(file, (data) => setCreatedProperty(data, formatCreatedProperty(at)));
+    await this.app.vault.process(file, (data) => {
+      const { frontmatter } = splitFrontmatter(data);
+      const cached = this.app.metadataCache.getFileCache(file)?.frontmatter;
+
+      if (frontmatter && !cached) {
+        throw new UnsafeFrontmatterError(
+          "This entry's frontmatter could not be parsed by Obsidian; refusing to guess at it.",
+        );
+      }
+      if (hasCreatedLine(frontmatter) && !(cached && "created" in cached)) {
+        throw new UnsafeFrontmatterError(
+          "This entry's \"created\" line does not match Obsidian's own reading of its frontmatter.",
+        );
+      }
+
+      return setCreatedProperty(data, formatCreatedProperty(at));
+    });
   }
 }

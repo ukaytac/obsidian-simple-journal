@@ -165,9 +165,13 @@ export class UnsafeFrontmatterError extends Error {
  * - The value starts with `|` or `>`: a multi-line YAML block scalar.
  *   Replacing only the header line would leave its indented body behind as
  *   an orphaned fragment.
- * - The line right after the match is indented. A plain YAML scalar can
- *   fold onto such a line without any `|`/`>` marker at all; the same
- *   orphaning risk applies.
+ * - The line right after the match is indented, OR is a block-sequence
+ *   item (`-` followed by a space/tab) at column 0. A plain YAML scalar
+ *   can fold onto an indented line without any `|`/`>` marker at all; an
+ *   empty value (`created:` with nothing after it) can equally be followed
+ *   by a zero-indented block sequence (`created:\n- foo`), which is its
+ *   value, not a sibling property. Either way, replacing only the matched
+ *   line would leave that line behind as an orphaned fragment.
  * - The value has a `#` preceded by whitespace (or starting it) — a YAML
  *   comment. Replacing the line would silently drop it, and telling a real
  *   comment apart from a value that merely contains `#` needs a full YAML
@@ -194,9 +198,24 @@ function assertSafeCreatedLine(frontmatter: string): void {
   }
 
   const rest = frontmatter.slice(match.index + match[0].length);
-  if (/^\r?\n[ \t]+\S/.test(rest)) {
+  if (/^\r?\n(?:[ \t]+\S|-[ \t])/.test(rest)) {
     throw new UnsafeFrontmatterError("This entry's \"created\" property continues onto an indented line.");
   }
+}
+
+/**
+ * True if `frontmatter` (as `splitFrontmatter` returns it) has at least one
+ * line matching the top-level `created:` pattern. Exposed so a caller with
+ * independent knowledge of what a file's frontmatter actually parses to —
+ * `EntryRepository.setEntryCreated`, cross-checking against
+ * `metadataCache.getFileCache()` — can detect the one shape
+ * `assertSafeCreatedLine`'s "more than one match" guard cannot: exactly one
+ * match that is a false positive (found inside another property's own
+ * multi-line value), with no genuine second `created` line to raise the
+ * alarm. See `setEntryCreated`'s doc for that cross-check.
+ */
+export function hasCreatedLine(frontmatter: string): boolean {
+  return CREATED_LINE.test(frontmatter);
 }
 
 /**
