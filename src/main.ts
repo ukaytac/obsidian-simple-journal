@@ -29,6 +29,7 @@ export default class JournalEntriesPlugin extends Plugin {
     this.addSettingTab(new JournalSettingsTab(this));
 
     this.addRibbonIcon("book-open", "Open journal", () => {
+      console.log("[JE] ribbon open-journal");
       void this.openJournal();
     });
 
@@ -37,13 +38,17 @@ export default class JournalEntriesPlugin extends Plugin {
     // Capture is the primary flow, so it needs its own entry there rather than
     // living only in the command palette.
     this.addRibbonIcon("plus", "New journal entry", () => {
+      console.log("[JE] ribbon new-entry");
       void this.newEntry();
     });
 
     this.addCommand({
       id: "open-journal",
       name: "Open journal",
-      callback: () => void this.openJournal(),
+      callback: () => {
+        console.log("[JE] cmd open-journal");
+        void this.openJournal();
+      },
     });
 
     this.addCommand({
@@ -53,7 +58,7 @@ export default class JournalEntriesPlugin extends Plugin {
         // TEMPORARY TRACE — the composer bug has now survived three fixes and
         // two rounds of the user testing by hand. Logging starts at the
         // command itself so "did this even fire" is answered first.
-        console.log("[JE] command fired");
+        console.log("[JE] cmd new-journal-entry");
         void this.newEntry();
       },
     });
@@ -61,7 +66,10 @@ export default class JournalEntriesPlugin extends Plugin {
     this.addCommand({
       id: "go-to-today",
       name: "Go to today",
-      callback: () => void this.goToToday(),
+      callback: () => {
+        console.log("[JE] cmd go-to-today");
+        void this.goToToday();
+      },
     });
 
     // No ribbon icon for this — the ribbon already has two (Open journal,
@@ -71,7 +79,10 @@ export default class JournalEntriesPlugin extends Plugin {
     this.addCommand({
       id: "open-calendar",
       name: "Open calendar",
-      callback: () => void this.openCalendar(),
+      callback: () => {
+        console.log("[JE] cmd open-calendar");
+        void this.openCalendar();
+      },
     });
 
     // Lets a phone home-screen shortcut (or any other launcher) capture a
