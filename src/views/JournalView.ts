@@ -89,6 +89,16 @@ interface RenderedEntry {
   /** Whether `el` currently intersects the viewport, per `mountObserver`. */
   intersecting: boolean;
   /**
+   * Absolute pixel distance between this entry's vertical centre and the
+   * viewport's, as of the most recent `mountObserver` callback — fed to
+   * `enforceMountLimit` (see `mountWindow.ts`'s `MountState.distance`) so an
+   * eviction, when one is unavoidable, targets the entry farthest from what
+   * the user is actually looking at. `0` until the first callback; harmless,
+   * since that only affects tie-breaking among candidates that also haven't
+   * had a callback yet (i.e. nothing has scrolled).
+   */
+  mountDistance: number;
+  /**
    * Bumped every time `mountEditor` or `renderStatic` starts work for this
    * entry. Both capture the value at the start and re-check it after their
    * one await; a mismatch means a later operation (a mount superseding a
@@ -851,6 +861,17 @@ export class JournalView extends ItemView {
 
     this.mountObserver = new win.IntersectionObserver(
       (entries) => {
+        // One read of the (unexpanded, i.e. NOT widened by
+        // MOUNT_ROOT_MARGIN) viewport rect per callback, not per entry —
+        // `enforceMountLimit`'s distance-based eviction (see
+        // `mountWindow.ts`) needs a common centre to measure every entry
+        // against. `boundingClientRect` on each `observerEntry` below is
+        // already computed by the browser as part of the intersection
+        // observation itself, so this is the only extra layout read this
+        // callback performs.
+        const rootRect = this.contentEl.getBoundingClientRect();
+        const rootCenter = rootRect.top + rootRect.height / 2;
+
         for (const observerEntry of entries) {
           const path = (observerEntry.target as HTMLElement).dataset.path;
           if (!path) continue;
@@ -859,6 +880,8 @@ export class JournalView extends ItemView {
           if (!rendered) continue;
 
           rendered.intersecting = observerEntry.isIntersecting;
+          const rect = observerEntry.boundingClientRect;
+          rendered.mountDistance = Math.abs(rect.top + rect.height / 2 - rootCenter);
 
           if (observerEntry.isIntersecting) {
             void this.mountEditor(rendered);
@@ -1055,11 +1078,31 @@ export class JournalView extends ItemView {
       // since nothing can trigger a save before that happens.
       savedBody: "",
       intersecting: false,
+      mountDistance: 0,
       opToken: 0,
       saveToken: 0,
       keyboardScrollHandle: null,
       longPressHandle: null,
     };
+
+    // Recovery path for an entry left statically rendered while still
+    // intersecting — reachable after `enforceMountLimit` evicts it (distance-
+    // based eviction makes this rare, not impossible) or, in principle, any
+    // other future path that unmounts without the entry actually leaving
+    // `MOUNT_ROOT_MARGIN`. `mountEditor` is otherwise only ever called from
+    // `mountObserver`'s enter TRANSITION, which has already fired and won't
+    // fire again until the entry leaves and re-enters — without this, such a
+    // row looks editable but silently swallows every click and keystroke
+    // until the user scrolls it out of the margin and back in. No thrash
+    // risk: this only acts when `rendered.editor` is null, and mounting sets
+    // it, so a second interaction before the first mount resolves is a no-op
+    // (see `mountEditor`'s own guard).
+    const remountOnInteraction = (): void => {
+      if (rendered.editor || !rendered.intersecting) return;
+      void this.mountEditor(rendered).then(() => rendered.editor?.focus());
+    };
+    bodyEl.addEventListener("pointerdown", remountOnInteraction);
+    bodyEl.addEventListener("focusin", remountOnInteraction);
 
     button.onClick((event) => this.showEntryMenu(rendered, event));
 
@@ -1866,6 +1909,9 @@ export class JournalView extends ItemView {
    * by chance before some other mount pushed the count over the cap again in
    * the meantime. Excluding it here, at selection time, avoids that churn
    * entirely rather than merely surviving it.
+   *
+   * `distance` is `rendered.mountDistance`, last computed by `mountObserver`'s
+   * callback — see that field's doc.
    */
   private mountStateOf(path: string): MountState | undefined {
     const rendered = this.rendered.get(path);
@@ -1876,6 +1922,7 @@ export class JournalView extends ItemView {
       focused: rendered.editor.hasFocus(),
       intersecting: rendered.intersecting,
       unsaved: this.isDirty(rendered),
+      distance: rendered.mountDistance,
     };
   }
 
@@ -1970,6 +2017,17 @@ export class JournalView extends ItemView {
       console.error("Journal Entries: failed to flush a pending save before unmounting", error);
     }
     if (generation !== this.generation) return;
+
+    if (rendered.editor.hasFocus()) {
+      // Re-checked, not just assumed still true from the check at the top
+      // of this method: focus can arrive during the `flushSave` await above
+      // (the user clicked into this exact entry while its flush was in
+      // flight) that check ran before. Absolute regardless of `opts.evict`,
+      // same reasoning as the check at the top — losing focus mid-sentence
+      // is worse than one editor over the cap either way.
+      this.ensureMountOrderContains(rendered.entry.file.path);
+      return;
+    }
 
     if (rendered.intersecting && !opts.evict) {
       // Re-entered MOUNT_ROOT_MARGIN while the flush was in flight.

@@ -30,23 +30,35 @@ export interface MountState {
    * this field are unaffected.
    */
   unsaved?: boolean;
+  /**
+   * Absolute distance (any consistent unit — `JournalView` uses pixels
+   * between element centre and viewport centre) between this entry and the
+   * centre of the viewport, as of the most recent `mountObserver` callback.
+   * Optional, defaulting to `0`, so callers/fixtures that predate this field
+   * (every existing unit test) keep their exact prior tie-broken-by-`order`
+   * behaviour: with every candidate reporting the same default distance,
+   * selection within a tier collapses back to "first eligible in `order`",
+   * i.e. oldest-mounted.
+   */
+  distance?: number;
 }
 
 /**
  * Picks which mounted entry to evict. `order` lists candidate paths
  * oldest-mounted first; `stateOf` resolves each path's current state.
  *
- * Prefers a candidate that is not currently intersecting the viewport — a
- * real per-entry signal — over merely the one mounted longest ago, so
- * eviction actually targets entries far from the viewport rather than
- * whichever happened to finish mounting first (e.g. on the very first page
- * load, before the user has scrolled at all, when many entries can finish
- * mounting within the same tick). Never picks a focused entry, or one whose
- * text hasn't reached disk yet (`unsaved`) — see `MountState.unsaved`'s doc.
- * Falls back to the oldest-mounted intersecting entry only when nothing
- * off-screen is evictable. Returns null when nothing is safely evictable at
- * all — `order` is empty, every candidate's state is missing/unmounted, or
- * every mounted candidate is focused or unsaved.
+ * Two tiers, each scored by `distance` (largest wins, ties broken by
+ * earliest position in `order`): candidates NOT currently intersecting the
+ * viewport are always preferred over ones that are, and within either tier
+ * the one physically farthest from the viewport centre goes first — the
+ * entry the user is least likely to be looking at, not merely whichever
+ * happened to mount first (e.g. on the very first page load, before the
+ * user has scrolled at all, when many entries can finish mounting within
+ * the same tick). Never picks a focused entry, or one whose text hasn't
+ * reached disk yet (`unsaved`) — see `MountState.unsaved`'s doc. Returns
+ * null when nothing is safely evictable at all — `order` is empty, every
+ * candidate's state is missing/unmounted, or every mounted candidate is
+ * focused or unsaved.
  *
  * A candidate excluded only for being `unsaved` is not retried once no
  * evictable entry remains: this can leave the mounted count above `max` for
@@ -57,17 +69,28 @@ export function pickEvictionCandidate(
   order: readonly string[],
   stateOf: (path: string) => MountState | undefined,
 ): string | null {
-  let fallback: string | null = null;
+  let offscreen: { path: string; distance: number } | null = null;
+  let onscreen: { path: string; distance: number } | null = null;
 
   for (const path of order) {
     const state = stateOf(path);
     if (!state?.mounted || state.focused || state.unsaved) continue;
 
-    if (!state.intersecting) return path;
-    if (fallback === null) fallback = path;
+    const distance = state.distance ?? 0;
+    const bucket = state.intersecting ? "onscreen" : "offscreen";
+    const current = bucket === "offscreen" ? offscreen : onscreen;
+
+    // Strictly greater, not >=: ties keep whichever was found FIRST, i.e.
+    // earliest in `order` — the oldest-mounted, matching this function's
+    // pre-distance behaviour exactly when every candidate reports the same
+    // (default `0`) distance.
+    if (current === null || distance > current.distance) {
+      if (bucket === "offscreen") offscreen = { path, distance };
+      else onscreen = { path, distance };
+    }
   }
 
-  return fallback;
+  return offscreen?.path ?? onscreen?.path ?? null;
 }
 
 /**

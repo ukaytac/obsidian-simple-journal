@@ -324,19 +324,29 @@ export class JournalService extends Component {
     }
 
     // Same `created`, so `existing` already stands for this file correctly
-    // (its `.file` is the very TFile Obsidian mutated in place for a rename —
-    // see `applyRenameSource`'s doc — and `.created` matches `entry`'s own).
-    // Deliberately returns `existing`, NOT the freshly-parsed `entry`: this
-    // is the one `applyUpsert` branch that never calls `insertSorted`/
-    // `removeByPath`, so `entry` is never spliced into `this.index` — a
-    // caller that locates its target via `this.index.indexOf(...)` (e.g.
-    // `JournalView.insertEntryInPlace`, reachable here after a same-
-    // timestamp rename) needs the exact object the index already holds, or
-    // that lookup fails by reference and silently drops the change. The
-    // "added"/"moved" branches above already maintain that invariant by
-    // construction (`entry` IS what they just inserted); this restores it
-    // for "content" too, rather than leaving indexOf-by-reference callers to
-    // special-case it themselves.
+    // in the ordinary case: `.file` is the very TFile Obsidian mutated in
+    // place for a rename (see `applyRenameSource`'s doc), and `.created`
+    // matches `entry`'s own. Deliberately returns `existing`, NOT the
+    // freshly-parsed `entry`: this is the one `applyUpsert` branch that
+    // never calls `insertSorted`/`removeByPath`, so `entry` is never
+    // spliced into `this.index` — a caller that locates its target via
+    // `this.index.indexOf(...)` (e.g. `JournalView.insertEntryInPlace`,
+    // reachable here after a same-timestamp rename) needs the exact object
+    // the index already holds, or that lookup fails by reference and
+    // silently drops the change. The "added"/"moved" branches above already
+    // maintain that invariant by construction (`entry` IS what they just
+    // inserted); this restores it for "content" too, rather than leaving
+    // indexOf-by-reference callers to special-case it themselves.
+    //
+    // `existing.file` is still reassigned to `entry.file` (normally a no-op:
+    // same TFile, mutated in place, so this just writes back the same
+    // reference) as a hedge against the one case where it wouldn't be — if
+    // a `TFile` for this path were ever replaced by a genuinely different
+    // object without a paired delete/create pair going through `applyRemoval`
+    // first. Without this, `existing` would keep pointing at a dead `TFile`
+    // forever (nothing else ever refreshes it), and hand that stale
+    // reference to every future consumer of this index entry.
+    existing.file = entry.file;
     return { kind: "content", entry: existing };
   }
 
