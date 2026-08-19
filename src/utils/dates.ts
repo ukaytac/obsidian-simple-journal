@@ -95,6 +95,18 @@ export function dayKey(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+/**
+ * Orders two `dayKey` strings newest first, mirroring `compareEntries`'s
+ * sign convention (negative when `a` is newer than `b`). `dayKey` is always
+ * `"YYYY-MM-DD"` with every component zero-padded to a fixed width, so plain
+ * code-point comparison already agrees with calendar order — no parsing back
+ * into a `Date` is needed, and unlike `localeCompare` this can't vary by
+ * locale or platform.
+ */
+export function compareDayKeys(a: string, b: string): number {
+  return b < a ? -1 : b > a ? 1 : 0;
+}
+
 export function formatDayHeader(date: Date): string {
   const weekday = date.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase();
   const month = date.toLocaleDateString("en-US", { month: "long" }).toUpperCase();

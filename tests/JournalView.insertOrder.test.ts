@@ -117,21 +117,10 @@ describe("JournalView insertEntryInPlace: intra-day order", () => {
 
   /**
    * `ensureDayGroup`'s "prepend" branch (used whenever `insertEntryInPlace`
-   * needs a day group that does not exist yet) unconditionally prepends the
-   * new day element to the very top of the timeline — it does not search
-   * for the correct sibling day the way the intra-day insert above does.
-   * That is exactly right when the new day genuinely is the newest day
-   * loaded (the common case: capturing "today" when today's group does not
-   * exist yet and nothing newer is loaded), which is what this test covers.
-   *
-   * It is NOT right in general — a new day sandwiched between two already-
-   * loaded days (an external drop of an old file into the journal folder,
-   * or any "added" change for a day strictly between two loaded ones) is
-   * placed at the absolute top instead of between its correct neighbours.
-   * Confirmed by direct observation against this harness; out of scope for
-   * this tests-only task ("must not change behaviour") and not asserted
-   * here — see this suite's own report for the full finding. This test
-   * intentionally only pins the sub-case that is actually correct today.
+   * needs a day group that does not exist yet) searches the already-loaded
+   * day groups for the correct neighbour instead of assuming the new day is
+   * always the newest. This test covers the common case: capturing "today"
+   * when today's group does not exist yet and nothing newer is loaded.
    */
   it("a new day group that genuinely is the newest lands above every already-loaded day", async () => {
     const h = createHarness();
@@ -147,6 +136,65 @@ describe("JournalView insertEntryInPlace: intra-day order", () => {
     ).map((el) => el.dataset.day);
     expect(days).toEqual(["2026-08-14", "2026-08-12", "2026-08-10"]);
     expect(internals(h.view).rendered.has(created.path)).toBe(true);
+  });
+
+  /**
+   * The bug this suite was built to catch: a new day sandwiched between two
+   * already-loaded days (an external drop of an old file into the journal
+   * folder, or any "added" change for a day strictly between two loaded
+   * ones) must land between its correct neighbours, not at the absolute top
+   * of the timeline — violating CLAUDE.md's "Timeline Direction"/North Star
+   * #3 ("the newest journal entry is always at the top"), which implies the
+   * days between it and the true newest stay in order too.
+   */
+  it("a new day sandwiched between two already-loaded days lands between them, not at the top", async () => {
+    const h = createHarness();
+    addEntry(h, new Date(2026, 7, 14, 9, 0, 0), "aug14");
+    addEntry(h, new Date(2026, 7, 10, 9, 0, 0), "aug10");
+    h.service.load();
+    await h.view.onOpen();
+
+    const created = await createFile(
+      h,
+      new Date(2026, 7, 12, 9, 0, 0),
+      "aug12, between the two loaded days",
+    );
+
+    const days = Array.from(
+      timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-day"),
+    ).map((el) => el.dataset.day);
+    expect(days).toEqual(["2026-08-14", "2026-08-12", "2026-08-10"]);
+    expect(internals(h.view).rendered.has(created.path)).toBe(true);
+  });
+
+  it("a new day older than every already-loaded day lands at the bottom, not at the top", async () => {
+    const h = createHarness();
+    addEntry(h, new Date(2026, 7, 14, 9, 0, 0), "aug14");
+    addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "aug12");
+    // An older anchor day, loaded alongside the two above, purely to keep
+    // the new entry inside the loaded window's boundary check
+    // (`position - offset >= loadedCount`) — the same technique the
+    // intra-day "lands last" test above uses. Without it, an insert that is
+    // the true oldest entry in the whole journal sits exactly on that
+    // boundary and `insertEntryInPlace` correctly defers it to paging
+    // instead of rendering it at all: a different code path than the one
+    // this test means to exercise.
+    const anchor = addEntry(h, new Date(2026, 6, 1, 9, 0, 0), "jul1, older anchor day");
+    h.service.load();
+    await h.view.onOpen();
+
+    const created = await createFile(
+      h,
+      new Date(2026, 7, 5, 9, 0, 0),
+      "aug5, older than every loaded day but the anchor",
+    );
+
+    const days = Array.from(
+      timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-day"),
+    ).map((el) => el.dataset.day);
+    expect(days).toEqual(["2026-08-14", "2026-08-12", "2026-08-05", "2026-07-01"]);
+    expect(internals(h.view).rendered.has(created.path)).toBe(true);
+    expect(internals(h.view).rendered.has(anchor.path)).toBe(true);
   });
 });
 

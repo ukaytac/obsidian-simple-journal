@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareDayKeys,
   dayKey,
   entryFolderPath,
   formatCreatedProperty,
@@ -110,6 +111,17 @@ describe("headers and keys", () => {
 
   it("formats the month header", () => {
     expect(formatMonthHeader(d)).toBe("AUGUST 2026");
+  });
+
+  it("compareDayKeys orders keys newest first", () => {
+    expect(compareDayKeys("2026-08-12", "2026-08-10")).toBeLessThan(0);
+    expect(compareDayKeys("2026-08-10", "2026-08-12")).toBeGreaterThan(0);
+    expect(compareDayKeys("2026-08-12", "2026-08-12")).toBe(0);
+  });
+
+  it("compareDayKeys agrees with calendar order across month and year boundaries", () => {
+    expect(compareDayKeys("2026-08-01", "2026-07-31")).toBeLessThan(0);
+    expect(compareDayKeys("2027-01-01", "2026-12-31")).toBeLessThan(0);
   });
 
   it("formats the entry time as 24-hour HH:mm", () => {

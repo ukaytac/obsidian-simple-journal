@@ -33,7 +33,7 @@
  */
 import type { JournalEntry } from "../journal/entry";
 import { anchorPosition, compareEntries } from "../services/entryIndex";
-import { dayKey, formatDayHeader, formatMonthHeader } from "../utils/dates";
+import { compareDayKeys, dayKey, formatDayHeader, formatMonthHeader } from "../utils/dates";
 
 /**
  * The structural slice of `JournalView.RenderedEntry` this module actually
@@ -135,8 +135,26 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
       }
       deps.getTimelineEl().appendChild(dayEl);
     } else {
-      deps.getTimelineEl().prepend(dayEl);
-      // Prepending can introduce a new topmost month; rebuild month headers.
+      // "prepend" is used only by `insertEntryInPlace`, for a single
+      // vault-event-driven day that can land anywhere in already-loaded
+      // history — unlike the "append" branch's paging order (see its own
+      // doc), there is no guarantee this new day is the newest one loaded.
+      // Search the already-rendered days (kept in reverse-chronological DOM
+      // order as an invariant) for the first one older than this one, and
+      // insert right before it; falling back to the end when none is
+      // older keeps a genuinely-newest day's placement (this module's
+      // previous, simpler behaviour) intact.
+      const days = Array.from(deps.getTimelineEl().querySelectorAll<HTMLElement>(".journal-day"));
+      const olderDay = days.find((el) => {
+        const otherKey = el.dataset.day;
+        return otherKey !== undefined && compareDayKeys(key, otherKey) < 0;
+      });
+
+      if (olderDay) deps.getTimelineEl().insertBefore(dayEl, olderDay);
+      else deps.getTimelineEl().appendChild(dayEl);
+
+      // Inserting a day anywhere but strictly at the end can change which
+      // day is topmost per month; rebuild month headers.
       rebuildMonthHeaders();
     }
 
