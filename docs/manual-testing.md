@@ -25,18 +25,38 @@ uncommitted composer with no way back. Whatever reload landed after
 `startNewEntry` had already opened one (the exact trigger in the closed-tab
 case was never confirmed against a live trace) silently swept it away.
 
-Fix: `clearTimeline` now returns a snapshot (text + focus state) of the
-composer it tore down, and `reloadNow` re-establishes a fresh composer from
-that snapshot once the new timeline is built (`reestablishComposer`) — the
-composer survives any reload instead of being destroyed and hoped for. Only
-`onClose` (the view genuinely going away) discards the snapshot for real.
-Covered by `tests/JournalView.composer.test.ts`; the temporary `[JE]` console
-tracing has been removed.
+Fix: `clearTimeline` now returns a snapshot (text, focus state, and creation
+time) of the composer it tore down — including one a keystroke had already
+claimed but not yet committed (`pendingComposerCommit`) — and `reloadNow`
+re-establishes a fresh composer from that snapshot once the new timeline is
+built (`reestablishComposer`), committing it immediately if it held
+meaningful text, with its original `created`. Only `onClose` (the view
+genuinely going away) logs the snapshot as lost instead of re-establishing
+it. Covered by `tests/JournalView.composer.test.ts`; the temporary `[JE]`
+console tracing has been removed.
 
 Already ruled out during diagnosis: the hotkey binding is correct
 (`journal-entries:new-journal-entry` → `Mod+Shift+N`), and the failure was not
 the blur-discard path (that fix shipped separately and changed nothing on its
 own — the underlying `clearTimeline` defect above is what actually mattered).
+
+- [ ] **A composer closed mid-reload with meaningful text logs it.** Not
+      unit-testable without a real Obsidian instance: type meaningful text
+      into a fresh composer, trigger a reload that has nothing to do with it
+      (e.g. change the journal folder in settings) so it is still rebuilding,
+      and close the Journal tab before that rebuild finishes. The developer
+      console should show exactly one "discarding unsaved text" line —
+      `reestablishComposer` logs it directly when the view closed before it
+      could re-establish the composer into the fresh timeline.
+- [ ] **A re-established composer does not steal focus back from another
+      pane.** Open a composer, type nothing (or something), then — while a
+      reload is happening (a folder rename, a settings change) — click into a
+      different pane before the rebuild finishes. Focus should stay wherever
+      it was clicked, not jump back to the reappearing composer.
+      `openComposer`'s `preserveExternalFocus` guard checks
+      `contentEl.doc.activeElement` right before refocusing; confirm it holds
+      in a real window (including a popout leaf, per `contentEl.win`'s own
+      existing cross-window reasoning).
 
 ## Not a bug: ribbon order
 

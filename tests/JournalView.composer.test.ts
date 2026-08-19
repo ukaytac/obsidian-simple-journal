@@ -184,4 +184,96 @@ describe("JournalView composer lifecycle", () => {
     expect(internals(h.view).composer).not.toBeNull();
     expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeTruthy();
   });
+
+  /**
+   * A composer surviving a reload is only half the fix: if it held
+   * meaningful text, leaving it re-established but still fileless would just
+   * trade "destroyed outright" for "sits uncommitted indefinitely, kept
+   * alive only for as long as some later reload happens to re-snapshot it"
+   * (`TextareaEditor.mount`'s `initialValue` deliberately does not fire the
+   * change callback `onComposerInput` listens on, so nothing else would ever
+   * commit it). `reestablishComposer` commits it immediately instead.
+   *
+   * Reaches a still-open, not-yet-claimed composer holding meaningful text
+   * via `editor.setValue` (which — same as `initialValue` above — does not
+   * fire the change callback) rather than a real keystroke: a real keystroke
+   * claims (`this.composer = null`) synchronously the instant its content
+   * becomes meaningful, so `this.composer` itself can only ever hold
+   * meaningful, uncommitted text via a path that sets it without going
+   * through that claim — `commitComposer`'s own createEntry-failure retry
+   * (`this.composer = rendered` with the same still-meaningful text still in
+   * it) is the real one; `setValue` reaches the same state directly.
+   */
+  it("a reload commits a still-open composer's meaningful text instead of leaving it stranded, keeping its original creation time", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    const composer = internals(h.view).composer;
+    const originalCreated = new Date(composer.entry.created.getTime());
+    composer.editor.setValue("a draft that should survive a reload");
+
+    await h.view.reload();
+
+    expect(h.app.vault.files.size).toBe(1);
+    const [path] = h.app.vault.files.keys();
+    expect(h.app.vault.contents.get(path)).toContain("a draft that should survive a reload");
+
+    // Committed, not left as a bare composer.
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).rendered.has(path)).toBe(true);
+
+    // REQUIRED: a draft that survives a reload must not jump to a new
+    // creation time just because rebuilding the timeline happened to open
+    // its replacement composer at a slightly later `new Date()`.
+    const created = internals(h.view).rendered.get(path).entry.created as Date;
+    expect(created.getTime()).toBe(originalCreated.getTime());
+  });
+
+  /**
+   * Closes the "commit-window hole": `onComposerInput` claims `this.composer`
+   * (nulling it) synchronously the instant a keystroke is meaningful, but
+   * `commitComposer` itself only runs once its own turn on
+   * `enqueueTimelineMutation`'s chain arrives — a reload already sitting in
+   * that queue runs first. Before `pendingComposerCommit`, `clearTimeline`
+   * had no way to find this claimed-but-not-yet-committed entry at all (it
+   * is in neither `this.composer` nor `this.rendered`), leaking its
+   * editor/DOM; and the original, now-superseded `commitComposer` call could
+   * still go on to create a duplicate file once it finally ran, unaware a
+   * reload had already happened.
+   *
+   * `reload()`'s own enqueue (registering a chain slot; not yet actually
+   * running `reloadNow`) happens first, then the keystroke's claim+enqueue —
+   * exactly reproducing "a reload already queued, a keystroke claims the
+   * composer before that reload's turn arrives" without needing any
+   * artificial delay.
+   */
+  it("a reload landing while a composer's first commit is still queued neither leaks nor loses it", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    const textarea = composerTextarea(h.view);
+    const originalCreated = new Date(internals(h.view).composer.entry.created.getTime());
+
+    const reloadPromise = h.view.reload();
+    typeInto(textarea, "typed while a reload was already queued");
+
+    await reloadPromise;
+
+    // Exactly one file: the original claim's own `commitComposer` call must
+    // have recognised it was superseded and not created a second one.
+    expect(h.app.vault.files.size).toBe(1);
+    const [path] = h.app.vault.files.keys();
+    expect(h.app.vault.contents.get(path)).toContain("typed while a reload was already queued");
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).rendered.has(path)).toBe(true);
+    expect(internals(h.view).pendingComposerCommit).toBeNull();
+
+    const created = internals(h.view).rendered.get(path).entry.created as Date;
+    expect(created.getTime()).toBe(originalCreated.getTime());
+  });
 });

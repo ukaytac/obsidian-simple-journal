@@ -134,6 +134,20 @@ interface RenderedEntry {
   longPressHandle: number | null;
 }
 
+/**
+ * What `clearTimeline` hands back about a composer (open, or claimed but not
+ * yet committed — see `pendingComposerCommit`) it tore down, so
+ * `reestablishComposer` can put an equivalent one back: the same text, the
+ * same focus state, and — REQUIRED, so a draft that survives a reload does
+ * not silently jump to a new creation time — the same `created` timestamp
+ * the entry would have gotten had nothing interrupted it.
+ */
+interface ComposerSnapshot {
+  value: string;
+  hadFocus: boolean;
+  created: Date;
+}
+
 export class JournalView extends ItemView {
   private timelineEl!: HTMLElement;
   private rendered = new Map<string, RenderedEntry>();
@@ -206,6 +220,25 @@ export class JournalView extends ItemView {
    */
   private composer: RenderedEntry | null = null;
   /**
+   * Set the instant `onComposerInput` claims `this.composer` (nulling it) for
+   * a keystroke it is about to commit, and cleared the instant
+   * `commitComposer`'s task actually starts running. Covers the gap between
+   * those two moments — the claim is synchronous, but `commitComposer` only
+   * runs once its own turn on `enqueueTimelineMutation`'s chain arrives,
+   * which a reload already queued ahead of it can win. Without this,
+   * `clearTimeline` running in that gap sees `this.composer === null` and
+   * has no way to find this rendered entry at all: it is in neither
+   * `this.composer` nor `this.rendered` (that only happens once
+   * `commitComposer` finishes), so its editor/DOM would leak, undestroyed by
+   * anything but the timeline's own `timelineEl.empty()`. `clearTimeline`
+   * folds it into the same snapshot an ordinary open composer gets, and the
+   * original `commitComposer` call — passed the generation this was claimed
+   * under — recognises it has been superseded and bails before ever
+   * creating a file, so re-establishing this snapshot afterwards can never
+   * race it into creating a duplicate entry.
+   */
+  private pendingComposerCommit: RenderedEntry | null = null;
+  /**
    * Whether the current composer has ever actually held focus. Gates the
    * blur-discard in `discardEmptyComposer`; see `openComposer` for why a blur
    * before the first focus must not count as abandonment.
@@ -276,15 +309,9 @@ export class JournalView extends ItemView {
     // Unlike `reloadNow`, there is no fresh timeline to put a composer back
     // into — the view is genuinely going away. This is the one path where an
     // open, uncommitted composer is really, finally lost, so it gets the same
-    // last-resort log every other unavoidable-discard path leaves (see
-    // `logUnsavedTextIfLost`) — quiet for an empty composer, which is the
-    // overwhelmingly common case (CLAUDE.md's Lazy Creation).
-    if (composerSnapshot && isMeaningful(composerSnapshot.value)) {
-      console.error(
-        "Journal Entries: discarding unsaved text for (uncommitted composer) — recover it from this line before it is lost:",
-        composerSnapshot.value,
-      );
-    }
+    // last-resort log `reestablishComposer` leaves when closing beats it to
+    // the punch instead.
+    if (composerSnapshot) this.logLostComposerDraft(composerSnapshot.value);
 
     this.contentEl.empty();
   }
@@ -382,25 +409,78 @@ export class JournalView extends ItemView {
 
   /**
    * Puts a composer `clearTimeline` just tore down back onto the freshly
-   * rebuilt timeline, with the same (possibly empty) text and the same focus
-   * state it had — restoring exactly what the rebuild disturbed rather than
-   * upgrading a background composer into a focus-stealing one or downgrading
-   * a focused one into a silent background reappearance. A no-op when
-   * `snapshot` is `null` (no composer was open) or the view closed while the
-   * rebuild above was in flight — nothing left to put a composer into, and
-   * building one now would either be dead work (`onClose`'s own queued
-   * `clearTimeline` would just tear it straight back down) or, worse, outlive
-   * `contentEl.empty()` and leak.
+   * rebuilt timeline, with the same (possibly empty) text, the same focus
+   * state, and the same `created` it had — restoring exactly what the
+   * rebuild disturbed rather than upgrading a background composer into a
+   * focus-stealing one, downgrading a focused one into a silent background
+   * reappearance, or letting a draft that survived a reload jump to a new
+   * creation time. If the text was meaningful, commits it immediately —
+   * `commitComposer` is already safe to call directly here (see below) — so
+   * it does not go on sitting in a fileless composer indefinitely, kept
+   * alive only for as long as some later reload happens to re-snapshot it.
    *
-   * Calls `openComposer` directly rather than through
+   * A no-op when `snapshot` is `null` (nothing was open or pending). When
+   * the view closed while the rebuild above was in flight, there is nothing
+   * left to put a composer into — building one now would either be dead
+   * work (`onClose`'s own queued `clearTimeline` would just tear it straight
+   * back down) or, worse, outlive `contentEl.empty()` and leak — so this
+   * logs the same last-resort loss `onClose` itself would have logged had
+   * the composer still existed for its own `clearTimeline` to find, since
+   * that is exactly what closing mid-rebuild prevents.
+   *
+   * Calls `openComposer`/`commitComposer` directly rather than through
    * `enqueueTimelineMutation`: this already runs inside the one task that
    * chain is currently executing (`reloadNow`, itself always reached via
    * `enqueueTimelineMutation`), so re-enqueueing would only delay this to
    * "after the task now running finishes" — i.e. after itself.
    */
-  private async reestablishComposer(snapshot: { value: string; hadFocus: boolean } | null): Promise<void> {
-    if (snapshot === null || this.closed) return;
-    await this.openComposer(snapshot.value, snapshot.hadFocus);
+  private async reestablishComposer(snapshot: ComposerSnapshot | null): Promise<void> {
+    if (snapshot === null) return;
+
+    if (this.closed) {
+      this.logLostComposerDraft(snapshot.value);
+      return;
+    }
+
+    await this.openComposer({
+      initialValue: snapshot.value,
+      focus: snapshot.hadFocus,
+      preserveExternalFocus: true,
+      created: snapshot.created,
+    });
+
+    // Closed while `openComposer`'s own promise settled: it never awaits
+    // anything real, but even an immediately-resolved promise still yields
+    // one microtask turn, which is enough for `onClose` to have landed in
+    // between. Leave the composer it just built exactly where it is —
+    // `onClose`'s own queued `clearTimeline()` will find it via the ordinary
+    // `this.composer` branch, snapshot it, and log it as usual. Claiming it
+    // here first and then bailing inside `commitComposer`'s own `closed`
+    // check would instead orphan it: reachable by neither `this.composer`
+    // nor `this.rendered`, the same hole `pendingComposerCommit` exists to
+    // close for the other claim path.
+    if (this.closed || !this.composer) return;
+
+    if (isMeaningful(snapshot.value)) {
+      const rendered = this.composer;
+      const claimedGeneration = this.generation;
+      this.composer = null;
+      await this.commitComposer(rendered, claimedGeneration);
+    }
+  }
+
+  /**
+   * Last-resort log for composer text that is genuinely, unrecoverably about
+   * to be lost — no fresh timeline left to put it back into. Quiet for an
+   * empty composer, which is the overwhelmingly common case (CLAUDE.md's
+   * Lazy Creation): most composers never hold meaningful text at all.
+   */
+  private logLostComposerDraft(value: string): void {
+    if (!isMeaningful(value)) return;
+    console.error(
+      "Journal Entries: discarding unsaved text for (uncommitted composer) — recover it from this line before it is lost:",
+      value,
+    );
   }
 
   /**
@@ -426,17 +506,20 @@ export class JournalView extends ItemView {
    * given the chance to finish, successfully or not, before teardown
    * proceeds regardless.
    *
-   * Returns a snapshot of the composer that was open when this ran, or
-   * `null` if none was. `reloadNow` uses it to re-establish the composer
-   * once the fresh timeline is built — a rebuild (the settings tab's
-   * debounced `refreshJournal`, a folder-rename `"reload"` change, or
-   * `onOpen`'s own first `reload()` landing after `startNewEntry` already
-   * opened one — see `startNewEntry`'s doc) should not be able to silently
-   * sweep away a composer the user has open. `onClose` gets the same
-   * snapshot back but discards it: the view itself is going away, so there
-   * is nothing left to re-establish it into.
+   * Returns a snapshot of the composer that was open when this ran — or of
+   * one already claimed for commit but not yet actually committed (see
+   * `pendingComposerCommit`) — or `null` if neither was the case.
+   * `reloadNow` uses it to re-establish (and, if it held meaningful text,
+   * commit) the composer once the fresh timeline is built via
+   * `reestablishComposer` — a rebuild (the settings tab's debounced
+   * `refreshJournal`, a folder-rename `"reload"` change, or `onOpen`'s own
+   * first `reload()` landing after `startNewEntry` already opened one — see
+   * `startNewEntry`'s doc) should not be able to silently sweep away a
+   * composer the user has open. `onClose` gets the same snapshot back but
+   * only ever logs it: the view itself is going away, so there is nothing
+   * left to re-establish it into.
    */
-  private async clearTimeline(): Promise<{ value: string; hadFocus: boolean } | null> {
+  private async clearTimeline(): Promise<ComposerSnapshot | null> {
     this.teardownSentinel();
     this.teardownMountObserver();
 
@@ -456,16 +539,40 @@ export class JournalView extends ItemView {
     // lets the caller put the same (possibly meaningful, possibly empty)
     // text back into a fresh composer instead, without ever writing a file
     // here.
-    let composerSnapshot: { value: string; hadFocus: boolean } | null = null;
+    let composerSnapshot: ComposerSnapshot | null = null;
     if (this.composer) {
       composerSnapshot = {
         value: this.composer.editor?.getValue() ?? "",
         hadFocus: this.composer.editor?.hasFocus() ?? false,
+        created: this.composer.entry.created,
       };
 
       this.clearMobileTimers(this.composer);
       this.composer.editor?.destroy();
       this.composer = null;
+    } else if (this.pendingComposerCommit) {
+      // A keystroke had already claimed the composer (`this.composer`
+      // nulled, `commitComposer` enqueued) before this reload's own turn on
+      // the mutation chain arrived — see `pendingComposerCommit`'s doc. That
+      // queued `commitComposer` call is still behind this one; passed the
+      // generation this was claimed under, it will recognise once it does
+      // run that a reload has since happened and bail before creating a
+      // file, so folding this into the same snapshot an ordinary open
+      // composer gets (rather than just logging it lost) cannot race it
+      // into a duplicate entry. Read live, not the value from whenever the
+      // keystroke landed: the still-mounted textarea keeps accepting input
+      // (even though nothing is currently listening for meaningful ones)
+      // until the `destroy()` below.
+      const pending = this.pendingComposerCommit;
+      composerSnapshot = {
+        value: pending.editor?.getValue() ?? "",
+        hadFocus: pending.editor?.hasFocus() ?? false,
+        created: pending.entry.created,
+      };
+
+      this.clearMobileTimers(pending);
+      pending.editor?.destroy();
+      this.pendingComposerCommit = null;
     }
 
     this.generation++;
@@ -2603,12 +2710,22 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * `initialValue`/`focus` are used only by `reestablishComposer`, to put a
-   * composer a reload just tore down back with the text and focus state it
-   * had. `startNewEntry` always calls this with the defaults — an empty,
-   * focused composer for a genuinely new entry.
+   * `initialValue`/`focus`/`preserveExternalFocus`/`created` are used only
+   * by `reestablishComposer`, to put a composer a reload just tore down (or
+   * a keystroke had already claimed but not yet committed) back with the
+   * text, focus state, and creation time it had. `startNewEntry` always
+   * calls this with the defaults — an empty, focused composer created now,
+   * for a genuinely new entry the user just explicitly asked for, which
+   * always takes focus regardless of `preserveExternalFocus`.
    */
-  private async openComposer(initialValue = "", focus = true): Promise<void> {
+  private async openComposer(
+    options: {
+      initialValue?: string;
+      focus?: boolean;
+      preserveExternalFocus?: boolean;
+      created?: Date;
+    } = {},
+  ): Promise<void> {
     if (this.closed) return;
 
     if (this.composer) {
@@ -2618,7 +2735,7 @@ export class JournalView extends ItemView {
       return;
     }
 
-    const now = new Date();
+    const { initialValue = "", focus = true, preserveExternalFocus = false, created = new Date() } = options;
 
     // Same reasoning as insertEntryInPlace: the empty-state message is only
     // ever present when nothing is rendered yet, and this is the only other
@@ -2626,17 +2743,17 @@ export class JournalView extends ItemView {
     this.timelineEl.querySelector(".journal-empty")?.remove();
 
     // Reuses ensureDayGroup rather than a separate "ensure today" helper:
-    // today's group is just the day group for `now`, prepended like any
+    // today's group is just the day group for `created`, prepended like any
     // other freshly-appearing newest day, and ensureDayGroup already
     // populates/reads the `dayGroups` map correctly (a hand-rolled duplicate
     // of that logic would be one more place for the two to drift apart).
-    const group = this.ensureDayGroup(now, "prepend");
+    const group = this.ensureDayGroup(created, "prepend");
 
     const placeholder: JournalEntry = {
       // No file yet. Nothing reads `file` before commitComposer runs —
       // createEntryEl leaves `data-path` unset for exactly this case.
       file: null as unknown as JournalEntry["file"],
-      created: now,
+      created,
     };
 
     const rendered = this.createEntryEl(placeholder);
@@ -2672,6 +2789,20 @@ export class JournalView extends ItemView {
     // the rebuild disturbed, not upgrading a background composer into one
     // that steals focus from whatever the user is actually doing elsewhere.
     if (!focus) return;
+
+    // `preserveExternalFocus` (only set by `reestablishComposer`, and only
+    // when the composer it is restoring *did* have focus before the
+    // rebuild) additionally checks that focus is still exactly where the
+    // rebuild's own teardown would have left it — nothing else has claimed
+    // it since. The rebuild's several awaits (flushing saves, loading a
+    // page) are real time the user can spend clicking into an entirely
+    // different pane; blindly refocusing afterwards would yank them back
+    // out of it. `startNewEntry`'s own explicit "New journal entry"
+    // invocation never sets this, and always takes focus.
+    if (preserveExternalFocus) {
+      const activeEl = this.contentEl.doc.activeElement;
+      if (activeEl !== null && activeEl !== this.contentEl.doc.body) return;
+    }
 
     this.scrollToTop();
     editor.focus();
@@ -2717,8 +2848,17 @@ export class JournalView extends ItemView {
 
     if (!isMeaningful(value)) return;
 
+    // Captured before the claim below, and passed all the way through to
+    // `commitComposer`: it is the generation this composer is being claimed
+    // under, not whatever `this.generation` happens to read once
+    // `commitComposer`'s task actually gets its turn. See
+    // `pendingComposerCommit`'s doc — a reload can land, and finish, in the
+    // gap between this claim and that turn arriving, without `this.generation`
+    // itself giving `commitComposer` any way to tell the difference.
+    const claimedGeneration = this.generation;
     this.composer = null;
-    await this.enqueueTimelineMutation(() => this.commitComposer(rendered));
+    this.pendingComposerCommit = rendered;
+    await this.enqueueTimelineMutation(() => this.commitComposer(rendered, claimedGeneration));
   }
 
   /**
@@ -2730,9 +2870,25 @@ export class JournalView extends ItemView {
    * further back, so nothing typed during the create is lost. Runs inside
    * `enqueueTimelineMutation`, like every other timeline mutation, and
    * respects `closed`/`generation` at each await the same way they do.
+   *
+   * Two different callers, two different meanings for `claimedGeneration`.
+   * `onComposerInput` passes the generation live at the moment its keystroke
+   * claimed `this.composer` — strictly *before* this task's own turn on the
+   * mutation chain, so it can differ from `this.generation` right here at
+   * entry if a reload's `clearTimeline` ran (and, via
+   * `pendingComposerCommit`, already handled this same rendered entry —
+   * possibly re-establishing and re-committing it under a fresh one) in that
+   * gap. Bailing on a mismatch here, before ever touching the repository, is
+   * what makes that re-establishment race-free instead of racing this call
+   * into creating a duplicate entry. `reestablishComposer` instead passes
+   * the generation it just claimed under in the same synchronous stretch —
+   * trivially equal to `this.generation` right now — since that call is not
+   * separated from this one by any chain turn to lose a race across.
    */
-  private async commitComposer(rendered: RenderedEntry): Promise<void> {
-    if (this.closed) return;
+  private async commitComposer(rendered: RenderedEntry, claimedGeneration: number): Promise<void> {
+    if (this.pendingComposerCommit === rendered) this.pendingComposerCommit = null;
+    if (this.closed || claimedGeneration !== this.generation) return;
+
     const generation = this.generation;
     const created = rendered.entry.created;
     const valueAtCreate = rendered.editor?.getValue() ?? "";
