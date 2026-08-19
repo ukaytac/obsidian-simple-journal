@@ -1,7 +1,7 @@
 import { App, TFile, TFolder } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
-import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "./markdownDoc";
+import { replaceBody, restoreSeparator, setCreatedProperty, splitFrontmatter, stripSeparator } from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
 import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../utils/dates";
 
@@ -269,5 +269,28 @@ export class EntryRepository {
       const { frontmatter } = splitFrontmatter(data);
       return replaceBody(data, restoreSeparator(frontmatter, body));
     });
+  }
+
+  /**
+   * Corrects an entry's timestamp by rewriting its `created` property in
+   * place, via `setCreatedProperty` — surgically, not through
+   * `fileManager.processFrontMatter`, whose YAML re-serialization can
+   * reformat, reorder, or requote a user's other properties (see CLAUDE.md's
+   * "never rewrite or normalize unrelated frontmatter" and
+   * `setCreatedProperty`'s own doc). The filename is deliberately left
+   * alone: filenames are internal identifiers, never re-derived from
+   * content or timestamp.
+   *
+   * Deliberately does NOT call `JournalService.markSelfWrite` for this
+   * path, unlike `writeBody`. That mark exists to suppress a redundant
+   * re-render of an editor that already reflects the value it just wrote —
+   * but repositioning a moved entry in the timeline depends entirely on
+   * `JournalService` seeing this write's `modify`/`changed` event and
+   * noticing `created` changed (`JournalService.applyUpsert`'s "moved"
+   * case). Marking this a self-write would swallow that event and leave the
+   * entry sitting in its old position until the next full reload.
+   */
+  async setEntryCreated(file: TFile, at: Date): Promise<void> {
+    await this.app.vault.process(file, (data) => setCreatedProperty(data, formatCreatedProperty(at)));
   }
 }

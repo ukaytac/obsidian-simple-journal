@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { App } from "obsidian";
 import { createFakeApp } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
+import { formatCreatedProperty } from "../src/utils/dates";
 
 function setup() {
   const fake = createFakeApp();
@@ -379,5 +380,76 @@ describe("readBody and writeBody", () => {
 
     await repo.writeBody(file, text);
     expect(await repo.readBody(file)).toBe(text);
+  });
+});
+
+describe("setEntryCreated", () => {
+  // Computed rather than hardcoded, since `formatCreatedProperty`'s offset
+  // depends on the local timezone the tests run under (see `npm run test:tz`).
+  const newAt = new Date(2026, 7, 13, 9, 0, 0);
+  const newCreated = formatCreatedProperty(newAt);
+
+  it("rewrites only the created property's value", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
+    );
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(fake.vault.contents.get(file.path)).toBe(`---\ncreated: "${newCreated}"\n---\n${body}`);
+  });
+
+  it("preserves a user's other frontmatter properties, in order, byte for byte", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
+    );
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: "${newCreated}"\nmood: "calm"\ntags:\n  - journal\n---\n${body}`,
+    );
+  });
+
+  it("does not touch the body", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
+    );
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(await repo.readBody(file)).toBe(strippedBody);
+  });
+
+  it("inserts a created property when the entry's frontmatter has none (e.g. its timestamp was resolved from the filename or ctime)", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\nmood: "calm"\n---\n${body}`,
+    );
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: "${newCreated}"\nmood: "calm"\n---\n${body}`,
+    );
+  });
+
+  it("does not rename the file", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile(
+      "Journal/2026/08/2026-08-12-22-41-52.md",
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n${body}`,
+    );
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
   });
 });

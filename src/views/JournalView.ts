@@ -15,6 +15,7 @@ import { anchorPosition, anchorSeed, compareEntries, pageAfter } from "../servic
 import type { JournalChange } from "../services/journalService";
 import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
 import { decideChangeAction, type RenderedState } from "./applyChange";
+import { ChangeEntryTimeModal } from "./ChangeEntryTimeModal";
 import { isMeaningful, resolveComposerContent } from "./composerCommit";
 import type { EntryEditor } from "./EntryEditor";
 import { saveIfChanged } from "./entrySave";
@@ -1021,6 +1022,15 @@ export class JournalView extends ItemView {
         }),
     );
 
+    menu.addItem((item) =>
+      item
+        .setTitle("Change entry time")
+        .setIcon("clock")
+        .onClick(() => {
+          this.changeEntryTime(rendered);
+        }),
+    );
+
     menu.addSeparator();
 
     menu.addItem((item) =>
@@ -1033,6 +1043,46 @@ export class JournalView extends ItemView {
     );
 
     menu.showAtMouseEvent(event);
+  }
+
+  /**
+   * Opens `ChangeEntryTimeModal` prefilled with this entry's currently
+   * resolved timestamp, and on confirmation writes the new value to the
+   * entry's `created` property. The entry's filename is deliberately never
+   * touched — filenames are internal identifiers, never re-derived from
+   * content or timestamp (CLAUDE.md).
+   *
+   * Repositioning the entry in the timeline is NOT done here:
+   * `EntryRepository.setEntryCreated`'s write reaches `JournalService`
+   * through the ordinary vault/metadata-cache event path — the same one a
+   * manual edit via the Properties pane already goes through — which
+   * already repositions any entry whose `created` changes (see
+   * `JournalService.applyUpsert`'s "moved" case, applied here through
+   * `applyChangesNow`'s "reposition" action). See `setEntryCreated`'s own
+   * doc for why this write deliberately is not marked a self-write.
+   *
+   * Any pending debounced body edit is flushed first, exactly like
+   * `confirmDelete` flushes before deleting: without it, this write and a
+   * still-pending body save could race against the same file.
+   */
+  private changeEntryTime(rendered: RenderedEntry): void {
+    const file = rendered.entry.file;
+    if (!file) return;
+
+    new ChangeEntryTimeModal(this.app, rendered.entry.created, (value) => {
+      void (async () => {
+        await this.flushSave(rendered);
+
+        try {
+          await this.plugin.repository.setEntryCreated(file, value);
+        } catch (error) {
+          console.error("Journal Entries: could not change the entry's time", file.path, error);
+          new Notice(
+            "Journal Entries: could not change the entry's time. See the developer console for details.",
+          );
+        }
+      })();
+    }).open();
   }
 
   /**

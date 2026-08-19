@@ -432,3 +432,17 @@
   width: 0 !important;
   min-width: 0 !important;
 }
+
+/* ChangeEntryTimeModal: a single native datetime-local input plus a plain
+   confirm/cancel row. No custom chrome beyond spacing — the native input
+   already gives theme parity and the OS picker on mobile for free. */
+.journal-change-time-input {
+  width: 100%;
+}
+
+.journal-change-time-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-4);
+}

@@ -109,3 +109,56 @@ export function formatMonthHeader(date: Date): string {
 export function formatTime(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+/**
+ * Formats `date` as an HTML `<input type="datetime-local">` value, in LOCAL
+ * time components (matching every other formatter in this file — there is
+ * no UTC conversion anywhere here). Includes seconds, since an entry's
+ * `created` value carries second precision and the input is given
+ * `step="1"` so the picker doesn't silently round it away.
+ */
+export function formatDateTimeLocalValue(date: Date): string {
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
+}
+
+// `T` separates date and time, per the datetime-local value spec. Seconds
+// are optional (the spec's own minute-granularity default, reachable when
+// `step` isn't at least 1). Deliberately anchored start-to-end (`^`/`$`, no
+// trailing input allowed) and with no timezone/offset group at all: a
+// datetime-local value never carries one, so accepting `Z` or `+03:00` here
+// would silently accept input that was never actually local-only.
+const DATETIME_LOCAL_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/**
+ * Parses an `<input type="datetime-local">` value as LOCAL time — the same
+ * convention every other date in this codebase uses (see `formatCreatedProperty`,
+ * `resolveEntryDate`) — never as UTC. Returns null for anything empty,
+ * malformed, or naming an impossible calendar date/time, so a caller never
+ * has to separately guard against `Invalid Date` poisoning a write.
+ */
+export function parseDateTimeLocalValue(value: string): Date | null {
+  const match = DATETIME_LOCAL_RE.exec(value.trim());
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute, second] = match;
+  const yearNum = Number(year);
+  const monthNum = Number(month);
+  const dayNum = Number(day);
+  const hourNum = Number(hour);
+  const minuteNum = Number(minute);
+  const secondNum = second ? Number(second) : 0;
+
+  // Validated numerically, not by round-tripping through Date, for the same
+  // reason as parseEntryFilename: Date *normalizes* an out-of-range or
+  // DST-gap local time instead of rejecting it.
+  if (monthNum < 1 || monthNum > 12) return null;
+  if (dayNum < 1 || dayNum > daysInMonth(yearNum, monthNum)) return null;
+  if (hourNum > 23) return null;
+  if (minuteNum > 59) return null;
+  if (secondNum > 59) return null;
+
+  return new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum, secondNum);
+}

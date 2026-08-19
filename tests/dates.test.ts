@@ -3,10 +3,12 @@ import {
   dayKey,
   entryFolderPath,
   formatCreatedProperty,
+  formatDateTimeLocalValue,
   formatDayHeader,
   formatEntryFilename,
   formatMonthHeader,
   formatTime,
+  parseDateTimeLocalValue,
   parseEntryFilename,
 } from "../src/utils/dates";
 
@@ -113,5 +115,64 @@ describe("headers and keys", () => {
   it("formats the entry time as 24-hour HH:mm", () => {
     expect(formatTime(d)).toBe("22:41");
     expect(formatTime(new Date(2026, 7, 12, 9, 4, 0))).toBe("09:04");
+  });
+});
+
+describe("formatDateTimeLocalValue", () => {
+  it("formats a local date as a datetime-local value with seconds", () => {
+    expect(formatDateTimeLocalValue(d)).toBe("2026-08-12T22:41:52");
+  });
+
+  it("zero-pads single-digit components", () => {
+    expect(formatDateTimeLocalValue(new Date(2026, 0, 5, 9, 4, 7))).toBe("2026-01-05T09:04:07");
+  });
+});
+
+describe("parseDateTimeLocalValue", () => {
+  it("round-trips a value produced by formatDateTimeLocalValue, as local time", () => {
+    const parsed = parseDateTimeLocalValue(formatDateTimeLocalValue(d));
+    expect(parsed?.getTime()).toBe(d.getTime());
+  });
+
+  it("accepts a value with no seconds, per the datetime-local spec's minute-granularity default", () => {
+    const parsed = parseDateTimeLocalValue("2026-08-12T22:41");
+    expect(parsed?.getTime()).toBe(new Date(2026, 7, 12, 22, 41, 0).getTime());
+  });
+
+  it("returns null for an empty string", () => {
+    expect(parseDateTimeLocalValue("")).toBeNull();
+  });
+
+  it("returns null for whitespace", () => {
+    expect(parseDateTimeLocalValue("   ")).toBeNull();
+  });
+
+  it("returns null for garbage input", () => {
+    expect(parseDateTimeLocalValue("not a date")).toBeNull();
+  });
+
+  it("returns null for an impossible date", () => {
+    expect(parseDateTimeLocalValue("2026-02-30T10:00")).toBeNull();
+    expect(parseDateTimeLocalValue("2026-13-01T10:00")).toBeNull();
+  });
+
+  it("returns null for an out-of-range time component", () => {
+    expect(parseDateTimeLocalValue("2026-08-12T24:00")).toBeNull();
+    expect(parseDateTimeLocalValue("2026-08-12T10:60")).toBeNull();
+  });
+
+  it("accepts a date far in the past", () => {
+    const parsed = parseDateTimeLocalValue("1901-01-01T00:00:00");
+    expect(parsed?.getTime()).toBe(new Date(1901, 0, 1, 0, 0, 0).getTime());
+  });
+
+  it("accepts a date far in the future", () => {
+    const parsed = parseDateTimeLocalValue("2200-01-01T00:00:00");
+    expect(parsed?.getTime()).toBe(new Date(2200, 0, 1, 0, 0, 0).getTime());
+  });
+
+  it("rejects a value carrying an explicit UTC/offset designator, since the input is documented as local-only", () => {
+    expect(parseDateTimeLocalValue("2026-08-12T22:41:52Z")).toBeNull();
+    expect(parseDateTimeLocalValue("2026-08-12T22:41:52+03:00")).toBeNull();
   });
 });

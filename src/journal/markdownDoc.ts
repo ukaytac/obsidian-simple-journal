@@ -105,3 +105,57 @@ export function restoreSeparator(frontmatter: string, body: string): string {
   if (!frontmatter) return body;
   return (frontmatter.includes("\r\n") ? "\r\n" : "\n") + body;
 }
+
+// Matches a top-level `created` property line: anchored to the start of a
+// line (via `m`), so it only ever fires at column 0. A nested key such as
+// `context:\n  created: false` can never match here — its line starts with
+// spaces, not `c` — without this function having to understand YAML nesting
+// at all. Captures nothing; the whole match (key, colon, and everything up
+// to but not including the line's own terminator) is what gets replaced, so
+// the CRLF/LF terminator itself is left completely alone.
+const CREATED_LINE = /^created:[ \t]*[^\r\n]*/m;
+
+// Matches just the frontmatter's opening delimiter line (optional BOM,
+// `---`, optional trailing spaces/tabs, its newline), so a missing `created`
+// key can be inserted immediately after it — as the new first property —
+// without disturbing anything else in the block.
+const OPENING_DELIMITER = /^﻿?---[ \t]*\r?\n/;
+
+/**
+ * Replaces the value of the top-level `created` property, and nothing else.
+ * Every other byte of the document — other properties, their order and
+ * formatting, the body, a horizontal rule or a `created:`-looking line
+ * inside the body — is left untouched.
+ *
+ * `value` is always written double-quoted (matching the convention
+ * `EntryRepository.createEntry` already writes), regardless of whether the
+ * existing value was quoted, unquoted, or had trailing whitespace: this
+ * function replaces the value, it does not attempt to preserve the previous
+ * value's own formatting.
+ *
+ * If the frontmatter block has no `created` key, one is inserted as the
+ * first property. If the document has no frontmatter block at all, one is
+ * created — the whole original document becomes the body, byte-identical,
+ * exactly as `splitFrontmatter` would already report it (an empty
+ * frontmatter, the original text as body).
+ */
+export function setCreatedProperty(data: string, value: string): string {
+  const { frontmatter, body } = splitFrontmatter(data);
+  const quoted = JSON.stringify(value);
+
+  if (!frontmatter) {
+    return `---\ncreated: ${quoted}\n---\n${data}`;
+  }
+
+  if (CREATED_LINE.test(frontmatter)) {
+    return frontmatter.replace(CREATED_LINE, `created: ${quoted}`) + body;
+  }
+
+  // No existing `created` key: insert one right after the opening
+  // delimiter. `splitFrontmatter` only ever returns a non-empty
+  // `frontmatter` when it matched the same opening-delimiter shape, so this
+  // is guaranteed to match too.
+  const opening = OPENING_DELIMITER.exec(frontmatter)![0];
+  const newLine = `created: ${quoted}${frontmatter.includes("\r\n") ? "\r\n" : "\n"}`;
+  return opening + newLine + frontmatter.slice(opening.length) + body;
+}

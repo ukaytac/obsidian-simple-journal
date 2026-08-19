@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
+import {
+  replaceBody,
+  restoreSeparator,
+  setCreatedProperty,
+  splitFrontmatter,
+  stripSeparator,
+} from "../src/journal/markdownDoc";
 
 const withFrontmatter = `---
 created: 2026-08-12T22:41:52+03:00
@@ -189,5 +195,97 @@ describe("restoreSeparator", () => {
     // Unlike stripSeparator, an empty body is not "nothing to restore": a
     // brand-new entry's empty body still gets the conventional blank line.
     expect(restoreSeparator("---\ncreated: x\n---\n", "")).toBe("\n");
+  });
+});
+
+describe("setCreatedProperty", () => {
+  const NEW_VALUE = "2026-08-13T09:00:00+03:00";
+
+  it("replaces an unquoted value, preserving other properties byte for byte and in order", () => {
+    const data =
+      `---\ncreated: 2026-08-12T22:41:52+03:00\ntags:\n  - journal\nmood: "calm"\n---\n\nBody text.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\ntags:\n  - journal\nmood: "calm"\n---\n\nBody text.\n`,
+    );
+  });
+
+  it("replaces a quoted value", () => {
+    const data = `---\ncreated: "2026-08-12T22:41:52+03:00"\n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\n---\nBody.\n`);
+  });
+
+  it("replaces a value with trailing whitespace", () => {
+    const data = `---\ncreated: 2026-08-12T22:41:52+03:00   \n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\n---\nBody.\n`);
+  });
+
+  it("inserts created as the first property when frontmatter has no created key", () => {
+    const data = `---\nmood: "calm"\ntags:\n  - journal\n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\nmood: "calm"\ntags:\n  - journal\n---\nBody.\n`,
+    );
+  });
+
+  it("creates a frontmatter block when the document has none", () => {
+    const data = "Just some text.\n";
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\n---\nJust some text.\n`);
+  });
+
+  it("does not touch a body line that happens to start with 'created:'", () => {
+    const data =
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\ncreated: this is body text about creation, not frontmatter.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\n---\ncreated: this is body text about creation, not frontmatter.\n`,
+    );
+  });
+
+  it("does not confuse a horizontal rule in the body with another frontmatter block", () => {
+    const data = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nSome text\n\n---\n\nMore text\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\n---\n\nSome text\n\n---\n\nMore text\n`,
+    );
+  });
+
+  it("preserves CRLF line endings", () => {
+    const data = "---\r\ncreated: 2026-08-12T22:41:52+03:00\r\n---\r\nBody.\r\n";
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\r\ncreated: "${NEW_VALUE}"\r\n---\r\nBody.\r\n`);
+  });
+
+  it("handles an empty document", () => {
+    expect(setCreatedProperty("", NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\n---\n`);
+  });
+
+  it("does not mistake a nested/indented 'created' key for the top-level one, and inserts a top-level key instead", () => {
+    const data = `---\ncontext:\n  created: false\ntags:\n  - journal\n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\ncontext:\n  created: false\ntags:\n  - journal\n---\nBody.\n`,
+    );
+  });
+
+  it("updates only the top-level 'created' key, leaving a nested 'created' key under another property untouched", () => {
+    const data = `---\ncreated: 2026-08-12T22:41:52+03:00\ncontext:\n  created: false\n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(
+      `---\ncreated: "${NEW_VALUE}"\ncontext:\n  created: false\n---\nBody.\n`,
+    );
+  });
+
+  // Regression-style invariant: the body region (per splitFrontmatter) must
+  // be byte-identical before and after, for every shape splitFrontmatter
+  // itself is exercised against above, including the ones with no
+  // recognizable frontmatter at all.
+  const bodyInvariantTable: Array<[string, string]> = [
+    ["canonical entry", withFrontmatter],
+    ["no frontmatter at all", "Just some text.\n"],
+    ["empty string", ""],
+    ["unterminated frontmatter block", "---\ncreated: 2026-08-12T22:41:52+03:00\nno closing delimiter\n"],
+    ["CRLF", "---\r\ncreated: x\r\n---\r\nBody.\r\n"],
+    ["horizontal rule in the body", "---\ncreated: x\n---\n\nSome text\n\n---\n\nMore text\n"],
+    ["body line starting with 'created:'", "---\ncreated: x\n---\ncreated: not frontmatter.\n"],
+  ];
+
+  it.each(bodyInvariantTable)("leaves the body byte-identical for: %s", (_label, input) => {
+    const before = splitFrontmatter(input).body;
+    const after = splitFrontmatter(setCreatedProperty(input, NEW_VALUE)).body;
+    expect(after).toBe(before);
   });
 });
