@@ -555,8 +555,6 @@ export class JournalView extends ItemView {
    * "after the task now running finishes" — i.e. after itself.
    */
   private async reestablishComposer(snapshot: ComposerSnapshot | null): Promise<void> {
-    // TEMPORARY TRACE — is this path even taken on the failing flow?
-    console.log("[JE] reestablishComposer", { snapshot: arguments[0] !== null });
     if (snapshot === null) return;
 
     if (this.closed) {
@@ -2508,14 +2506,6 @@ export class JournalView extends ItemView {
    * while one is up.
    */
   async startNewEntry(): Promise<void> {
-    // TEMPORARY TRACE — see the command callback in main.ts.
-    console.log("[JE] startNewEntry in", {
-      closed: this.closed,
-      hasTimelineEl: Boolean(this.timelineEl),
-      composer: Boolean(this.composer),
-      anchorDate: this.anchorDate ? this.anchorDate.toDateString() : null,
-      rendered: this.rendered.size,
-    });
     // The first load has to finish before a composer is worth opening. When
     // this is reached straight out of `openJournal` — the hotkey pressed from
     // some other note — `onOpen`'s reload may not be on the mutation chain
@@ -2569,13 +2559,6 @@ export class JournalView extends ItemView {
       explicitRequest?: boolean;
     } = {},
   ): Promise<void> {
-    // TEMPORARY TRACE — see the command callback in main.ts.
-    console.log("[JE] openComposer in", {
-      closed: this.closed,
-      hasTimelineEl: Boolean(this.timelineEl),
-      timelineInDom: this.timelineEl ? this.timelineEl.isConnected : null,
-      composer: Boolean(this.composer),
-    });
     if (this.closed) return;
 
     if (this.composer) {
@@ -2654,13 +2637,6 @@ export class JournalView extends ItemView {
     rendered.editor = editor;
     this.composer = rendered;
 
-    // TEMPORARY TRACE — see the command callback in main.ts.
-    console.log("[JE] composer built", {
-      elInDom: rendered.el.isConnected,
-      bodyInDom: rendered.bodyEl.isConnected,
-      timelineChildren: this.timelineEl.children.length,
-    });
-
     // `focus` is false only when `reestablishComposer` is putting an
     // unfocused composer back after a reload — restoring exactly the state
     // the rebuild disturbed, not upgrading a background composer into one
@@ -2719,8 +2695,6 @@ export class JournalView extends ItemView {
     // contentEl.win, not the global window: in a popout leaf the view lives in
     // its own window, and that is the one whose frames matter here.
     const deadline = Date.now() + COMPOSER_FOCUS_CLAIM_MS;
-    let claimAttempts = 0;
-    const firstRendered = rendered;
     // Mutable, not the original `rendered`/`editor` consts: a reload landing
     // mid-claim (`clearTimeline` then `reestablishComposer`, both reachable
     // while this loop is still inside its deadline) tears this exact
@@ -2746,17 +2720,6 @@ export class JournalView extends ItemView {
         claimedRendered = current;
         claimedEditor = current.editor;
       }
-      // TEMPORARY TRACE — five fixes have missed this; the focus path itself
-      // has never been observed.
-      const active = this.contentEl.doc.activeElement;
-      console.log("[JE] claimFocus", {
-        attempt: ++claimAttempts,
-        hasInput: this.composerHasInput,
-        editorHasFocus: claimedEditor.hasFocus(),
-        activeTag: active ? active.tagName : null,
-        activeClass: active ? String(active.className).slice(0, 40) : null,
-        replaced: claimedRendered !== firstRendered,
-      });
 
       // Input is the only success condition. Holding focus right now is not:
       // tracing showed the composer *does* receive focus on the first frame —
@@ -2768,11 +2731,6 @@ export class JournalView extends ItemView {
 
       if (!claimedEditor.hasFocus()) {
         claimedEditor.focus();
-
-        console.log("[JE] claimFocus retook", {
-          editorHasFocus: claimedEditor.hasFocus(),
-          activeTag: this.contentEl.doc.activeElement?.tagName ?? null,
-        });
       }
 
       if (Date.now() < deadline) this.contentEl.win.requestAnimationFrame(claimFocus);
