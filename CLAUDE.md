@@ -220,7 +220,13 @@ Today I realized...
 
 No heading is required.
 
-`created` represents the journal entry's creation time and should normally remain immutable.
+`created` represents the journal entry's creation time and is never changed by the plugin on its own — writing an entry's body must never touch it.
+
+The user may correct it deliberately, through the `Change entry time` action in the entry menu. That is the one sanctioned way it changes from inside the timeline, and it exists because the timestamp is what places an entry in the timeline and a wrong one has no other remedy: the properties panel is hidden there by design.
+
+Such a correction must rewrite only the `created` line. Obsidian's `fileManager.processFrontMatter` re-serializes the whole frontmatter block and can reformat the user's other properties, so it must not be used for this — see `setCreatedProperty` in `journal/markdownDoc.ts`.
+
+Changing the time never renames the file. Filenames are internal identifiers.
 
 Do not store redundant properties such as:
 
@@ -386,6 +392,7 @@ V1 should eventually support minimal entry actions:
 
 * Open source note
 * Copy link to entry
+* Change entry time
 * Delete entry
 
 Do not clutter every entry with permanently visible action buttons.
