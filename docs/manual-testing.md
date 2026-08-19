@@ -174,6 +174,56 @@ regression-guarded.
       phone-width sidebar. Confirm they are comfortable, and that tapping an
       empty day does nothing at all rather than flashing.
 
+## Case study: the composer that opened without a caret
+
+Worth reading before diagnosing anything in this view. It took six attempts,
+four of which shipped to the user and changed nothing, and the reason is a
+process failure rather than a hard bug.
+
+**The report.** With the Journal tab closed, the `New journal entry` hotkey
+opened the journal but left the caret somewhere else. From the Journal tab
+itself the same command worked.
+
+**What each attempt believed, and what was actually wrong with it:**
+
+1. *Focus is stolen during leaf activation, and the blur discards the composer.*
+   The cause was right. The gate was wrong: it asked "was this ever focused",
+   but focus **does** land before it is stolen, so the gate opened anyway.
+2. *The first load sweeps the composer away.* A real bug, found by the harness
+   and fixed — but not this one.
+3. *`clearTimeline` destroys the composer on every reload.* Also a real bug,
+   also fixed, and it earned the composer a complete data-safety story — but
+   not this one either.
+4. *Gate the discard on input rather than focus.* This one made the composer
+   **appear**. Still no caret.
+5. *`preserveExternalFocus` suppresses the focus of a re-established composer.*
+   Reproduced in the harness and fixed. Tracing later showed
+   `reestablishComposer` runs with a **null** snapshot on this flow, so this
+   path was never the bug — two attempts spent on a road not taken.
+6. *The retry loop stops watching at the first success.* This was it. The
+   composer receives focus on the first frame and loses it shortly after, to
+   one of the timeline's own embedded editors mounting. Treating "holds focus
+   now" as success meant the loop quit at exactly the moment it needed to
+   start. Input is the only success condition.
+
+**The lessons, in the order they cost the most:**
+
+- **Instrument before hypothesising, when a bug reproduces by hand but not in
+  the harness.** One trace answered in a single round what four hypotheses
+  could not. The first trace was added at attempt four.
+- **Do not remove instrumentation until the fix is confirmed by the person who
+  reported it.** It was removed once after a fix that turned out to be for a
+  different bug, and had to be rebuilt.
+- **Trace the whole path, not the part you suspect.** The first trace covered
+  only the new-entry command, so "the journal opens but nothing logs" could not
+  distinguish our command from any other route that opens it.
+- **The same wrong assumption usually appears more than once.** "Was it ever
+  focused" was the wrong question in *two* places — the discard gate and the
+  retry gate. Fixing one and not auditing for the other cost a whole round.
+- **A green suite proved nothing here.** All 401 tests passed at every wrong
+  step, including the version that stopped watching after the first success.
+  Which is why the retake behaviour is now pinned by a mutation-verified test.
+
 ## Coverage against CLAUDE.md's 21 testing priorities
 
 | # | Case | Automated | Manual |
