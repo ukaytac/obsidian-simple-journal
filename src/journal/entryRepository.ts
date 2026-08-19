@@ -328,7 +328,12 @@ export class EntryRepository {
       const { frontmatter } = splitFrontmatter(data);
       const cached = this.app.metadataCache.getFileCache(file)?.frontmatter;
 
-      if (frontmatter && !cached) {
+      // Only a block that *also* looks like it holds a `created` line is
+      // dangerous when Obsidian reports nothing: that is the disagreement worth
+      // refusing over. An empty `---\n---` block, or one whose cache entry has
+      // simply not been populated yet, has nothing for an insert to orphan —
+      // refusing those would be a permanent dead end on a safe document.
+      if (frontmatter && hasCreatedLine(frontmatter) && !cached) {
         throw new UnsafeFrontmatterError(
           "This entry's frontmatter could not be parsed by Obsidian; refusing to guess at it.",
         );
