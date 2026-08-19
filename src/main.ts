@@ -100,6 +100,8 @@ export default class JournalEntriesPlugin extends Plugin {
         });
       });
     });
+
+    this.app.workspace.onLayoutReady(() => void this.autoOpenCalendarOnce());
   }
 
   onunload(): void {
@@ -111,6 +113,42 @@ export default class JournalEntriesPlugin extends Plugin {
 
     if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
       this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
+    }
+
+    // A non-boolean here would make the once-only guard below either nag on
+    // every load or never run at all, depending on which way it coerced.
+    if (typeof this.settings.hasAutoOpenedCalendar !== "boolean") {
+      this.settings.hasAutoOpenedCalendar = DEFAULT_SETTINGS.hasAutoOpenedCalendar;
+    }
+  }
+
+  /**
+   * Places the calendar in the sidebar the first time the plugin loads, then
+   * records that it has done so and never forces it again.
+   *
+   * Deferred to `onLayoutReady` because the right split does not necessarily
+   * exist yet during `onload`, and `getRightLeaf` can return null when it
+   * doesn't. The callback fires immediately when the layout is already
+   * initialized, which is the case when a user enables the plugin by hand
+   * rather than at startup.
+   *
+   * The flag is written whether or not the open succeeds: a failure that
+   * repeats every load is worse than a calendar the user opens themselves.
+   */
+  private async autoOpenCalendarOnce(): Promise<void> {
+    if (this.settings.hasAutoOpenedCalendar) return;
+
+    this.settings.hasAutoOpenedCalendar = true;
+
+    try {
+      await this.saveSettings();
+
+      // Respect a layout that already has one — nothing to place.
+      if (this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).length > 0) return;
+
+      await this.openCalendar();
+    } catch (error) {
+      console.error("Journal Entries: could not place the calendar in the sidebar", error);
     }
   }
 
