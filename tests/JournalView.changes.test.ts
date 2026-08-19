@@ -21,46 +21,32 @@ afterEach(() => {
  */
 describe("JournalView external-change reconciliation", () => {
   /**
-   * FAILS against the current implementation — a genuine bug found while
-   * writing this suite, not a pre-existing known one.
-   *
    * `applyChangesNow`'s "removed" handling for a rename (`change.kind ===
    * "removed"` with `fileStillExists === true`) removes the stale rendering
    * at the old path and relies on this same batch's paired upsert for the
-   * new path to reinsert it (see the "removed" branch's own doc: "a rename
-   * always pairs this 'removed' with a same-batch upsert ... If this
-   * rendering is left keyed at the old path, that paired upsert finds
-   * nothing at the new path and inserts a SECOND, independent rendering").
-   * That reasoning is right for a DIRTY entry (which re-keys instead of
-   * removing), but for a CLEAN one — the common case — the row is removed
-   * outright and nothing re-keys it; the paired upsert is expected to
-   * reinsert it fresh instead.
+   * new path to reinsert it, for a CLEAN entry (a dirty one re-keys instead;
+   * see that branch's own doc).
    *
    * For a rename that leaves `created` unchanged (the case this test
    * exercises — same effective timestamp, just a different filename),
-   * `JournalService.applyUpsert` takes its "content" branch, which returns
-   * `{ kind: "content", entry }` WITHOUT ever splicing that `entry` object
-   * into `this.index` (only the "added"/"moved" branches call
-   * `insertSorted`). `decideChangeAction` correctly routes a "content"
-   * change with nothing currently rendered to `{ type: "insert" }` (its own
-   * doc says this is "reachable after a same-timestamp rename"), which
-   * calls `insertEntryInPlace(change.entry)` — but `insertEntryInPlace`
-   * locates the entry via `this.index.indexOf(entry)`, a reference-identity
-   * lookup. Since `entry` here is a freshly-constructed object that is
-   * never the same object as whatever the index already holds at that path,
-   * `indexOf` returns -1 and `insertEntryInPlace` silently returns without
-   * inserting anything.
+   * `JournalService.applyUpsert` takes its "content" branch. `decideChangeAction`
+   * correctly routes a "content" change with nothing currently rendered to
+   * `{ type: "insert" }`, which calls `insertEntryInPlace(change.entry)` —
+   * and `insertEntryInPlace` locates the entry via `this.index.indexOf(entry)`,
+   * a reference-identity lookup. This only works if `applyUpsert`'s "content"
+   * branch hands back the exact object already living in `this.index` —
+   * fixed in `JournalService.applyUpsert` to return `existing` rather than a
+   * freshly re-parsed `entry`, restoring the same "returned entry IS the
+   * index's object" invariant the "added"/"moved" branches already keep by
+   * construction.
    *
-   * Net effect: renaming a rendered, unedited entry from outside the view
-   * (Explorer, another tool, a sync client) — without also changing its
-   * effective timestamp — makes its row vanish from the timeline entirely
-   * until the next full `reload()`. The file itself is untouched and still
-   * correctly present in `this.index`; only the DOM/`this.rendered` lose
-   * track of it. This is the "re-keyed rather than duplicated" invariant
-   * this test pins — it should end up re-rendered (or, better, re-keyed)
-   * at the new path, not dropped.
+   * Net effect pinned here: renaming a rendered, unedited entry from outside
+   * the view (Explorer, another tool, a sync client) — without also changing
+   * its effective timestamp — must not drop its row from the timeline; it
+   * ends up re-rendered fresh at the new path (not re-keyed in the DOM
+   * sense, but never dropped, and never duplicated).
    */
-  it.fails("a renamed entry is re-keyed in place, never duplicated", async () => {
+  it("a renamed entry is re-keyed in place, never duplicated", async () => {
     const h = createHarness();
     const at = new Date(2026, 7, 12, 9, 0, 0);
     const file = addEntry(h, at, "hello");
@@ -156,6 +142,48 @@ describe("JournalView external-change reconciliation", () => {
     expect(domPaths).toHaveLength(3);
     expect(domPaths[0]).toBe(middle.path);
     expect(internals(h.view).dayGroups.has(dayKey(correctedAt))).toBe(true);
+  });
+
+  it("a rename that also changes the resolved created time moves the row, without duplicating it", async () => {
+    // Composes the rename fix above with the pre-existing "moved" handling:
+    // renaming AND changing `created` in the same external edit takes
+    // `JournalService.applyUpsert`'s "moved" branch (not "content"), which
+    // already spliced the fresh entry into the index itself — this pins
+    // that the "content" branch's identity fix didn't regress this
+    // sibling branch's own (already-correct) behaviour.
+    const h = createHarness();
+    const at = new Date(2026, 7, 12, 9, 0, 0);
+    const file = addEntry(h, at, "hello");
+    addEntry(h, new Date(2026, 7, 10, 9, 0, 0), "unrelated, stays put");
+    h.service.load();
+    await h.view.onOpen();
+
+    const oldPath = file.path;
+    expect(internals(h.view).rendered.size).toBe(2);
+
+    // Same folder, different filename, AND (via an explicit `created`
+    // registered at the new path before the rename flushes) a different
+    // resolved timestamp — newer than everything currently loaded, so the
+    // renamed entry sorts to the top rather than past the edge of the
+    // (deliberately tiny) loaded window, which would exercise paging
+    // instead of the rename/identity path this test targets.
+    const dir = oldPath.slice(0, oldPath.lastIndexOf("/"));
+    const newPath = `${dir}/renamed-entry.md`;
+    const correctedAt = new Date(2026, 7, 13, 9, 0, 0);
+    h.app.metadataCache.frontmatter.set(newPath, { created: formatCreatedProperty(correctedAt) });
+    await h.app.fileManager.renameFile(file, newPath);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    expect(internals(h.view).rendered.has(oldPath)).toBe(false);
+    expect(internals(h.view).rendered.has(newPath)).toBe(true);
+    expect(internals(h.view).rendered.size).toBe(2);
+
+    const rows = timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-entry");
+    expect(rows).toHaveLength(2);
+    const domPaths = Array.from(rows).map((el) => el.dataset.path);
+    expect(domPaths).toContain(newPath);
+    expect(domPaths).not.toContain(oldPath);
   });
 
   it("a same-day timestamp correction updates the row in place instead of tearing it down and re-inserting it", async () => {

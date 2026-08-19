@@ -372,6 +372,18 @@ describe("JournalService: rename", () => {
       { kind: "content", entry: expect.objectContaining({ file }) },
     ]);
     expect(service.getEntries()).toHaveLength(1);
+    // The "content" change's `entry` must be the EXACT object `this.index`
+    // holds, by reference — not merely an equal-looking one freshly parsed
+    // from disk. `applyUpsert`'s "content" branch is the one branch that
+    // never calls `insertSorted`/`removeByPath`, so nothing else re-derives
+    // this invariant for it; a caller that locates its target via
+    // `index.indexOf(change.entry)` (JournalView.insertEntryInPlace, after a
+    // same-timestamp external rename) depends on this exact identity, or the
+    // lookup silently fails and the rendered row is lost — see
+    // `JournalView.changes.test.ts`'s "a renamed entry is re-keyed in place,
+    // never duplicated".
+    const contentChange = changes.find((c) => c.kind === "content");
+    expect(contentChange?.entry).toBe(service.getEntries()[0]);
   });
 
   it("removes the entry when a file is renamed out of the journal folder", () => {

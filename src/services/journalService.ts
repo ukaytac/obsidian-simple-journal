@@ -323,7 +323,21 @@ export class JournalService extends Component {
       return { kind: "moved", entry };
     }
 
-    return { kind: "content", entry };
+    // Same `created`, so `existing` already stands for this file correctly
+    // (its `.file` is the very TFile Obsidian mutated in place for a rename —
+    // see `applyRenameSource`'s doc — and `.created` matches `entry`'s own).
+    // Deliberately returns `existing`, NOT the freshly-parsed `entry`: this
+    // is the one `applyUpsert` branch that never calls `insertSorted`/
+    // `removeByPath`, so `entry` is never spliced into `this.index` — a
+    // caller that locates its target via `this.index.indexOf(...)` (e.g.
+    // `JournalView.insertEntryInPlace`, reachable here after a same-
+    // timestamp rename) needs the exact object the index already holds, or
+    // that lookup fails by reference and silently drops the change. The
+    // "added"/"moved" branches above already maintain that invariant by
+    // construction (`entry` IS what they just inserted); this restores it
+    // for "content" too, rather than leaving indexOf-by-reference callers to
+    // special-case it themselves.
+    return { kind: "content", entry: existing };
   }
 
   private emitBatch(changes: JournalChange[]): void {
