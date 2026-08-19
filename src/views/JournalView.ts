@@ -1102,10 +1102,21 @@ export class JournalView extends ItemView {
    * Any pending debounced body edit is flushed first, exactly like
    * `confirmDelete` flushes before deleting: without it, this write and a
    * still-pending body save could race against the same file.
+   *
+   * Also bails if `file` no longer exists in the vault — same identity
+   * check `handleDeleteFallback` uses. Both callers reach this through a
+   * control that's still enabled/focusable during the window between a
+   * deletion being confirmed (`is-deleting`'s `pointer-events: none` blocks
+   * a click, but not `Enter` on a still-focused, still-tabbable button) and
+   * the vault event that actually tears the row down; this covers that race
+   * for the timestamp button as well as the pre-existing one for the "..."
+   * menu, and incidentally covers a file vanishing for any other external
+   * reason too.
    */
   private changeEntryTime(rendered: RenderedEntry): void {
     const file = rendered.entry.file;
     if (!file) return;
+    if (this.app.vault.getAbstractFileByPath(file.path) !== file) return;
 
     new ChangeEntryTimeModal(this.app, rendered.entry.created, (value) => {
       void this.commitEntryTimeChange(rendered, file, value);

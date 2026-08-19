@@ -43,14 +43,31 @@
 }
 
 /* A real <button> (see JournalView.createEntryEl), reset back to reading as
-   plain muted text at rest — no chrome, no border, no background. Only the
-   hover/focus rules below hint that it does anything. */
-.journal-entry-time {
+   plain muted text at rest — no chrome, no border, no background. A single
+   class selector loses to Obsidian's own `button:not(.clickable-icon)`
+   (background-color/box-shadow) and to the bare `button` rule
+   (height/border-radius/font-weight): both have one type-selector's worth
+   of specificity that a lone `.journal-entry-time` doesn't clear, so both
+   applied untouched — a filled, rounded, shadowed chip instead of a
+   timestamp. `.journal-entry-header .journal-entry-time` (two classes)
+   clears both, and clears them by a wider margin than strictly necessary
+   against Obsidian's own CSS specifically so a community theme's own
+   `button:hover`-style rule (typically one class ahead of the base button
+   rule, e.g. `.some-theme button:hover`) doesn't flip the tie — hence the
+   explicit `:hover` entry below rather than relying on the base rule's
+   specificity alone to also win the hover case. */
+.journal-entry-header .journal-entry-time,
+.journal-entry-header .journal-entry-time:hover {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
-  background: none;
+  background-color: transparent;
+  box-shadow: none;
   border: none;
+  height: auto;
+  border-radius: 0;
+  font-weight: inherit;
+  text-align: left;
   padding: 0;
   margin: 0;
   font-family: inherit;
@@ -58,16 +75,24 @@
   cursor: pointer;
 }
 
-.journal-entry-time:hover,
-.journal-entry-time:focus-visible {
+.journal-entry-header .journal-entry-time:hover,
+.journal-entry-header .journal-entry-time:focus-visible {
   color: var(--text-muted);
+}
+
+/* The `box-shadow: none` above also erases Obsidian's own
+   `button:focus-visible` ring — without this, a keyboard focus would be
+   marked only by the (much weaker) colour shift above. Reinstated
+   explicitly, using the same variable Obsidian's own focus rings use. */
+.journal-entry-header .journal-entry-time:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }
 
 /* The uncommitted composer's timestamp is disabled (see createEntryEl) —
    nothing to correct yet. Overrides the UA stylesheet's own disabled
    treatment so it still reads as the same muted timestamp, not a
    greyed-out control. */
-.journal-entry-time:disabled {
+.journal-entry-header .journal-entry-time:disabled {
   opacity: 1;
   cursor: default;
 }
@@ -277,6 +302,18 @@
 
 .is-mobile .journal-entry-body {
   padding: var(--size-4-2) 0;
+}
+
+/* `height: auto` on `.journal-entry-header .journal-entry-time` above
+   leaves the timestamp only about one line tall — too small a tap target
+   on mobile per CLAUDE.md's "larger touch targets" rule. Padding grows the
+   hit area without adding visible chrome (background/box-shadow stay
+   `none`/`transparent` from that same base rule); the matching negative
+   margin cancels the padding's effect on the header's own flex height, so
+   the row doesn't grow and neighbouring entries don't shift. */
+.is-mobile .journal-entry-header .journal-entry-time {
+  padding: var(--size-4-2) 0;
+  margin: calc(-1 * var(--size-4-2)) 0;
 }
 
 /* Now that long-press opens the same menu (see JournalView.createEntryEl),
