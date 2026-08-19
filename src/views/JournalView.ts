@@ -210,6 +210,14 @@ export class JournalView extends ItemView {
     protected readonly plugin: JournalEntriesPlugin,
   ) {
     super(leaf);
+
+    // In the tab header, next to the view's own menu — the same place
+    // Obsidian's built-in views put their actions. Registered here rather than
+    // in onOpen because onOpen can run more than once over a view's life and
+    // each call would add another icon.
+    this.addAction("plus", "New journal entry", () => {
+      void this.startNewEntry();
+    });
   }
 
   getViewType(): string {
@@ -687,7 +695,7 @@ export class JournalView extends ItemView {
       cls: "journal-empty",
       text: anchored
         ? "Nothing on or before this date."
-        : "No journal entries yet. Run “New journal entry” to write the first one.",
+        : "No journal entries yet. Use the + button above to write the first one.",
     });
   }
 
