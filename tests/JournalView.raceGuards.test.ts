@@ -123,35 +123,45 @@ describe("JournalView generation/opToken race guards", () => {
     expect(rendered.editor).not.toBeNull();
     expect(rendered.editor.hasFocus()).toBe(false); // not focused, so unmountEditor won't decline on that basis
 
-    // Gates only THIS entry's very first `flushSave` call — the one the
-    // direct `unmountEditor` call below is about to make — and lets every
-    // later call (in particular `clearTimeline`'s own re-flush of the same
-    // entry, a few lines down) through immediately. This is what makes the
-    // race deterministic: `clearTimeline` — and the destroy loop right
-    // after its own flush — runs to completion, via a fully-awaited
-    // `reload()`, entirely BEFORE this gate is ever released, rather than
-    // leaving two same-shaped promise chains to race each other's
-    // microtask ordering.
+    // Dirty the entry first: `mountLifecycle.ts`'s `unmountEditor` calls
+    // `entrySave.ts`'s `flushSave`/`save` directly (via an injected
+    // `SaveDeps`), not through a `JournalView` method — so there is no
+    // `view.flushSave` to monkey-patch any more, and an unedited entry's
+    // flush would skip the write entirely (`saveIfChanged`'s no-op path),
+    // leaving nothing to gate. Editing first means the flush this test cares
+    // about actually reaches `vault.process`.
+    const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.value = "edited, not yet flushed";
+    textarea.dispatchEvent(new InputEvent("input", { inputType: "insertText" }));
+
+    // Gates only the very first call to the real dependency underneath the
+    // save pipeline — the one the direct `unmountEditor` call below is about
+    // to make — and lets every later call (in particular `clearTimeline`'s
+    // own re-flush of the same entry, a few lines down) through immediately.
+    // This is what makes the race deterministic: `clearTimeline` — and the
+    // destroy loop right after its own flush — runs to completion, via a
+    // fully-awaited `reload()`, entirely BEFORE this gate is ever released,
+    // rather than leaving two same-shaped promise chains to race each
+    // other's microtask ordering.
     const g = gate();
     let gateArmed = true;
-    const view = internals(h.view);
-    const originalFlushSave = view.flushSave.bind(view);
-    view.flushSave = async (r: unknown) => {
-      if (r === rendered && gateArmed) {
+    const originalProcess = h.app.vault.process.bind(h.app.vault);
+    h.app.vault.process = async (...args: Parameters<typeof originalProcess>) => {
+      if (gateArmed) {
         gateArmed = false;
         await g.promise;
       }
-      return originalFlushSave(r);
+      return originalProcess(...args);
     };
 
     // Not going through the observer here (fire-and-forget): calling
     // directly and awaiting means a guard removal that lets this throw
     // (see below) fails the test loudly instead of becoming a silent
     // unhandled rejection.
-    const unmountPromise = view.unmountEditor(rendered);
+    const unmountPromise = internals(h.view).unmountEditor(rendered);
 
     // Runs to completion: `clearTimeline`'s own flush of this same entry
-    // goes through the (now un-gated) real `flushSave` and resolves
+    // goes through the (now un-gated) real `vault.process` and resolves
     // immediately, so nothing here depends on `g` — `reload()` fully
     // rebuilds the timeline, generation bumped and this entry's editor
     // already destroyed, before the line below ever runs.

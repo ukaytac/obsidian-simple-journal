@@ -26,18 +26,7 @@ import {
   scheduleSave as scheduleSaveEntry,
   type SaveDeps,
 } from "./entrySave";
-import {
-  enforceMountLimit as enforceMountLimitEntries,
-  ensureMountOrderContains as ensureMountOrderContainsEntries,
-  mountEditor as mountEditorEntry,
-  mountStateOf as mountStateOfEntry,
-  mountUsableEditor as mountUsableEditorEntry,
-  replaceWithFallback as replaceWithFallbackEntry,
-  unmountEditor as unmountEditorEntry,
-  wireEditor as wireEditorEntry,
-  type MountDeps,
-} from "./mountLifecycle";
-import type { MountState } from "./mountWindow";
+import { createMountLifecycle, type MountLifecycle } from "./mountLifecycle";
 import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
@@ -221,8 +210,15 @@ export class JournalView extends ItemView {
   private forcedReobserve = false;
   /** Consecutive pages loaded in the current forced-reobserve burst. */
   private burstCount = 0;
-  /** Paths of entries with a mounted editor, oldest-mounted first. */
-  private mountOrder: string[] = [];
+  /**
+   * Paths of entries with a mounted editor, oldest-mounted first. `readonly`
+   * deliberately: `mountLifecycle` (below) closes over this exact array once,
+   * at construction, so nothing may ever replace it wholesale — only mutate
+   * it in place (`clearTimeline` truncates via `.length = 0`, never
+   * reassigns) — or that closure would keep acting on a detached, stale
+   * array forever.
+   */
+  private readonly mountOrder: string[] = [];
   /** Serializes `reload()`/`onClose()`; see `enqueueTimelineMutation`. */
   private timelineMutationChain: Promise<unknown> = Promise.resolve();
   /**
@@ -293,24 +289,28 @@ export class JournalView extends ItemView {
     markSelfWrite: (path) => this.plugin.journal.markSelfWrite(path),
   };
   /**
-   * Injected into `mountLifecycle.ts`'s `mountEditor`/`unmountEditor`/
-   * `wireEditor` pipeline. `getGeneration`/`renderStatic`/`lookup` are the
-   * "narrow shared reference" back into state that pipeline doesn't own —
-   * see that module's doc for why a clean cut isn't possible here. The
-   * `as RenderedEntry` casts are safe: every `MountEntry` this module is
-   * ever actually called with (`this.rendered`'s values) already IS a full
-   * `RenderedEntry`; `MountEntry` only narrows the compile-time view of it.
+   * The bound mount/unmount pipeline (see `mountLifecycle.ts`), built once
+   * and closed over `this.mountOrder` — REQUIRED to be the exact same array
+   * for this entry's whole lifetime, which is why that field is `readonly`
+   * (see its doc). `getGeneration`/`renderStatic`/`lookup` are the "narrow
+   * shared reference" back into state this pipeline doesn't own — see that
+   * module's doc for why a clean cut isn't possible here. `save: this.saveDeps`
+   * is passed straight through so the pipeline calls `entrySave.ts` directly
+   * rather than through a `JournalView` method that would exist only to be
+   * called — a test that needs to intercept a save gates the real dependency
+   * underneath `saveDeps` (e.g. `vault.process`), not a view method.
+   * The `as RenderedEntry` casts are safe: every `MountEntry` this pipeline
+   * is ever actually called with (`this.rendered`'s values) already IS a
+   * full `RenderedEntry`; `MountEntry` only narrows the compile-time view.
    */
-  private readonly mountDeps: MountDeps = {
+  private readonly mountLifecycle: MountLifecycle = createMountLifecycle(this.mountOrder, MAX_MOUNTED_EDITORS, {
     getGeneration: () => this.generation,
     readBody: (file) => this.plugin.repository.readBody(file),
     renderStatic: (target) => this.renderStatic(target as RenderedEntry),
     editorFactory: this.plugin.editorFactory,
-    scheduleSave: (target, value) => this.scheduleSave(target as RenderedEntry, value),
-    flushSave: (target) => this.flushSave(target as RenderedEntry),
-    isDirty: (target) => this.isDirty(target as RenderedEntry),
     lookup: (path) => this.rendered.get(path),
-  };
+    save: this.saveDeps,
+  });
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -663,7 +663,9 @@ export class JournalView extends ItemView {
 
     this.rendered.clear();
     this.dayGroups.clear();
-    this.mountOrder = [];
+    // Truncated in place, never reassigned — `mountOrder` is `readonly`
+    // precisely so this stays true; see its doc.
+    this.mountOrder.length = 0;
     this.lastRenderedMonth = null;
     this.timelineEl.empty();
 
@@ -1747,16 +1749,7 @@ export class JournalView extends ItemView {
    * through `this.`.
    */
   private async mountEditor(rendered: RenderedEntry): Promise<void> {
-    await mountEditorEntry(rendered, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
-  }
-
-  /**
-   * Wires the callbacks every editor needs. See `wireEditor` in
-   * `mountLifecycle.ts` for what this actually does and why; this wrapper
-   * exists only so calls go through `this.` (see `mountEditor`'s doc).
-   */
-  private wireEditor(rendered: RenderedEntry, editor: EntryEditor): void {
-    wireEditorEntry(rendered, editor, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
+    await this.mountLifecycle.mountEditor(rendered);
   }
 
   /**
@@ -1767,16 +1760,7 @@ export class JournalView extends ItemView {
    * editor once a composer's file is created.
    */
   private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
-    return mountUsableEditorEntry(rendered, body, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
-  }
-
-  /**
-   * Swaps a failed embedded editor for the plain-text fallback. See
-   * `replaceWithFallback` in `mountLifecycle.ts`; this wrapper exists only
-   * so calls go through `this.` (see `mountEditor`'s doc).
-   */
-  private async replaceWithFallback(rendered: RenderedEntry): Promise<void> {
-    await replaceWithFallbackEntry(rendered, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
+    return this.mountLifecycle.mountUsableEditor(rendered, body);
   }
 
   /**
@@ -1847,34 +1831,14 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Resolves a path's current mount state for `mountWindow`'s pure selection
-   * logic — the only bridge between that DOM/Obsidian-free module and this
-   * view's actual `rendered` map. The state shape itself (`unsaved`,
-   * `distance`, …) is built by `mountStateOf` in `mountLifecycle.ts`; this
-   * wrapper supplies the one thing that module doesn't own — the path lookup
-   * into `this.rendered`.
-   */
-  private mountStateOf(path: string): MountState | undefined {
-    return mountStateOfEntry(this.rendered.get(path), (target) => this.isDirty(target as RenderedEntry));
-  }
-
-  /**
    * Backstop for when more entries are simultaneously within
    * `MOUNT_ROOT_MARGIN` than `MAX_MOUNTED_EDITORS` allows. See
    * `enforceMountLimit` in `mountLifecycle.ts`; this wrapper exists only so
-   * calls go through `this.` (see `mountEditor`'s doc).
+   * `commitComposer` — the one caller left outside this module, once its own
+   * newly-mounted editor joins the pool — can reach it through `this.`.
    */
   private enforceMountLimit(): void {
-    enforceMountLimitEntries(this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
-  }
-
-  /**
-   * Ensures `path` is present in `mountOrder` — a no-op if it already is.
-   * See `ensureMountOrderContains` in `mountLifecycle.ts`; this wrapper
-   * exists only so calls go through `this.` (see `mountEditor`'s doc).
-   */
-  private ensureMountOrderContains(path: string): void {
-    ensureMountOrderContainsEntries(this.mountOrder, path);
+    this.mountLifecycle.enforceMountLimit();
   }
 
   /**
@@ -1882,24 +1846,30 @@ export class JournalView extends ItemView {
    * rendering. See `unmountEditor` in `mountLifecycle.ts` for what this
    * actually does and why (the focused/intersecting/dirty declines,
    * `evict`'s meaning, the `generation` guard around its flush); this
-   * wrapper exists only so calls go through `this.` — every internal caller
-   * (`installMountObserver`, `wireEditor`'s `onBlur`, `confirmDelete`, …) and
-   * `tests/JournalView.raceGuards.test.ts`'s reflection (see `mountEditor`'s
-   * doc).
+   * wrapper exists only so calls go through `this.` — `installMountObserver`'s
+   * exit-transition callback and `tests/JournalView.raceGuards.test.ts`'s
+   * reflection (see `mountEditor`'s doc). Every call `mountLifecycle.ts`
+   * makes to its own internal `unmountEditor` (from `wireEditor`'s `onBlur`,
+   * or `enforceMountLimit`'s eviction) bypasses this wrapper entirely —
+   * those are calls within the module, not back into the view.
    */
   private async unmountEditor(rendered: RenderedEntry, opts: { evict?: boolean } = {}): Promise<void> {
-    await unmountEditorEntry(rendered, this.mountOrder, this.mountDeps, opts);
+    await this.mountLifecycle.unmountEditor(rendered, opts);
   }
 
   /**
    * Debounces writes so typing does not hit the disk on every keystroke.
-   * Selection and the actual save pipeline live in `entrySave.ts`, exercised
-   * directly there with fabricated state; this just supplies the live
-   * `SaveDeps`. Kept as an instance method — rather than called directly as
-   * a free function from every call site below — solely so
+   * The actual save pipeline lives in `entrySave.ts`, exercised directly
+   * there with fabricated state; this just supplies the live `SaveDeps`.
+   * Kept as an instance method — rather than called directly as a free
+   * function from every call site below — solely so
    * `tests/JournalView.raceGuards.test.ts` can monkey-patch `view.flushSave`
-   * and have every internal caller (`unmountEditor`, `clearTimeline`, …)
-   * observe the patched version through `this.`.
+   * and have every internal caller (`confirmDelete`, `clearTimeline`, …)
+   * observe the patched version through `this.`. `mountLifecycle.ts` does
+   * NOT go through this wrapper — it takes `SaveDeps` directly — so patching
+   * this method no longer affects `unmountEditor`'s own flush; a test that
+   * needs to intercept that gates the real dependency underneath `saveDeps`
+   * instead (see `tests/JournalView.raceGuards.test.ts`).
    */
   private scheduleSave(rendered: RenderedEntry, value: string): void {
     scheduleSaveEntry(rendered, value, this.saveDeps);
