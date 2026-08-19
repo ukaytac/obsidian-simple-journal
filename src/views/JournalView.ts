@@ -20,7 +20,12 @@ import { decideChangeAction, type RenderedState } from "./applyChange";
 import { ChangeEntryTimeModal } from "./ChangeEntryTimeModal";
 import { isMeaningful, resolveComposerContent } from "./composerCommit";
 import type { EntryEditor } from "./EntryEditor";
-import { saveIfChanged } from "./entrySave";
+import {
+  flushSave as flushSaveEntry,
+  save as saveEntry,
+  scheduleSave as scheduleSaveEntry,
+  type SaveDeps,
+} from "./entrySave";
 import { enforceMountLimit as runEnforceMountLimit, type MountState } from "./mountWindow";
 import { TextareaEditor } from "./TextareaEditor";
 
@@ -262,6 +267,20 @@ export class JournalView extends ItemView {
    * composer anyway, since `timelineEl` does not exist yet.
    */
   private initialLoad: Promise<void> = Promise.resolve();
+  /**
+   * Injected into `entrySave.ts`'s `scheduleSave`/`flushSave`/`save` so that
+   * pipeline can write through `EntryRepository`/`JournalService` without
+   * importing either — same dependency-injection shape as `mountWindow.ts`'s
+   * `stateOf`/`onEvict`. Arrow functions, not bound method references,
+   * because each still needs to make its call as `this.plugin.repository.…`/
+   * `this.plugin.journal.…` — a bare unbound reference to either method
+   * would lose its own `this` the moment `entrySave.ts` calls it as a plain
+   * function.
+   */
+  private readonly saveDeps: SaveDeps = {
+    writeBody: (file, body) => this.plugin.repository.writeBody(file, body),
+    markSelfWrite: (path) => this.plugin.journal.markSelfWrite(path),
+  };
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -2077,152 +2096,37 @@ export class JournalView extends ItemView {
     rendered.bodyEl.style.removeProperty("min-height");
   }
 
-  /** Debounces writes so typing does not hit the disk on every keystroke. */
+  /**
+   * Debounces writes so typing does not hit the disk on every keystroke.
+   * Selection and the actual save pipeline live in `entrySave.ts`, exercised
+   * directly there with fabricated state; this just supplies the live
+   * `SaveDeps`. Kept as an instance method — rather than called directly as
+   * a free function from every call site below — solely so
+   * `tests/JournalView.raceGuards.test.ts` can monkey-patch `view.flushSave`
+   * and have every internal caller (`unmountEditor`, `clearTimeline`, …)
+   * observe the patched version through `this.`.
+   */
   private scheduleSave(rendered: RenderedEntry, value: string): void {
-    if (rendered.saveHandle !== null) window.clearTimeout(rendered.saveHandle);
-
-    rendered.saveHandle = window.setTimeout(() => {
-      rendered.saveHandle = null;
-      void this.save(rendered, value);
-    }, 500);
+    scheduleSaveEntry(rendered, value, this.saveDeps);
   }
 
   /**
-   * Writes any pending edit immediately. Called before an editor is destroyed
-   * and when the view closes, so nothing sitting inside the debounce window is
-   * lost. `editor.flush()` commits what the editor holds; `getValue()` stays
-   * truthful even after `destroy()`, so this cannot write an empty body over
-   * real text.
-   *
-   * Bails without calling `save()` if there is no editor at all — a state
-   * believed unreachable today (every `destroy()` is preceded synchronously
-   * by a `flushSave` that nulls `saveHandle`, and nothing else can interleave
-   * with that synchronous sequence), but `?? ""` here would not merely be a
-   * redundant fallback if it ever were reached: with `savedBody` now holding
-   * the entry's real text, `""` reads as a genuine (and different) value,
-   * and `save()` would write the entry empty instead of leaving it alone.
+   * Writes any pending edit immediately. See `flushSave` in `entrySave.ts`
+   * for what this actually does and why; this wrapper exists only so calls
+   * go through `this.` (see `scheduleSave`'s doc).
    */
   private async flushSave(rendered: RenderedEntry): Promise<void> {
-    rendered.editor?.flush();
-
-    if (rendered.saveHandle === null) return;
-    window.clearTimeout(rendered.saveHandle);
-    rendered.saveHandle = null;
-
-    if (!rendered.editor) return;
-    await this.save(rendered, rendered.editor.getValue());
+    await flushSaveEntry(rendered, this.saveDeps);
   }
 
   /**
-   * Writes `value` to disk unless it already matches `rendered.savedBody`,
-   * and never rejects. The dirty check and the never-reject shape are both
-   * in `saveIfChanged` — kept as a small, dependency-injected pure function
-   * (same shape as `mountWindow.ts`'s `stateOf`/`onEvict`) so both are
-   * covered by `tests/entrySave.test.ts` directly, without needing a live
-   * `JournalView`.
-   *
-   * `markSelfWrite` is called from inside the `write` callback — i.e. only
-   * when `saveIfChanged` has actually decided a write is happening — rather
-   * than unconditionally before calling `saveIfChanged`. Marking it
-   * unconditionally would also mark the (very common) no-op case where
-   * scrolling an unedited entry in and out of the mount window flushes
-   * nothing: that mark would then never be consumed by a real `modify`/
-   * `changed` event (none is coming) and would sit in `JournalService` for
-   * its full TTL, able to wrongly swallow a genuinely external edit to the
-   * same path that happens to land in that window.
+   * Writes `value` to disk unless it already matches `rendered.savedBody`.
+   * See `save` in `entrySave.ts` for what this actually does and why; this
+   * wrapper exists only so calls go through `this.` (see `scheduleSave`'s
+   * doc).
    */
   private async save(rendered: RenderedEntry, value: string): Promise<void> {
-    // See `saveToken`'s doc: two `save()` calls for the same entry can
-    // overlap (a `scheduleSave` timer firing while an earlier write is still
-    // in flight, or a `flushSave` starting a second one), and can then
-    // settle out of order. Captured before the only await below, so it
-    // identifies THIS call uniquely; only the call whose token still matches
-    // `rendered.saveToken` when it settles is the most recent one, and only
-    // that one is allowed to touch `savedBody` or the marker.
-    const token = ++rendered.saveToken;
-
-    const result = await saveIfChanged(
-      value,
-      rendered.savedBody,
-      (v) => {
-        this.plugin.journal.markSelfWrite(rendered.entry.file.path);
-        return this.plugin.repository.writeBody(rendered.entry.file, v);
-      },
-      (error) => {
-        console.error("Journal Entries: failed to save an entry", rendered.entry.file.path, error);
-        new Notice(
-          `Journal Entries: failed to save "${rendered.entry.file.path}". See the developer console for details.`,
-        );
-        // REQUIRED: an older, failing write must not raise a marker after a
-        // newer write for this same entry has already been issued (and
-        // possibly already succeeded) — see `saveToken`'s doc.
-        if (token === rendered.saveToken) this.showSaveError(rendered);
-      },
-    );
-
-    // REQUIRED, same reasoning: an older attempt resolving after a newer one
-    // must not stomp `savedBody` back to its own now-stale result.
-    if (token !== rendered.saveToken) return;
-    rendered.savedBody = result;
-
-    // `savedBody` now equals `value` on both a successful write and a
-    // no-op skip (value already matched disk) — the only case it does NOT
-    // equal `value` is a failed write, where `saveIfChanged` hands back the
-    // unchanged original. Clearing here on the skip path too is correct, not
-    // just harmless: it covers the entry being edited back to the last
-    // known-good text after a prior failure, which never re-enters `write`
-    // (value === savedBody), but is genuinely no longer "unsaved".
-    if (rendered.savedBody === value) this.clearSaveError(rendered);
-  }
-
-  /**
-   * Marks the entry as unsaved next to its timestamp. The editor keeps the
-   * text — nothing is lost — and the next successful (or no-op, see `save`)
-   * write clears the marker. Guarded against a duplicate: `save` can call
-   * this repeatedly (every retried failure) for the same still-broken entry.
-   *
-   * `role="status"` (implicit `aria-live="polite"`) so assistive tech
-   * announces it the moment it appears, since nothing moves focus here.
-   * Inserted before `.journal-entry-actions`, not appended to the header:
-   * `createSpan`/`createDiv` always append, and the actions element is
-   * already last among the header's children (see `createEntryEl`) — a plain
-   * append would land the marker to the right of the (auto-margined, always
-   * right-aligned) actions button instead of next to the timestamp.
-   *
-   * Nothing here retries the write on a timer. Once shown, this marker only
-   * clears the next time `save()` actually runs again for this entry — the
-   * user typing more (a fresh `scheduleSave`), or this entry crossing
-   * `MOUNT_ROOT_MARGIN` again (a `flushSave` via `unmountEditor`, or the
-   * reposition/removed paths in `applyChangesNow`). A write that starts
-   * failing and is then never touched again by either of those can leave
-   * this marker showing indefinitely, outliving the actual failure once
-   * whatever caused it (e.g. a permissions problem) is fixed. Acceptable for
-   * the MVP: building an automatic retry timer is a deliberately deferred
-   * scope decision, not an oversight.
-   */
-  private showSaveError(rendered: RenderedEntry): void {
-    if (rendered.el.querySelector(".journal-entry-error")) return;
-
-    const header = rendered.el.querySelector(".journal-entry-header");
-    if (!header) return;
-
-    const marker = createSpan({
-      cls: "journal-entry-error",
-      text: "not saved",
-      attr: {
-        role: "status",
-        "aria-label": "This entry could not be written to disk. See the developer console.",
-      },
-    });
-
-    const actions = header.querySelector(".journal-entry-actions");
-    if (actions) header.insertBefore(marker, actions);
-    else header.appendChild(marker);
-  }
-
-  /** Removes the failure marker `showSaveError` added, if present. */
-  private clearSaveError(rendered: RenderedEntry): void {
-    rendered.el.querySelector(".journal-entry-error")?.remove();
+    await saveEntry(rendered, value, this.saveDeps);
   }
 
   /**
