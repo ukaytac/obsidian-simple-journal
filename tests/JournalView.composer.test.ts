@@ -66,14 +66,25 @@ describe("JournalView composer lifecycle", () => {
     expect(rowEl?.classList.contains("journal-entry-composer")).toBe(false);
   });
 
-  it("abandoning an empty, focused composer removes it and creates no file", async () => {
+  it("abandoning a composer after typing something non-meaningful removes it and creates no file", async () => {
+    // Whitespace, deliberately: `isMeaningful` ("value.trim().length > 0")
+    // never treats it as real content, so this exercises input-then-blur
+    // without ever crossing `onComposerInput`'s commit threshold — typing
+    // genuinely meaningful text instead would commit a real file on that
+    // very keystroke (Lazy Creation has no "clear it back out" undo once
+    // that happens), which is a different scenario from the one
+    // `discardEmptyComposer` exists for. A blur alone (see the test below)
+    // is not abandonment; abandonment is specifically "the user put a
+    // keystroke in here, then left with nothing worth keeping" (see
+    // `composerHasInput`'s doc).
     const h = createHarness();
     h.service.load();
     await h.view.onOpen();
     await h.view.startNewEntry();
 
     const textarea = composerTextarea(h.view);
-    textarea.focus();
+    typeInto(textarea, "   ");
+    typeInto(textarea, "");
     textarea.blur();
     await settle();
 
@@ -82,22 +93,25 @@ describe("JournalView composer lifecycle", () => {
     expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeNull();
   });
 
-  it("a blur that never followed a real focus does not discard the composer", async () => {
-    // openComposer's own activation-churn guard: a leaf being activated can
-    // blur the composer before it was ever genuinely focused, and that must
-    // not read as abandonment (see `composerEverFocused`'s doc). In this
-    // harness `openComposer` itself already calls `editor.focus()`
-    // synchronously, so `composerEverFocused` is already true by the time
-    // `startNewEntry()` returns — reproducing the actual "blur races
-    // focus" window needs reaching past that (real Obsidian's own
-    // leaf-activation focus-stealing is exactly the timing this guards
-    // against, and isn't reproducible from outside a live workspace), so
-    // this resets the guard field directly to exercise its own branch.
+  it("a blur that never received any input does not discard the composer, even after a genuine focus", async () => {
+    // The real-world bug this pins: `openComposer` itself calls
+    // `editor.focus()` synchronously as part of `startNewEntry()`, so by the
+    // time it returns here, focus has genuinely landed on the composer at
+    // least once — `composerEverFocused` is true. In a real Obsidian window,
+    // activating the freshly opened leaf then routinely takes that focus
+    // back immediately afterward, firing exactly the blur dispatched below,
+    // before the user has typed a single character. Gating the discard on
+    // `composerEverFocused` (an earlier fix for a related but distinct bug)
+    // discarded the composer right here, on activation churn nobody asked
+    // for; gating on `composerHasInput` does not, since nothing was ever
+    // typed. Without this gate, `discardEmptyComposer` would run and this
+    // assertion would fail.
     const h = createHarness();
     h.service.load();
     await h.view.onOpen();
     await h.view.startNewEntry();
-    internals(h.view).composerEverFocused = false;
+    expect(internals(h.view).composerEverFocused).toBe(true);
+    expect(internals(h.view).composerHasInput).toBe(false);
 
     composerTextarea(h.view).dispatchEvent(new FocusEvent("blur"));
     await settle();

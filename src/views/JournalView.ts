@@ -261,11 +261,33 @@ export class JournalView extends ItemView {
    */
   private pendingComposerCommit: RenderedEntry | null = null;
   /**
-   * Whether the current composer has ever actually held focus. Gates the
-   * blur-discard in `discardEmptyComposer`; see `openComposer` for why a blur
-   * before the first focus must not count as abandonment.
+   * Whether the current composer has ever actually held focus. Read once, on
+   * the next frame after `openComposer` calls `editor.focus()`: if activation
+   * stole focus back before it landed at all, that retry fires once more
+   * (see `openComposer`). Does NOT gate `discardEmptyComposer` — see
+   * `composerHasInput` for that — because focus landing and focus being
+   * abandoned are different events, and Obsidian activating the freshly
+   * opened leaf routinely delivers both a focus AND a blur to a composer
+   * nobody has touched yet.
    */
   private composerEverFocused = false;
+  /**
+   * Whether the current composer's editor has reported at least one change
+   * — i.e. the user actually typed, as opposed to merely having focus pass
+   * through it. Gates the blur-discard in `discardEmptyComposer`.
+   *
+   * REQUIRED to be this, not `composerEverFocused`: `openComposer` calls
+   * `editor.focus()`, which lands (setting `composerEverFocused`) the moment
+   * before Obsidian's own leaf-activation takes focus back — a blur that
+   * follows THAT focus is indistinguishable, by focus history alone, from a
+   * user who focused the composer and then genuinely clicked away without
+   * typing anything. Gating on focus history discarded an empty composer
+   * nobody had abandoned at all, the moment activation's blur arrived.
+   * Gating on input received instead only ever discards a composer once the
+   * user has actually put a keystroke into it — the abandonment
+   * `discardEmptyComposer` exists to clean up.
+   */
+  private composerHasInput = false;
   /**
    * Resolves when `onOpen`'s first `reload()` has finished. Awaited by
    * `startNewEntry` so a composer is never enqueued ahead of the load that
@@ -2529,16 +2551,29 @@ export class JournalView extends ItemView {
     // this entry doesn't have one yet. See commitComposer for the swap once
     // it does.
     const editor = new TextareaEditor();
-    editor.onChange((value) => void this.onComposerInput(rendered, value));
+    editor.onChange((value) => {
+      // Set unconditionally, on every change, including one that clears the
+      // composer straight back to empty — `discardEmptyComposer`'s gate only
+      // needs to know a keystroke happened at some point, not what it left
+      // behind (its own `isMeaningful` check already covers the latter).
+      // NOT fired for `initialValue` at mount, nor for a `setValue` — only a
+      // real edit reaches this callback (see `EntryEditor.mount`'s doc),
+      // which is exactly "the user typed" rather than "this editor changed
+      // for any reason."
+      this.composerHasInput = true;
+      void this.onComposerInput(rendered, value);
+    });
     editor.onBlur(() => this.discardEmptyComposer(rendered));
 
-    // Arms the blur-discard. A blur that arrives before focus ever landed is
-    // not the user abandoning the composer — it is focus churn, which happens
-    // when this runs as part of opening the view: Obsidian activates the new
-    // leaf and takes focus back after we asked for it. Without this gate, the
-    // composer is created and destroyed in the same breath and the command
-    // looks like it merely opened the journal.
+    // Arms the blur-discard's gate. A blur that arrives before any input is
+    // not the user abandoning the composer — it is focus churn, which
+    // happens when this runs as part of opening the view: Obsidian activates
+    // the new leaf and takes focus back after we asked for it, delivering a
+    // focus AND a blur to a composer nobody has touched yet. Without this
+    // gate, the composer is created and destroyed in the same breath and the
+    // command looks like it merely opened the journal.
     this.composerEverFocused = false;
+    this.composerHasInput = false;
     rendered.bodyEl.addEventListener("focusin", () => {
       this.composerEverFocused = true;
     });
@@ -2836,10 +2871,13 @@ export class JournalView extends ItemView {
     if (this.composer !== rendered) return;
     if (isMeaningful(rendered.editor?.getValue() ?? "")) return;
 
-    // See openComposer: only a blur that follows a real focus means the user
-    // moved away. One that arrives before focus ever landed is activation
-    // churn, and discarding on it destroys a composer nobody abandoned.
-    if (!this.composerEverFocused) return;
+    // See `composerHasInput`'s doc: only a blur that follows the user
+    // actually typing something means they moved away. A blur that arrives
+    // having never received input — including one that follows a focus, if
+    // that focus was activation churn rather than the user's own click —
+    // discards a composer nobody has touched, which is worse than leaving
+    // an untouched one open.
+    if (!this.composerHasInput) return;
 
     this.clearMobileTimers(rendered);
     rendered.editor?.destroy();
