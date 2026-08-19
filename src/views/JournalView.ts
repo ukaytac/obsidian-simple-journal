@@ -26,7 +26,18 @@ import {
   scheduleSave as scheduleSaveEntry,
   type SaveDeps,
 } from "./entrySave";
-import { enforceMountLimit as runEnforceMountLimit, type MountState } from "./mountWindow";
+import {
+  enforceMountLimit as enforceMountLimitEntries,
+  ensureMountOrderContains as ensureMountOrderContainsEntries,
+  mountEditor as mountEditorEntry,
+  mountStateOf as mountStateOfEntry,
+  mountUsableEditor as mountUsableEditorEntry,
+  replaceWithFallback as replaceWithFallbackEntry,
+  unmountEditor as unmountEditorEntry,
+  wireEditor as wireEditorEntry,
+  type MountDeps,
+} from "./mountLifecycle";
+import type { MountState } from "./mountWindow";
 import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
@@ -280,6 +291,25 @@ export class JournalView extends ItemView {
   private readonly saveDeps: SaveDeps = {
     writeBody: (file, body) => this.plugin.repository.writeBody(file, body),
     markSelfWrite: (path) => this.plugin.journal.markSelfWrite(path),
+  };
+  /**
+   * Injected into `mountLifecycle.ts`'s `mountEditor`/`unmountEditor`/
+   * `wireEditor` pipeline. `getGeneration`/`renderStatic`/`lookup` are the
+   * "narrow shared reference" back into state that pipeline doesn't own —
+   * see that module's doc for why a clean cut isn't possible here. The
+   * `as RenderedEntry` casts are safe: every `MountEntry` this module is
+   * ever actually called with (`this.rendered`'s values) already IS a full
+   * `RenderedEntry`; `MountEntry` only narrows the compile-time view of it.
+   */
+  private readonly mountDeps: MountDeps = {
+    getGeneration: () => this.generation,
+    readBody: (file) => this.plugin.repository.readBody(file),
+    renderStatic: (target) => this.renderStatic(target as RenderedEntry),
+    editorFactory: this.plugin.editorFactory,
+    scheduleSave: (target, value) => this.scheduleSave(target as RenderedEntry, value),
+    flushSave: (target) => this.flushSave(target as RenderedEntry),
+    isDirty: (target) => this.isDirty(target as RenderedEntry),
+    lookup: (path) => this.rendered.get(path),
   };
 
   constructor(
@@ -1708,143 +1738,45 @@ export class JournalView extends ItemView {
   /**
    * Turns an entry into a live editor and enforces the mount cap. Called by
    * `mountObserver` whenever an entry enters `MOUNT_ROOT_MARGIN` — this is
-   * the primary mount trigger, not `appendEntry` (see its doc).
-   *
-   * Guards against a concurrent `clearTimeline()` (a reload, or the view
-   * closing) the same way `renderStatic` does: `generation` is captured
-   * before the only await, and checked after it, so a mount that resumes
-   * into a timeline this instance no longer owns bails before touching the
-   * DOM or `mountOrder` rather than mounting an editor nothing will ever
-   * unmount. Also bumps/checks `rendered.opToken`, same reasoning as
-   * `renderStatic`: this can race a concurrent static render (the one
-   * `appendEntry` starts) or another mount attempt, and the loser must not
-   * write into `bodyEl` after the winner already has. Also re-checks
-   * `rendered.intersecting` after the await, for the symmetric reason
-   * `unmountEditor` does: the entry may have left the margin again while
-   * this was reading the file.
+   * the primary mount trigger, not `appendEntry` (see its doc). The actual
+   * logic — including the `generation`/`opToken` guards around its one await
+   * — lives in `mountLifecycle.ts`, exercised directly there with fabricated
+   * state; this wrapper exists only so every call site (`installMountObserver`,
+   * `createEntryEl`'s `remountOnInteraction`, `handleDeleteFallback`, and
+   * `tests/JournalView.raceGuards.test.ts`'s reflection) keeps reaching it
+   * through `this.`.
    */
   private async mountEditor(rendered: RenderedEntry): Promise<void> {
-    if (rendered.editor) return;
-    const generation = this.generation;
-    const token = ++rendered.opToken;
-
-    rendered.renderComponent?.unload();
-    rendered.renderComponent = null;
-    rendered.bodyEl.empty();
-    rendered.bodyEl.style.removeProperty("min-height");
-
-    const body = await this.plugin.repository.readBody(rendered.entry.file);
-    if (generation !== this.generation) return;
-    if (token !== rendered.opToken) return;
-    if (rendered.editor) return;
-
-    if (!rendered.intersecting) {
-      // Left MOUNT_ROOT_MARGIN while this was reading the file. The
-      // observer's exit transition already fired and called unmountEditor,
-      // which no-opped (rendered.editor was still null) — no further
-      // callback arrives until another transition, so without this check an
-      // entry that's now off-screen would mount a live editor anyway (and
-      // stay mounted indefinitely, invisible to any future scroll-driven
-      // unmount). Restore static rendering instead of leaving bodyEl blank
-      // (already cleared above).
-      void this.renderStatic(rendered);
-      return;
-    }
-
-    const editor = this.mountUsableEditor(rendered, body);
-
-    // Seeded from the editor's own getValue(), not the raw disk read
-    // (`body`): getValue() goes through whatever normalization the editor
-    // applies on load (e.g. ObsidianEmbedEditor's CodeMirror document
-    // normalizes CRLF to \n), and save()'s later dirty-check compares
-    // against this exact same code path. Seeding from `body` instead would
-    // compare two independently-sourced strings that can differ even when
-    // nothing changed — a CRLF-line-ending file would then rewrite (and
-    // silently reformat) on every unmount, reinstating the spurious-write
-    // bug this field exists to prevent.
-    rendered.savedBody = editor.getValue();
-
-    rendered.editor = editor;
-    this.mountOrder.push(rendered.entry.file.path);
-
-    this.enforceMountLimit();
+    await mountEditorEntry(rendered, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
   }
 
   /**
-   * Wires the callbacks every editor needs, regardless of which
-   * implementation it is or when it was created (primary, mount-time
-   * fallback, or a later `replaceWithFallback` swap) — kept in one place so
-   * none of the three call sites can drift out of sync with each other.
-   *
-   * `onBlur` unmounts the editor once it is both unfocused and already
-   * outside the viewport: `mountObserver` skips unmounting a focused editor
-   * (see `unmountEditor`) so a scroll-driven blur never rips the keyboard
-   * out from under the user mid-sentence, but that means the entry needs a
-   * second chance to unmount once the user actually does click away —
-   * otherwise an entry the user typed in and then scrolled past stays
-   * mounted for the rest of the session.
+   * Wires the callbacks every editor needs. See `wireEditor` in
+   * `mountLifecycle.ts` for what this actually does and why; this wrapper
+   * exists only so calls go through `this.` (see `mountEditor`'s doc).
    */
   private wireEditor(rendered: RenderedEntry, editor: EntryEditor): void {
-    editor.onChange((value) => this.scheduleSave(rendered, value));
-
-    // REQUIRED. An embedded editor can also fail *after* a successful mount —
-    // its file is deleted, or the internal API changes shape under it. When
-    // that happens it stops reporting changes, and without this the user goes
-    // on typing into a surface whose text is never committed.
-    editor.onUnusable(() => void this.replaceWithFallback(rendered));
-
-    editor.onBlur(() => {
-      if (!rendered.intersecting) void this.unmountEditor(rendered);
-    });
+    wireEditorEntry(rendered, editor, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
   }
 
   /**
-   * Mounts the configured editor, and if it reports that it failed — the
-   * internal API changed shape on this Obsidian version — replaces it with the
-   * textarea fallback for this entry. The journal stays editable either way.
+   * Mounts the configured editor, falling back to plain text if it reports
+   * itself unusable. See `mountUsableEditor` in `mountLifecycle.ts`; this
+   * wrapper exists only so calls go through `this.` (see `mountEditor`'s
+   * doc) — including `commitComposer`'s own call, which mounts the real
+   * editor once a composer's file is created.
    */
   private mountUsableEditor(rendered: RenderedEntry, body: string): EntryEditor {
-    const editor = this.plugin.editorFactory.create();
-    this.wireEditor(rendered, editor);
-
-    editor.mount(rendered.bodyEl, rendered.entry.file, body);
-
-    if (editor.isUsable?.() === false) {
-      console.error(
-        "Journal Entries: embedded editor was unusable; falling back to plain text for",
-        rendered.entry.file.path,
-      );
-      editor.destroy();
-      rendered.bodyEl.empty();
-
-      const fallback = new TextareaEditor();
-      this.wireEditor(rendered, fallback);
-      fallback.mount(rendered.bodyEl, rendered.entry.file, body);
-      return fallback;
-    }
-
-    return editor;
+    return mountUsableEditorEntry(rendered, body, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
   }
 
   /**
-   * Swaps a failed embedded editor for the plain-text fallback, preserving
-   * whatever text it still holds. `getValue()` stays truthful after `destroy()`,
-   * so nothing the user typed is lost across the swap.
+   * Swaps a failed embedded editor for the plain-text fallback. See
+   * `replaceWithFallback` in `mountLifecycle.ts`; this wrapper exists only
+   * so calls go through `this.` (see `mountEditor`'s doc).
    */
   private async replaceWithFallback(rendered: RenderedEntry): Promise<void> {
-    const failed = rendered.editor;
-    if (!failed) return;
-
-    const text = failed.getValue();
-    failed.destroy();
-    rendered.bodyEl.empty();
-
-    const fallback = new TextareaEditor();
-    this.wireEditor(rendered, fallback);
-    fallback.mount(rendered.bodyEl, rendered.entry.file, text);
-    rendered.editor = fallback;
-
-    new Notice("Journal Entries: switched this entry to plain text editing.");
+    await replaceWithFallbackEntry(rendered, this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
   }
 
   /**
@@ -1917,183 +1849,46 @@ export class JournalView extends ItemView {
   /**
    * Resolves a path's current mount state for `mountWindow`'s pure selection
    * logic — the only bridge between that DOM/Obsidian-free module and this
-   * view's actual `rendered` map.
-   *
-   * `unsaved` mirrors `unmountEditor`'s own decline check (see its doc): a
-   * dirty editor is one `enforceMountLimit` must never pick as an eviction
-   * victim. Without this, the cap would splice the path out of `mountOrder`
-   * and call `unmountEditor` anyway, which would then decline and re-add it
-   * via `ensureMountOrderContains` — correct in isolation, but only after
-   * `flushSave` ran a real (possibly failing) write for no reason, and only
-   * by chance before some other mount pushed the count over the cap again in
-   * the meantime. Excluding it here, at selection time, avoids that churn
-   * entirely rather than merely surviving it.
-   *
-   * `distance` is `rendered.mountDistance`, last computed by `mountObserver`'s
-   * callback — see that field's doc.
+   * view's actual `rendered` map. The state shape itself (`unsaved`,
+   * `distance`, …) is built by `mountStateOf` in `mountLifecycle.ts`; this
+   * wrapper supplies the one thing that module doesn't own — the path lookup
+   * into `this.rendered`.
    */
   private mountStateOf(path: string): MountState | undefined {
-    const rendered = this.rendered.get(path);
-    if (!rendered?.editor) return undefined;
-
-    return {
-      mounted: true,
-      focused: rendered.editor.hasFocus(),
-      intersecting: rendered.intersecting,
-      unsaved: this.isDirty(rendered),
-      distance: rendered.mountDistance,
-    };
+    return mountStateOfEntry(this.rendered.get(path), (target) => this.isDirty(target as RenderedEntry));
   }
 
   /**
    * Backstop for when more entries are simultaneously within
-   * `MOUNT_ROOT_MARGIN` than `MAX_MOUNTED_EDITORS` allows. The primary
-   * mount/unmount mechanism is `mountObserver`; this only runs after a mount
-   * that pushes the count over the cap. Selection and the termination
-   * guarantee live in `mountWindow.ts`, exercised directly there with
-   * fabricated state; this just supplies the live lookup and the actual
-   * (async) unmount.
+   * `MOUNT_ROOT_MARGIN` than `MAX_MOUNTED_EDITORS` allows. See
+   * `enforceMountLimit` in `mountLifecycle.ts`; this wrapper exists only so
+   * calls go through `this.` (see `mountEditor`'s doc).
    */
   private enforceMountLimit(): void {
-    runEnforceMountLimit(
-      this.mountOrder,
-      MAX_MOUNTED_EDITORS,
-      (path) => this.mountStateOf(path),
-      (path) => {
-        const rendered = this.rendered.get(path);
-        if (rendered) void this.unmountEditor(rendered, { evict: true });
-      },
-    );
+    enforceMountLimitEntries(this.mountOrder, MAX_MOUNTED_EDITORS, this.mountDeps);
   }
 
   /**
    * Ensures `path` is present in `mountOrder` — a no-op if it already is.
-   * Called wherever `unmountEditor` declines to unmount an editor that
-   * remains legitimately mounted (still focused, or back on screen), so it
-   * stays visible to `enforceMountLimit`'s cap even when the decline happens
-   * on a path `enforceMountLimit` itself already spliced out before calling
-   * in (see `mountWindow.ts`'s eviction contract).
+   * See `ensureMountOrderContains` in `mountLifecycle.ts`; this wrapper
+   * exists only so calls go through `this.` (see `mountEditor`'s doc).
    */
   private ensureMountOrderContains(path: string): void {
-    if (!this.mountOrder.includes(path)) this.mountOrder.push(path);
+    ensureMountOrderContainsEntries(this.mountOrder, path);
   }
 
   /**
    * Flushes pending edits, destroys the editor, and restores static
-   * rendering. Never unmounts a focused editor: `mountObserver` calls this
-   * unconditionally the moment an entry leaves `MOUNT_ROOT_MARGIN`, and
-   * ripping the keyboard focus out from under the user mid-sentence just
-   * because they scrolled would be worse than leaving one editor mounted
-   * past the margin. `wireEditor`'s `onBlur` callback gives that entry a
-   * second chance to unmount once the user actually clicks away.
-   *
-   * `evict`, when true, marks this call as an `enforceMountLimit` eviction
-   * rather than the ordinary viewport-driven unmount `mountObserver` fires on
-   * every exit transition. The two mean different things by "still
-   * intersecting": for the ordinary path it means "re-entered
-   * `MOUNT_ROOT_MARGIN` while the flush was in flight, decline" (see below).
-   * For an eviction it means nothing of the sort — `pickEvictionCandidate`
-   * already chose this exact path as its fallback specifically *because*
-   * every candidate was intersecting (see `mountWindow.ts`), so declining on
-   * that same fact here would silently undo every eviction and leave the cap
-   * unenforced, which is the bug this parameter fixes. `evict` never
-   * bypasses the focused or dirty declines — those stay absolute regardless
-   * of why this was called, since losing focus or unsaved text is worse than
-   * one editor over the cap.
+   * rendering. See `unmountEditor` in `mountLifecycle.ts` for what this
+   * actually does and why (the focused/intersecting/dirty declines,
+   * `evict`'s meaning, the `generation` guard around its flush); this
+   * wrapper exists only so calls go through `this.` — every internal caller
+   * (`installMountObserver`, `wireEditor`'s `onBlur`, `confirmDelete`, …) and
+   * `tests/JournalView.raceGuards.test.ts`'s reflection (see `mountEditor`'s
+   * doc).
    */
   private async unmountEditor(rendered: RenderedEntry, opts: { evict?: boolean } = {}): Promise<void> {
-    if (!rendered.editor) return;
-
-    if (rendered.editor.hasFocus()) {
-      // Still legitimately mounted — keep it tracked. Reachable when this is
-      // called directly by mountObserver's exit callback (which never
-      // pre-removes `mountOrder`) as well as, in principle, via
-      // enforceMountLimit (which does): pickEvictionCandidate already
-      // excludes focused entries at selection time, so this path shouldn't
-      // fire from there, but re-adding is a harmless no-op if it somehow did.
-      this.ensureMountOrderContains(rendered.entry.file.path);
-      return;
-    }
-
-    // Captured before the awaits below. If a concurrent clearTimeline()
-    // lands while the flush is in flight, it has already flushed, destroyed,
-    // and nulled every editor (including this one) and emptied the timeline
-    // itself — bail rather than redundantly destroy an already-destroyed
-    // editor and render static Markdown into a bodyEl that no longer belongs
-    // to any visible timeline. mountOrder itself is stale/replaced by then,
-    // so no ensureMountOrderContains call is needed on this path.
-    const generation = this.generation;
-
-    try {
-      await this.flushSave(rendered);
-    } catch (error) {
-      // save() itself never rejects; this only guards against a future
-      // change reintroducing a throw here (e.g. editor.flush() itself). The
-      // destroy/restore-static sequence below must still run regardless —
-      // an editor left mounted because of a failed flush would keep polling
-      // (ObsidianEmbedEditor) or holding DOM (either editor) forever, on top
-      // of whatever the failed flush already lost.
-      console.error("Journal Entries: failed to flush a pending save before unmounting", error);
-    }
-    if (generation !== this.generation) return;
-
-    if (rendered.editor.hasFocus()) {
-      // Re-checked, not just assumed still true from the check at the top
-      // of this method: focus can arrive during the `flushSave` await above
-      // (the user clicked into this exact entry while its flush was in
-      // flight) that check ran before. Absolute regardless of `opts.evict`,
-      // same reasoning as the check at the top — losing focus mid-sentence
-      // is worse than one editor over the cap either way.
-      this.ensureMountOrderContains(rendered.entry.file.path);
-      return;
-    }
-
-    if (rendered.intersecting && !opts.evict) {
-      // Re-entered MOUNT_ROOT_MARGIN while the flush was in flight.
-      // mountEditor's own guard (`if (rendered.editor) return`) already saw
-      // this editor still set and no-opped, so no other code path will
-      // remount it — leave it mounted rather than destroying a now-visible
-      // entry's live editor out from under the user. Keep it tracked in
-      // mountOrder for the same reason as the focused case above.
-      this.ensureMountOrderContains(rendered.entry.file.path);
-      return;
-    }
-
-    if (this.isDirty(rendered)) {
-      // The flush above did not get this text onto disk — almost always
-      // because `saveIfChanged`'s write failed and `save()` is showing the
-      // "not saved" marker (see `showSaveError`), though this also covers the
-      // (currently unreachable) case of a fresh edit racing the flush.
-      // Destroying the editor and falling back to `renderStatic`'s disk read
-      // would silently replace the on-screen text with the last known-good
-      // (and now stale) saved body — exactly the loss the marker promises
-      // hasn't happened. Decline the unmount and keep the editor live so the
-      // user can keep editing/retrying; a later unmount attempt (another
-      // scroll past this entry) retries the flush, and once a write actually
-      // succeeds this stops being dirty and unmounts/evicts normally.
-      //
-      // This can pin an entry past `MAX_MOUNTED_EDITORS` if its write keeps
-      // failing — accepted: `mountStateOf`'s `unsaved` field already tells
-      // `pickEvictionCandidate` never to select such an entry as a victim in
-      // the first place, so this is a rare fallback for this path being
-      // reached some other way, not the primary defense. Losing the user's
-      // words is worse than one extra live editor.
-      this.ensureMountOrderContains(rendered.entry.file.path);
-      return;
-    }
-
-    // Freeze the height across the swap so the scroll position does not shift.
-    const height = rendered.bodyEl.offsetHeight;
-    rendered.bodyEl.style.minHeight = `${height}px`;
-
-    rendered.editor?.destroy();
-    rendered.editor = null;
-
-    const index = this.mountOrder.indexOf(rendered.entry.file.path);
-    if (index >= 0) this.mountOrder.splice(index, 1);
-
-    await this.renderStatic(rendered);
-    rendered.bodyEl.style.removeProperty("min-height");
+    await unmountEditorEntry(rendered, this.mountOrder, this.mountDeps, opts);
   }
 
   /**
