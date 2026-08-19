@@ -859,6 +859,43 @@ Responsible for:
 
 It should not contain file parsing logic.
 
+## What has been split out, and what deliberately has not
+
+Four seams are separate modules, each a `createX(deps)` closure over the state it
+owns, with the view keeping DOM and wiring:
+
+* `entrySave.ts` — the debounced write path, its tokens, and the failure marker
+* `mountLifecycle.ts` — mounting, unmounting, the mount order and the cap
+* `timelineDom.ts` — day groups, month headers, insert position
+* `changeApplication.ts` — applying a vault-change batch to the rendered rows
+
+Beside them sit pure decision functions, unit tested directly and holding no DOM:
+`mountWindow.ts`, `applyChange.ts`, `composerCommit.ts`, `entryIndex.ts`.
+
+**Reload and composer orchestration stays in `JournalView`, on purpose.** It owns
+`generation` and `timelineMutationChain`, which every other module's guards check
+against, and it was assessed for extraction and rejected:
+
+* Its methods are not self-contained. `reloadNow` drives the paging and observer
+  cluster; `openComposer` and `startNewEntry` reach into `createEntryEl`, day
+  groups, scrolling and anchoring. Moving only the named methods would cut a
+  boundary through the interaction between `openComposer`'s focus claim,
+  `reloadNow`'s awaits, and Obsidian's own focus timing — the one that took six
+  attempts to diagnose (see the case study in `docs/manual-testing.md`). A
+  recurrence would then have to be read across files instead of in a straight
+  line.
+* Moving everything it touches would leave the view nearly empty. That is not a
+  seam, it is a rewrite.
+* The remaining modules read `generation` from here; a module owning it would
+  also have to call back into them, creating a circular dependency none of the
+  four existing seams has.
+
+Extract something here only if it has a genuinely one-directional interface.
+Neither the composer nor the reload path does. Splitting the mutation chain
+alone (~30 lines) is narrow but addresses nothing — the bulk of what remains is
+the composer's data-safety logic, which is the most expensive code in this
+plugin to get wrong and the least helped by a boundary running through it.
+
 ---
 
 # EntryEditor
