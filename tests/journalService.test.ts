@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App } from "obsidian";
-import { createFakeApp, TFolder } from "./obsidian-mock";
+import { createFakeApp, TFile, TFolder } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService, type JournalChange } from "../src/services/journalService";
 import { formatCreatedProperty } from "../src/utils/dates";
@@ -384,6 +384,31 @@ describe("JournalService: rename", () => {
     // never duplicated".
     const contentChange = changes.find((c) => c.kind === "content");
     expect(contentChange?.entry).toBe(service.getEntries()[0]);
+  });
+
+  it("refreshes a stale `.file` reference in place when a same-path content upsert supplies a different file object", () => {
+    // Not reachable through the normal vault-event path exercised above
+    // (Obsidian always mutates the SAME TFile in place on rename), but
+    // `applyKnownEntry` is a direct, public entry point (used by
+    // `JournalView.commitEntryTimeChange`) that hands `applyUpsert` whatever
+    // `entry.file` its caller built — nothing guarantees that's always the
+    // exact object already sitting in the index.
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+
+    const [existing] = service.getEntries();
+    expect(existing.file).toBe(file);
+
+    const replacement = new TFile(file.path, file.stat.ctime);
+    const change = service.applyKnownEntry({ file: replacement, created: existing.created });
+
+    // Same `JournalEntry` object — the identity `indexOf`-by-reference
+    // callers depend on is preserved — but its `.file` now points at the
+    // fresh object instead of staying stuck on the stale one.
+    expect(change).toEqual({ kind: "content", entry: existing });
+    expect(service.getEntries()[0]).toBe(existing);
+    expect(existing.file).toBe(replacement);
   });
 
   it("removes the entry when a file is renamed out of the journal folder", () => {

@@ -111,9 +111,68 @@ describe("pickEvictionCandidate", () => {
 
     expect(pickEvictionCandidate(order, states)).toBe("a");
   });
+
+  it("among intersecting candidates, picks the one farthest from the viewport centre, not the oldest-mounted", () => {
+    // "a" is oldest-mounted (first in `order`) but closest to centre; "b",
+    // mounted later, is farthest. Distance must win over mount order.
+    const order = ["a", "b", "c"];
+    const states = statesOf({
+      a: { mounted: true, focused: false, intersecting: true, distance: 5 },
+      b: { mounted: true, focused: false, intersecting: true, distance: 50 },
+      c: { mounted: true, focused: false, intersecting: true, distance: 20 },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBe("b");
+  });
+
+  it("among off-screen candidates, picks the one farthest away, and off-screen still beats any on-screen distance", () => {
+    const order = ["a", "b", "c"];
+    const states = statesOf({
+      // Off-screen but physically close (just past the root margin edge).
+      a: { mounted: true, focused: false, intersecting: false, distance: 10 },
+      // On-screen but reports a larger raw distance number than "a" — must
+      // still lose to "a", since the off-screen tier is preferred outright.
+      b: { mounted: true, focused: false, intersecting: true, distance: 1000 },
+      // Off-screen and farther than "a" — this is the real winner.
+      c: { mounted: true, focused: false, intersecting: false, distance: 400 },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBe("c");
+  });
+
+  it("breaks an exact distance tie by earliest position in `order`, matching pre-distance behaviour", () => {
+    const order = ["a", "b", "c"];
+    const states = statesOf({
+      a: { mounted: true, focused: false, intersecting: true, distance: 30 },
+      b: { mounted: true, focused: false, intersecting: true, distance: 30 },
+      c: { mounted: true, focused: false, intersecting: true, distance: 30 },
+    });
+
+    expect(pickEvictionCandidate(order, states)).toBe("a");
+  });
 });
 
 describe("enforceMountLimit", () => {
+  it("evicts by distance when the cap forces multiple evictions among intersecting entries", () => {
+    const order = ["a", "b", "c", "d", "e"];
+    const states: Record<string, MountState> = {
+      a: { mounted: true, focused: false, intersecting: true, distance: 5 },
+      b: { mounted: true, focused: false, intersecting: true, distance: 90 },
+      c: { mounted: true, focused: false, intersecting: true, distance: 10 },
+      d: { mounted: true, focused: false, intersecting: true, distance: 70 },
+      e: { mounted: true, focused: false, intersecting: true, distance: 1 },
+    };
+    const evicted: string[] = [];
+
+    enforceMountLimit(order, 3, statesOf(states), (path) => evicted.push(path));
+
+    expect(order.length).toBe(3);
+    // The two farthest (b: 90, d: 70) go first, regardless of mount order —
+    // the three closest (a, c, e) survive.
+    expect(evicted).toEqual(["b", "d"]);
+    expect(order).toEqual(["a", "c", "e"]);
+  });
+
   it("evicts down to exactly the cap, preferring off-screen entries", () => {
     const order = ["a", "b", "c", "d", "e"];
     const states: Record<string, MountState> = {

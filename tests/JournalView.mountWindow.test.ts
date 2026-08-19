@@ -125,20 +125,89 @@ describe("JournalView mount window", () => {
   });
 
   /**
-   * Pins the eviction semantics chosen to fix the test above: `unmountEditor`
-   * takes an `{ evict: true }` flag (only ever passed by
-   * `enforceMountLimit`'s `onEvict`) that lets it tear down an editor even
-   * though `rendered.intersecting` is still true — the whole point of that
-   * fix. But `evict` never overrides the focused/dirty declines: a focused
-   * editor must survive being repeatedly the oldest-mounted, hence
-   * `pickEvictionCandidate`'s fallback, candidate in an all-intersecting
-   * overload — losing keyboard focus mid-sentence because of an unrelated
-   * mount elsewhere would be worse than staying one editor over the cap.
-   * This also guards against thrashing: forcing the SAME focused entry
-   * through repeated eviction pressure must never succeed in unmounting it,
-   * and the cap must still bind for every OTHER candidate each time.
+   * `mountObserver`'s callback computes each entry's distance from the
+   * viewport centre (`rendered.mountDistance`, fed to `pickEvictionCandidate`
+   * as `MountState.distance`) from `observerEntry.boundingClientRect` and
+   * `this.contentEl.getBoundingClientRect()` — real geometry, not mount
+   * order. `FakeIntersectionObserver.trigger` reads `boundingClientRect` via
+   * `target.getBoundingClientRect()` (see `obsidian-mock.ts`), which jsdom
+   * defaults to an all-zero rect; stubbing it per element is how a test gets
+   * to control "distance" at all. Every other test in this file leaves that
+   * stub off, so every entry reports the same default distance (0) and
+   * selection falls back to earliest-in-`mountOrder` — this test is the one
+   * proving that when real distances DO differ, they change which entry
+   * gets evicted, exactly as `enforceMountLimit`'s own distance unit tests
+   * (`tests/mountWindow.test.ts`) already prove in isolation.
    */
-  it("eviction skips a focused entry under repeated pressure, evicting a different candidate each time", async () => {
+  it("with real geometry, eviction targets the entry farthest from the viewport centre, not the oldest-mounted one", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 65; i++) {
+      addEntry(h, new Date(2026, 7, 12, 0, 0, 0 - i), `entry ${i}`);
+    }
+    h.service.load();
+    await h.view.onOpen();
+
+    const sentinel = internals(h.view).observer as FakeIntersectionObserver;
+    sentinel.trigger([{ target: internals(h.view).sentinelEl, isIntersecting: true }]);
+    await settle();
+
+    // Viewport centre at y=500.
+    const contentEl = internals(h.view).contentEl as HTMLElement;
+    contentEl.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 1000, height: 1000, left: 0, right: 0, width: 0, x: 0, y: 0, toJSON() {} }) as DOMRect;
+
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const rows = [...internals(h.view).rendered.values()] as Array<{ el: HTMLElement }>;
+
+    // Every row sits exactly at the centre (distance 0) except one,
+    // deliberately far from it (distance 500) — NOT the oldest-mounted, so
+    // mount-order-only selection (as exercised by every other test here)
+    // would pick a different victim than distance-based selection must.
+    const farIndex = 5;
+    rows.forEach((r, i) => {
+      const top = i === farIndex ? 0 : 500;
+      r.el.getBoundingClientRect = () =>
+        ({ top, bottom: top, height: 0, left: 0, right: 0, width: 0, x: 0, y: top, toJSON() {} }) as DOMRect;
+    });
+
+    // Mount exactly the cap's worth first — no eviction pressure yet.
+    mountObserver.trigger(rows.slice(0, 60).map((r) => ({ target: r.el, isIntersecting: true })));
+    await settle();
+    expect(internals(h.view).mountOrder.length).toBe(60);
+
+    const farPath = [...internals(h.view).rendered.keys()][farIndex];
+    const oldestPath = (internals(h.view).mountOrder as string[])[0];
+    expect(farPath).not.toBe(oldestPath);
+    expect(internals(h.view).rendered.get(farPath).editor).not.toBeNull();
+
+    // Genuine over-cap pressure: a 61st row, at the centre (distance 0),
+    // becomes intersecting.
+    mountObserver.trigger([{ target: rows[60].el, isIntersecting: true }]);
+    await settle();
+
+    expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
+    // The farthest entry was evicted, even though it was not oldest-mounted...
+    expect(internals(h.view).rendered.get(farPath).editor).toBeNull();
+    // ...and the actually-oldest-mounted entry, merely near the centre,
+    // survives instead — the opposite of what a mount-order-only rule
+    // (the pre-distance implementation) would have picked.
+    expect(internals(h.view).rendered.get(oldestPath).editor).not.toBeNull();
+  });
+
+  /**
+   * Pins `pickEvictionCandidate`'s focus exclusion under GENUINE over-cap
+   * pressure — `mountOrder` must actually exceed `MAX_MOUNTED_EDITORS` at
+   * the moment selection runs, not merely have exceeded it earlier and
+   * settled back down. (An earlier version of this test cycled an
+   * already-mounted entry out and back in as its "pressure," which only
+   * ever brought the count from 60 to 59 and back to 60 — never over the
+   * cap, so `enforceMountLimit`'s `while (order.length > max)` loop never
+   * ran and zero evictions ever happened. Mutating away the focus
+   * exclusion entirely still left it green. This version mounts a 61st,
+   * previously-unmounted row instead, which genuinely forces exactly one
+   * eviction.)
+   */
+  it("eviction skips a genuinely-selected focused entry, evicting a different one instead", async () => {
     const h = createHarness();
     for (let i = 0; i < 65; i++) {
       addEntry(h, new Date(2026, 7, 12, 0, 0, 0 - i), `entry ${i}`);
@@ -152,46 +221,91 @@ describe("JournalView mount window", () => {
 
     const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
     const rows = [...internals(h.view).rendered.values()] as Array<{ el: HTMLElement }>;
-    mountObserver.trigger(rows.map((r) => ({ target: r.el, isIntersecting: true })));
+
+    // Mount exactly the cap's worth first — no eviction pressure yet.
+    mountObserver.trigger(rows.slice(0, 60).map((r) => ({ target: r.el, isIntersecting: true })));
     await settle();
-    await settle();
+    expect(internals(h.view).mountOrder.length).toBe(60);
+
+    // Focus the oldest-mounted entry — the tie-break winner (default
+    // distance 0 for everything here) `pickEvictionCandidate` would
+    // otherwise pick first.
+    const mountOrderBefore = [...internals(h.view).mountOrder] as string[];
+    const focusPath = mountOrderBefore[0];
+    const focusedRendered = internals(h.view).rendered.get(focusPath);
+    (focusedRendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement).focus();
+    expect(focusedRendered.editor.hasFocus()).toBe(true);
+
+    const otherPath = mountOrderBefore[1];
+    expect(internals(h.view).rendered.get(otherPath).editor).not.toBeNull();
+
+    // Genuine over-cap pressure: a 61st row, never before in `mountOrder`,
+    // becomes intersecting — `mountOrder` hits 61 and `enforceMountLimit`
+    // must evict exactly one real victim to get back to 60.
+    mountObserver.trigger([{ target: rows[60].el, isIntersecting: true }]);
     await settle();
 
     expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
+    // The focused entry survives...
+    expect(internals(h.view).rendered.get(focusPath).editor).not.toBeNull();
+    expect(internals(h.view).rendered.get(focusPath).editor.hasFocus()).toBe(true);
+    // ...and a real eviction happened to someone else instead.
+    expect(internals(h.view).rendered.get(otherPath).editor).toBeNull();
+    // Untouched position, not merely "still present": if `pickEvictionCandidate`
+    // ever selected the focused entry first (declined, then re-added via
+    // `ensureMountOrderContains`, which APPENDS), it would end up at the END
+    // of `mountOrder` instead of still at the front — a real, if
+    // self-healing, extra round trip this asserts never happens.
+    expect((internals(h.view).mountOrder as string[])[0]).toBe(focusPath);
+  });
 
-    // Focus the oldest-mounted survivor — precisely the entry
-    // `pickEvictionCandidate`'s fallback would pick first once every
-    // candidate intersects.
-    const mountOrder = internals(h.view).mountOrder as string[];
-    const focusPath = mountOrder[0];
-    const focusedRendered = internals(h.view).rendered.get(focusPath);
-    const focusedTextarea = focusedRendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
-    focusedTextarea.focus();
-    expect(focusedRendered.editor.hasFocus()).toBe(true);
-
-    // Apply eviction pressure three more times: cycle a different,
-    // currently-mounted, unfocused entry out of and back into the mount
-    // margin, which re-adds it to `mountOrder` and pushes the count back
-    // over the cap, forcing `enforceMountLimit` to run again.
-    for (let round = 0; round < 3; round++) {
-      const currentOrder = internals(h.view).mountOrder as string[];
-      const otherPath = currentOrder.find((p) => p !== focusPath);
-      if (!otherPath) break;
-      const otherRendered = internals(h.view).rendered.get(otherPath);
-
-      mountObserver.trigger([{ target: otherRendered.el, isIntersecting: false }]);
-      await settle();
-      mountObserver.trigger([{ target: otherRendered.el, isIntersecting: true }]);
-      await settle();
-      await settle();
-
-      expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
-      // The focused entry is never the victim: still mounted, still focused,
-      // still tracked in mountOrder — no thrash.
-      expect(internals(h.view).rendered.get(focusPath).editor).not.toBeNull();
-      expect(internals(h.view).rendered.get(focusPath).editor.hasFocus()).toBe(true);
-      expect(internals(h.view).mountOrder).toContain(focusPath);
+  /**
+   * Same shape as the focus test above, for the dirty decline —
+   * `pickEvictionCandidate`'s `unsaved` exclusion (`MountState.unsaved`,
+   * fed from `JournalView.isDirty`). A genuinely dirty entry (a pending,
+   * not-yet-flushed edit, still inside the 500ms save debounce) must never
+   * be forced closed — that would silently discard the edit — even when it
+   * is the oldest-mounted, tie-break-winning candidate under real pressure.
+   */
+  it("eviction skips a genuinely-selected dirty entry, evicting a different one instead", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 65; i++) {
+      addEntry(h, new Date(2026, 7, 12, 0, 0, 0 - i), `entry ${i}`);
     }
+    h.service.load();
+    await h.view.onOpen();
+
+    const sentinel = internals(h.view).observer as FakeIntersectionObserver;
+    sentinel.trigger([{ target: internals(h.view).sentinelEl, isIntersecting: true }]);
+    await settle();
+
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const rows = [...internals(h.view).rendered.values()] as Array<{ el: HTMLElement }>;
+
+    mountObserver.trigger(rows.slice(0, 60).map((r) => ({ target: r.el, isIntersecting: true })));
+    await settle();
+    expect(internals(h.view).mountOrder.length).toBe(60);
+
+    const mountOrderBefore = [...internals(h.view).mountOrder] as string[];
+    const dirtyPath = mountOrderBefore[0];
+    const dirtyRendered = internals(h.view).rendered.get(dirtyPath);
+    const textarea = dirtyRendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    typeInto(textarea, "edited, not yet flushed");
+    // Genuinely dirty right now, well inside the debounce window.
+    expect(dirtyRendered.editor.getValue()).not.toBe(dirtyRendered.savedBody);
+
+    const otherPath = mountOrderBefore[1];
+    expect(internals(h.view).rendered.get(otherPath).editor).not.toBeNull();
+
+    mountObserver.trigger([{ target: rows[60].el, isIntersecting: true }]);
+    await settle();
+
+    expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
+    // The dirty entry survives, edit intact...
+    expect(internals(h.view).rendered.get(dirtyPath).editor).not.toBeNull();
+    expect(internals(h.view).rendered.get(dirtyPath).editor.getValue()).toBe("edited, not yet flushed");
+    // ...and a real eviction happened to someone else instead.
+    expect(internals(h.view).rendered.get(otherPath).editor).toBeNull();
   });
 
   it("unmounting flushes a pending edit to disk before tearing the editor down", async () => {
@@ -218,5 +332,73 @@ describe("JournalView mount window", () => {
 
     expect(h.app.vault.contents.get(file.path)).toContain("edited body, not yet flushed");
     expect(rendered.get(file.path).editor).toBeNull();
+  });
+
+  /**
+   * `mountEditor` is otherwise only ever invoked from `mountObserver`'s enter
+   * TRANSITION callback — there is no periodic or click-driven remount
+   * anywhere else. Distance-based eviction (above) makes it rare, but does
+   * not make it impossible, for an entry to be evicted while it never
+   * actually left `MOUNT_ROOT_MARGIN` (`rendered.intersecting` stays true):
+   * that entry's transition already fired and won't fire again until it
+   * leaves and re-enters, so without a separate recovery path such a row
+   * would sit there looking editable — static markdown, no caret — while
+   * silently swallowing every click and keystroke. This pins the recovery:
+   * a `pointerdown` (or `focusin`) on `bodyEl` remounts it right there, and
+   * the entry becomes usable again without a scroll round-trip.
+   *
+   * Reaches `unmountEditor(row, { evict: true })` directly, rather than
+   * manufacturing real 61-entry pressure, since the recovery path — not
+   * eviction selection itself (already covered above) — is what this test
+   * is pinning.
+   */
+  it("a pointerdown on an evicted-but-still-intersecting entry remounts and focuses its editor", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered;
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const row = rendered.get(file.path);
+
+    mountObserver.trigger([{ target: row.el, isIntersecting: true }]);
+    await settle();
+    expect(row.editor).not.toBeNull();
+
+    // The eviction-while-intersecting state `enforceMountLimit`'s `onEvict`
+    // produces.
+    await internals(h.view).unmountEditor(row, { evict: true });
+    expect(row.editor).toBeNull();
+    expect(row.intersecting).toBe(true);
+    expect(row.bodyEl.querySelector("textarea")).toBeNull();
+
+    row.bodyEl.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await settle();
+
+    expect(row.editor).not.toBeNull();
+    expect(row.editor.hasFocus()).toBe(true);
+    expect(row.bodyEl.querySelector("textarea")).toBeTruthy();
+  });
+
+  it("does nothing on interaction with an entry that has genuinely left the mount margin", async () => {
+    // The guard (`!rendered.intersecting`) matters: without it, clicking a
+    // statically-rendered entry that is off-screen for the ordinary,
+    // correct reason (it scrolled out) would remount an editor nothing will
+    // ever unmount again until the next real transition.
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered;
+    const row = rendered.get(file.path);
+    expect(row.editor).toBeNull();
+    expect(row.intersecting).toBe(false);
+
+    row.bodyEl.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await settle();
+
+    expect(row.editor).toBeNull();
   });
 });
