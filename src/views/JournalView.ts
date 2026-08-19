@@ -204,6 +204,12 @@ export class JournalView extends ItemView {
    * until it does. At most one composer exists at a time.
    */
   private composer: RenderedEntry | null = null;
+  /**
+   * Whether the current composer has ever actually held focus. Gates the
+   * blur-discard in `discardEmptyComposer`; see `openComposer` for why a blur
+   * before the first focus must not count as abandonment.
+   */
+  private composerEverFocused = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -2379,6 +2385,18 @@ export class JournalView extends ItemView {
     const editor = new TextareaEditor();
     editor.onChange((value) => void this.onComposerInput(rendered, value));
     editor.onBlur(() => this.discardEmptyComposer(rendered));
+
+    // Arms the blur-discard. A blur that arrives before focus ever landed is
+    // not the user abandoning the composer — it is focus churn, which happens
+    // when this runs as part of opening the view: Obsidian activates the new
+    // leaf and takes focus back after we asked for it. Without this gate, the
+    // composer is created and destroyed in the same breath and the command
+    // looks like it merely opened the journal.
+    this.composerEverFocused = false;
+    rendered.bodyEl.addEventListener("focusin", () => {
+      this.composerEverFocused = true;
+    });
+
     editor.mount(rendered.bodyEl, null, "");
 
     rendered.editor = editor;
@@ -2386,6 +2404,16 @@ export class JournalView extends ItemView {
 
     this.scrollToTop();
     editor.focus();
+
+    // If activation took the focus back before it landed, ask once more on the
+    // next frame. Bounded to a single retry so this can never fight a user who
+    // deliberately clicked away.
+    // contentEl.win, not the global window: in a popout leaf the view lives in
+    // its own window, and that is the one whose frames matter here.
+    this.contentEl.win.requestAnimationFrame(() => {
+      if (this.composer !== rendered || this.composerEverFocused) return;
+      if (!isMeaningful(editor.getValue())) editor.focus();
+    });
   }
 
   /**
@@ -2577,6 +2605,11 @@ export class JournalView extends ItemView {
   private discardEmptyComposer(rendered: RenderedEntry): void {
     if (this.composer !== rendered) return;
     if (isMeaningful(rendered.editor?.getValue() ?? "")) return;
+
+    // See openComposer: only a blur that follows a real focus means the user
+    // moved away. One that arrives before focus ever landed is activation
+    // churn, and discarding on it destroys a composer nobody abandoned.
+    if (!this.composerEverFocused) return;
 
     this.clearMobileTimers(rendered);
     rendered.editor?.destroy();

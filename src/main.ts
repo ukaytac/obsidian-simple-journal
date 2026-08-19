@@ -140,9 +140,27 @@ export default class JournalEntriesPlugin extends Plugin {
     return view instanceof JournalView ? view : null;
   }
 
+  /**
+   * Errors are surfaced rather than swallowed. Every caller invokes this as
+   * `void this.newEntry()`, so anything thrown below became an unhandled
+   * rejection that never even reached the console — the command would appear
+   * to open the journal and do nothing else, with no trace of why.
+   */
   async newEntry(): Promise<void> {
-    const view = await this.openJournal();
-    if (view) await view.startNewEntry();
+    try {
+      const view = await this.openJournal();
+
+      if (!view) {
+        console.error("Journal Entries: the journal view was not available after opening it");
+        new Notice("Journal Entries: could not open the journal.");
+        return;
+      }
+
+      await view.startNewEntry();
+    } catch (error) {
+      console.error("Journal Entries: could not start a new entry", error);
+      new Notice("Journal Entries: could not start a new entry. See the developer console.");
+    }
   }
 
   async goToToday(): Promise<void> {
