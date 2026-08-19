@@ -2758,14 +2758,22 @@ export class JournalView extends ItemView {
         replaced: claimedRendered !== firstRendered,
       });
 
-      if (this.composerHasInput || claimedEditor.hasFocus()) return;
+      // Input is the only success condition. Holding focus right now is not:
+      // tracing showed the composer *does* receive focus on the first frame —
+      // `editorHasFocus: true`, `activeTag: 'TEXTAREA'` — and something takes
+      // it away afterwards, by which point an earlier version of this loop had
+      // already stopped watching precisely because focus was ours. So keep
+      // watching until the deadline and re-take it whenever it is lost.
+      if (this.composerHasInput) return;
 
-      claimedEditor.focus();
+      if (!claimedEditor.hasFocus()) {
+        claimedEditor.focus();
 
-      console.log("[JE] claimFocus after focus()", {
-        editorHasFocus: claimedEditor.hasFocus(),
-        activeTag: this.contentEl.doc.activeElement?.tagName ?? null,
-      });
+        console.log("[JE] claimFocus retook", {
+          editorHasFocus: claimedEditor.hasFocus(),
+          activeTag: this.contentEl.doc.activeElement?.tagName ?? null,
+        });
+      }
 
       if (Date.now() < deadline) this.contentEl.win.requestAnimationFrame(claimFocus);
     };
