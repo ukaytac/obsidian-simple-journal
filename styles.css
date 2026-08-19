@@ -497,6 +497,28 @@
   background: var(--background-modifier-hover);
 }
 
+/* `:hover` matches a disabled `<button>` in Chromium and WebKit (only
+   `:active` is blocked), so the rule above paints the full hover highlight
+   on an empty day too — reintroducing, in the one CSS rule the original fix
+   didn't touch, exactly the "this looks clickable" affordance `disabled`
+   exists to remove. Same fix as `.journal-calendar-day-blank:hover` above,
+   just aimed at the button reset instead of the plain-div rule: one more
+   class+pseudo-class than the hover rule immediately above (four selectors
+   vs three) so it wins outright rather than relying on source order. */
+.journal-calendar-days button.journal-calendar-day:disabled:hover {
+  background: transparent;
+}
+
+/* The focus ring below is a box-shadow, which forced-colors mode discards
+   along with all author colours, and Obsidian's button base sets
+   `outline: none`. Without this, a high-contrast user tabbing the calendar
+   gets no focus indicator at all — same fix as `.journal-entry-time` above. */
+@media (forced-colors: active) {
+  .journal-calendar-days button.journal-calendar-day:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
 /* The `box-shadow: none` above also erases Obsidian's own
    `button:focus-visible` ring — without this, keyboard focus on a day cell
    would have no visible indicator at all. Same variable Obsidian's own focus
@@ -527,6 +549,18 @@
   color: var(--text-faint);
 }
 
+/* `is-empty` and `is-today` tie on specificity (both are one class on
+   `.journal-calendar-day-number`), so when today has no entries this rule
+   wins on source order and today still renders accent-coloured and
+   semibold despite being `disabled`. That's deliberate, not an oversight:
+   today's position is orientation information regardless of whether it
+   holds entries, and dimming it to match `is-empty` would make the grid
+   harder to read at a glance. The dot, not this emphasis, is the
+   clickability signal — emphasis means "this is today", a dot means "there
+   is something here" — and those two messages read fine stacked on the
+   same cell. The `:disabled` rule above only strips the UA stylesheet's own
+   dimming/`not-allowed` cursor; it must never add any of its own on top of
+   this. */
 .journal-calendar-day.is-today .journal-calendar-day-number {
   color: var(--text-accent);
   font-weight: var(--font-semibold);
