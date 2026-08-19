@@ -401,4 +401,96 @@ describe("JournalView mount window", () => {
 
     expect(row.editor).toBeNull();
   });
+
+  /**
+   * Pins `ensureMountOrderContains`'s re-add: whenever `unmountEditor`
+   * declines to unmount an editor that remains legitimately mounted, the
+   * path must still be present in `mountOrder` afterwards. Without this,
+   * `mountOrder` would drift out of sync with which editors are actually
+   * mounted, and `enforceMountLimit`'s cap (bound purely by
+   * `mountOrder.length`) would silently under- or over-count.
+   *
+   * Removes the path from `mountOrder` first — mirroring what
+   * `enforceMountLimit` itself already does (splice, THEN call
+   * `unmountEditor`) before this decline branch ever runs — rather than
+   * reconstructing genuine cap pressure through `pickEvictionCandidate`:
+   * that selection logic already guarantees a focused entry is never chosen
+   * as a victim in the first place (see the two tests above), so the
+   * eviction-flavoured call to this same decline branch is not reachable
+   * with a focused entry through that path. The ordinary, non-evict path —
+   * `mountObserver`'s exit transition calling `unmountEditor` directly on a
+   * still-focused entry — reaches the identical decline branch for real
+   * (this is exactly what a user scrolling away while still typing
+   * triggers), which is what this test drives.
+   */
+  it("a focused entry that declines to unmount is put back into mountOrder", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered.get(file.path);
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+
+    const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.focus();
+    expect(rendered.editor.hasFocus()).toBe(true);
+    expect(internals(h.view).mountOrder).toContain(file.path);
+
+    // Simulate `enforceMountLimit` having already spliced this path out
+    // before calling in — the exact precondition `ensureMountOrderContains`
+    // exists to repair.
+    const mountOrder = internals(h.view).mountOrder as string[];
+    mountOrder.splice(mountOrder.indexOf(file.path), 1);
+    expect(mountOrder).not.toContain(file.path);
+
+    await internals(h.view).unmountEditor(rendered);
+
+    // Declined (still focused): the editor survives...
+    expect(rendered.editor).not.toBeNull();
+    expect(rendered.editor.hasFocus()).toBe(true);
+    // ...and `mountOrder` was repaired, not left missing this path.
+    expect(internals(h.view).mountOrder).toContain(file.path);
+  });
+
+  /**
+   * Pins `wireEditor`'s `onBlur` second chance: an entry that declined
+   * `unmountEditor` only because it was still focused (see
+   * `unmountEditor`'s own doc) must actually unmount once the user clicks
+   * away, rather than staying mounted for the rest of the session because
+   * no further `mountObserver` transition is coming (it never re-entered
+   * the margin).
+   */
+  it("losing focus after a declined unmount actually unmounts the editor", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered.get(file.path);
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+
+    const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.focus();
+
+    // Scrolled out while still focused: mountObserver's exit transition
+    // calls unmountEditor unconditionally, but it must decline — the editor
+    // stays mounted and focused even though it's now outside the margin.
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+    await settle();
+    expect(rendered.editor).not.toBeNull();
+    expect(rendered.editor.hasFocus()).toBe(true);
+    expect(rendered.intersecting).toBe(false);
+
+    // The user now actually clicks away.
+    textarea.blur();
+    await settle();
+
+    expect(rendered.editor).toBeNull();
+    expect(rendered.bodyEl.querySelector("textarea")).toBeNull();
+  });
 });
