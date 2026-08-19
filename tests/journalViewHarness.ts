@@ -113,6 +113,65 @@ export function timelineEl(view: JournalView): HTMLElement {
 }
 
 /**
+ * Replaces `win.requestAnimationFrame`/`cancelAnimationFrame` with a queue the
+ * test drains explicitly via `flush()`, instead of one that fires on a real
+ * timer. `openComposer`'s focus-claim loop (`JournalView.ts`'s `claimFocus`)
+ * schedules itself through `contentEl.win.requestAnimationFrame`, and
+ * `vi.useFakeTimers()` does not, by itself, fake `requestAnimationFrame` — it
+ * is not in vitest's default `toFake` list — so without this, that loop would
+ * run against a real, uncontrolled ~16ms timer even under an otherwise
+ * fake-timers test, making the exact frame boundaries this is meant to pin
+ * unobservable.
+ *
+ * `flush()` runs exactly the callbacks queued as of the call — one frame's
+ * worth. A callback that itself calls `requestAnimationFrame` while
+ * `flush()` is draining it (as `claimFocus` does, to watch the next frame)
+ * is queued into the NEXT batch, not appended to the one currently draining
+ * — the same one-frame-lookahead a real `requestAnimationFrame` provides.
+ * Nothing here ever runs a scheduled callback synchronously inside the
+ * `requestAnimationFrame` call itself, which a real frame never does either.
+ */
+export interface FakeRaf {
+  /** Runs the callbacks currently queued — one frame's worth. */
+  flush(): void;
+  /** Restores the original `requestAnimationFrame`/`cancelAnimationFrame`. */
+  restore(): void;
+}
+
+export function installFakeRaf(win: Window & typeof globalThis): FakeRaf {
+  const originalRequest = win.requestAnimationFrame;
+  const originalCancel = win.cancelAnimationFrame;
+  let queue = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+
+  win.requestAnimationFrame = ((callback: FrameRequestCallback): number => {
+    const id = nextId++;
+    queue.set(id, callback);
+    return id;
+  }) as typeof win.requestAnimationFrame;
+
+  win.cancelAnimationFrame = ((id: number): void => {
+    queue.delete(id);
+  }) as typeof win.cancelAnimationFrame;
+
+  return {
+    flush(): void {
+      // Swapped out before running anything, so a callback's own
+      // `requestAnimationFrame` call (which re-enters `win.requestAnimationFrame`
+      // above, not this closure) lands in the fresh map, not the one being
+      // iterated.
+      const due = queue;
+      queue = new Map();
+      for (const callback of due.values()) callback(0);
+    },
+    restore(): void {
+      win.requestAnimationFrame = originalRequest;
+      win.cancelAnimationFrame = originalCancel;
+    },
+  };
+}
+
+/**
  * Lets pending microtask chains (readBody, editor mounts, `enforceMountLimit`
  * unmounts, ...) settle under fake timers, without advancing real wall-clock
  * time. `JournalView`'s own async chains have no real timers in them once an
