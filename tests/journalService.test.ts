@@ -4,6 +4,7 @@ import type { App } from "obsidian";
 import { createFakeApp, TFolder } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService, type JournalChange } from "../src/services/journalService";
+import { formatCreatedProperty } from "../src/utils/dates";
 
 function setup() {
   const fake = createFakeApp();
@@ -72,6 +73,51 @@ describe("JournalService: load", () => {
     service.rebuild();
 
     expect(service.getEntries().map((e) => e.file.path)).toEqual([AUG12]);
+  });
+});
+
+describe("JournalService: applyKnownEntry", () => {
+  it("repositions an already-indexed entry immediately, without waiting for any event or debounce", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    const older = fake.vault.addFile(AUG11, "");
+    service.load();
+    expect(service.getEntries().map((e) => e.file.path)).toEqual([AUG12, AUG11]);
+
+    const newlyOldest = new Date(2026, 6, 1, 8, 0, 0);
+    const change = service.applyKnownEntry({ file, created: newlyOldest });
+
+    expect(change.kind).toBe("moved");
+    // No timer advance at all: the index is already correct synchronously.
+    expect(service.getEntries().map((e) => e.file.path)).toEqual([older.path, file.path]);
+  });
+
+  it("does not emit to onChange listeners: the caller already knows what changed", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+
+    service.applyKnownEntry({ file, created: new Date(2026, 6, 1, 8, 0, 0) });
+
+    expect(changes).toHaveLength(0);
+  });
+
+  it("is idempotent with the later real event for the same write: reports harmless 'content', not a second 'moved'", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+
+    const correctedAt = new Date(2026, 6, 1, 8, 0, 0);
+    service.applyKnownEntry({ file, created: correctedAt });
+
+    const changes = collectChanges(service);
+    fake.metadataCache.frontmatter.set(file.path, { created: formatCreatedProperty(correctedAt) });
+    fake.vault.trigger("modify", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([{ kind: "content", entry: expect.objectContaining({ file }) }]);
+    expect(service.getEntries()).toHaveLength(1);
   });
 });
 
@@ -400,6 +446,59 @@ describe("JournalService: created timestamp changes (moved)", () => {
 
     expect(changes).toEqual([{ kind: "content", entry: expect.objectContaining({ file }) }]);
     expect(service.getEntries()).toHaveLength(1);
+  });
+});
+
+describe("JournalService: EntryRepository.setEntryCreated must not be a self-write", () => {
+  // Pins this commit's central design invariant: `setEntryCreated` writes a
+  // corrected `created` value WITHOUT calling `markSelfWrite`, on purpose —
+  // repositioning the entry in the timeline depends entirely on the
+  // resulting modify/changed event reaching `applyUpsert` unsuppressed (see
+  // `EntryRepository.setEntryCreated`'s doc). Adding a `markSelfWrite` call
+  // there would silently break repositioning while every other test in this
+  // suite stayed green; these two tests would catch it.
+  //
+  // `FakeMetadataCache` is populated independently of `FakeVault`'s
+  // contents (unlike the real metadata cache, which re-parses the file
+  // itself), so it's updated by hand here to the value the write actually
+  // produced — exactly what a real re-parse would eventually settle on,
+  // since `formatCreatedProperty` is the same formatter `setEntryCreated`
+  // itself writes through `setCreatedProperty`.
+  const newAt = new Date(2026, 6, 1, 8, 0, 0);
+
+  it("a created-only change via setEntryCreated is NOT suppressed, and emits 'moved'", async () => {
+    const { fake, repository, service } = setup();
+    const file = fake.vault.addFile(AUG12, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`);
+    fake.metadataCache.frontmatter.set(file.path, { created: "2026-08-12T22:41:52+03:00" });
+    service.load();
+    const changes = collectChanges(service);
+
+    await repository.setEntryCreated(file, newAt);
+    fake.metadataCache.frontmatter.set(file.path, { created: formatCreatedProperty(newAt) });
+    fake.vault.trigger("modify", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0].kind).toBe("moved");
+  });
+
+  it("regression guard: the same change WOULD be silently swallowed if the write were ever marked a self-write", async () => {
+    const { fake, repository, service } = setup();
+    const file = fake.vault.addFile(AUG12, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`);
+    fake.metadataCache.frontmatter.set(file.path, { created: "2026-08-12T22:41:52+03:00" });
+    service.load();
+    const changes = collectChanges(service);
+
+    // Simulates the exact regression this design avoids: if a future edit
+    // added `journal.markSelfWrite(file.path)` inside `setEntryCreated`,
+    // this is what would happen to the very same write exercised above.
+    service.markSelfWrite(file.path);
+    await repository.setEntryCreated(file, newAt);
+    fake.metadataCache.frontmatter.set(file.path, { created: formatCreatedProperty(newAt) });
+    fake.vault.trigger("modify", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toHaveLength(0);
   });
 });
 

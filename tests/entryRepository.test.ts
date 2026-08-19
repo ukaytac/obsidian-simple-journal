@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { App } from "obsidian";
 import { createFakeApp } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
+import { UnsafeFrontmatterError } from "../src/journal/markdownDoc";
 import { formatCreatedProperty } from "../src/utils/dates";
 
 function setup() {
@@ -451,5 +452,16 @@ describe("setEntryCreated", () => {
     await repo.setEntryCreated(file, newAt);
 
     expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+  });
+
+  it("rejects with UnsafeFrontmatterError and writes nothing when the frontmatter is not safe to edit surgically", async () => {
+    const { fake, repo } = setup();
+    const original = `---\ncreated: |\n  2026-08-12T22:41:52+03:00\n---\n${body}`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    await expect(repo.setEntryCreated(file, newAt)).rejects.toThrow(UnsafeFrontmatterError);
+
+    // Never risk data loss: a refused edit leaves the file byte-identical.
+    expect(fake.vault.contents.get(file.path)).toBe(original);
   });
 });

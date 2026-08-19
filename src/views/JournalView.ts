@@ -10,6 +10,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
+import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorPosition, anchorSeed, compareEntries, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
@@ -1052,15 +1053,6 @@ export class JournalView extends ItemView {
    * touched — filenames are internal identifiers, never re-derived from
    * content or timestamp (CLAUDE.md).
    *
-   * Repositioning the entry in the timeline is NOT done here:
-   * `EntryRepository.setEntryCreated`'s write reaches `JournalService`
-   * through the ordinary vault/metadata-cache event path — the same one a
-   * manual edit via the Properties pane already goes through — which
-   * already repositions any entry whose `created` changes (see
-   * `JournalService.applyUpsert`'s "moved" case, applied here through
-   * `applyChangesNow`'s "reposition" action). See `setEntryCreated`'s own
-   * doc for why this write deliberately is not marked a self-write.
-   *
    * Any pending debounced body edit is flushed first, exactly like
    * `confirmDelete` flushes before deleting: without it, this write and a
    * still-pending body save could race against the same file.
@@ -1070,19 +1062,72 @@ export class JournalView extends ItemView {
     if (!file) return;
 
     new ChangeEntryTimeModal(this.app, rendered.entry.created, (value) => {
-      void (async () => {
-        await this.flushSave(rendered);
-
-        try {
-          await this.plugin.repository.setEntryCreated(file, value);
-        } catch (error) {
-          console.error("Journal Entries: could not change the entry's time", file.path, error);
-          new Notice(
-            "Journal Entries: could not change the entry's time. See the developer console for details.",
-          );
-        }
-      })();
+      void this.commitEntryTimeChange(rendered, file, value);
     }).open();
+  }
+
+  /**
+   * The write behind `changeEntryTime`, plus making sure the corrected
+   * entry is actually visible afterward — never left silently repositioned
+   * out of the loaded window or past an active anchor, which is exactly
+   * what CLAUDE.md's "never risk data loss... fail visibly" spirit forbids
+   * for something the user just deliberately did.
+   *
+   * `EntryRepository.setEntryCreated`'s write reaches `JournalService`
+   * through the ordinary vault/metadata-cache event path eventually, but
+   * that path is both debounced (`JournalService`'s `DEBOUNCE_MS`) and at
+   * the mercy of `metadataCache` having already re-parsed the file — neither
+   * guaranteed by the time this write's own promise resolves.
+   * `JournalService.applyKnownEntry` sidesteps both: this caller already
+   * knows the exact resulting entry (it just wrote it), so the index is
+   * corrected immediately regardless of that timing. The later real event
+   * for the same write is harmless once it does arrive — `applyUpsert`
+   * finds the entry already matches and reports "content", not a second
+   * "moved" (see `applyKnownEntry`'s own doc).
+   *
+   * The resulting change is run through the exact same `applyChangesNow`
+   * reposition/insert logic every other change goes through — preserving,
+   * in particular, `repositionIsNoOp`'s "leave a same-position editor
+   * mounted" optimization, so the common case (a correction of a few
+   * minutes, still the same day) never pays for a teardown at all. Only if
+   * that still leaves the entry unrendered — outside the loaded window, or
+   * excluded by an active anchor (`insertEntryInPlace`'s bounds checks) —
+   * does this fall back to `goToDate(value)`, which is guaranteed to make
+   * it visible, with a Notice explaining the jump. A jump is only
+   * announced when it actually happens; an in-place move needs no
+   * explanation.
+   *
+   * `EntryRepository.setEntryCreated` can throw `UnsafeFrontmatterError`
+   * when the entry's frontmatter isn't safe to edit surgically (see its
+   * doc) — reported with a distinct, actionable Notice rather than the
+   * generic write-failure one, since the fix here is for the user to edit
+   * `created` in the source note themselves, not to retry.
+   */
+  private async commitEntryTimeChange(rendered: RenderedEntry, file: TFile, value: Date): Promise<void> {
+    await this.flushSave(rendered);
+    if (this.closed) return;
+
+    try {
+      await this.plugin.repository.setEntryCreated(file, value);
+    } catch (error) {
+      console.error("Journal Entries: could not change the entry's time", file.path, error);
+      new Notice(
+        error instanceof UnsafeFrontmatterError
+          ? "Journal Entries: this entry's frontmatter is too complex to edit safely here. Change \"created\" in the source note instead."
+          : "Journal Entries: could not change the entry's time. See the developer console for details.",
+      );
+      return;
+    }
+
+    if (this.closed) return;
+
+    const change = this.plugin.journal.applyKnownEntry({ file, created: value });
+    await this.enqueueTimelineMutation(() => this.applyChangesNow([change]));
+
+    if (this.closed || this.rendered.has(file.path)) return;
+
+    await this.goToDate(value);
+    new Notice(`Moved entry to ${formatDayHeader(value)}, ${formatTime(value)}`);
   }
 
   /**
@@ -1924,6 +1969,19 @@ export class JournalView extends ItemView {
           break;
 
         case "reposition":
+          // A correction that doesn't actually move the entry anywhere in
+          // the DOM (same day, still sorted between the same rendered
+          // neighbours) doesn't need any of the teardown below: update the
+          // record and the visible timestamp in place instead, preserving
+          // focus, caret, selection, and — for the embedded editor — its
+          // CM6 undo history. See `repositionIsNoOp`'s doc.
+          if (rendered && this.repositionIsNoOp(rendered, change.entry)) {
+            rendered.entry = change.entry;
+            const timeEl = rendered.el.querySelector<HTMLElement>(".journal-entry-time");
+            if (timeEl) timeEl.textContent = formatTime(change.entry.created);
+            break;
+          }
+
           if (action.flush && rendered) {
             await this.flushSave(rendered);
             if (this.closed || generation !== this.generation) return;
@@ -1972,6 +2030,38 @@ export class JournalView extends ItemView {
     }
 
     if (dayGroupsDirty) this.removeEmptyDayGroups();
+  }
+
+  /**
+   * True when `change.kind === "reposition"` for `entry` would not actually
+   * move `rendered.el` anywhere in the DOM: still the same day group, and
+   * still sorted on the same side of whichever rendered entries currently
+   * sit immediately before/after it. Only rendered (mounted or static)
+   * neighbours are consulted — an unrendered one imposes no visible
+   * ordering constraint here.
+   *
+   * Deliberately narrower than "the entry's index position is unchanged":
+   * that would also have to account for the anchor offset and the loaded
+   * window, both irrelevant to whether anything on screen actually needs
+   * to move. Comparing DOM neighbours directly answers the only question
+   * that matters for this optimization.
+   */
+  private repositionIsNoOp(rendered: RenderedEntry, entry: JournalEntry): boolean {
+    if (dayKey(rendered.entry.created) !== dayKey(entry.created)) return false;
+
+    const prevEl = rendered.el.previousElementSibling as HTMLElement | null;
+    const nextEl = rendered.el.nextElementSibling as HTMLElement | null;
+    const prevEntry = prevEl ? this.rendered.get(prevEl.dataset.path ?? "")?.entry : undefined;
+    const nextEntry = nextEl ? this.rendered.get(nextEl.dataset.path ?? "")?.entry : undefined;
+
+    // A rendered previous sibling must still sort strictly before `entry`
+    // (it's newer), and a rendered next sibling must still sort strictly
+    // after it (it's older). Either failing means this entry's corrected
+    // time has crossed a neighbour and the row genuinely needs to move.
+    if (prevEntry && compareEntries(prevEntry, entry) >= 0) return false;
+    if (nextEntry && compareEntries(entry, nextEntry) >= 0) return false;
+
+    return true;
   }
 
   /**

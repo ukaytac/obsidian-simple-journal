@@ -113,13 +113,91 @@ export function restoreSeparator(frontmatter: string, body: string): string {
 // at all. Captures nothing; the whole match (key, colon, and everything up
 // to but not including the line's own terminator) is what gets replaced, so
 // the CRLF/LF terminator itself is left completely alone.
+//
+// This same anchoring is what makes it possible for the match to land
+// somewhere that ISN'T the real top-level `created` key: a multi-line YAML
+// scalar belonging to an EARLIER property can itself contain a line that
+// starts with `created:` at column 0 (YAML plain/quoted scalars don't
+// require their continuation lines to be indented). `assertSafeCreatedLine`
+// exists specifically to catch that and every other shape this regex alone
+// cannot tell apart from a genuine single-line `created: value`.
 const CREATED_LINE = /^created:[ \t]*[^\r\n]*/m;
+const CREATED_LINE_GLOBAL = /^created:[ \t]*[^\r\n]*/gm;
 
 // Matches just the frontmatter's opening delimiter line (optional BOM,
 // `---`, optional trailing spaces/tabs, its newline), so a missing `created`
 // key can be inserted immediately after it — as the new first property —
 // without disturbing anything else in the block.
 const OPENING_DELIMITER = /^﻿?---[ \t]*\r?\n/;
+
+/**
+ * Thrown by `setCreatedProperty` when it refuses to touch a `created`
+ * property it cannot safely treat as an ordinary single-line scalar — see
+ * `assertSafeCreatedLine` for exactly which shapes this covers. Refusing is
+ * deliberate: CLAUDE.md forbids rewriting or normalizing frontmatter this
+ * plugin doesn't own, and every one of these shapes is a case where a blind
+ * line-replace would either destroy content or leave an orphaned fragment
+ * behind, invisibly. `JournalView.changeEntryTime` catches this specifically
+ * to show the user a message they can act on (edit `created` in the source
+ * note themselves) rather than the generic write-failure Notice.
+ */
+export class UnsafeFrontmatterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsafeFrontmatterError";
+  }
+}
+
+/**
+ * Refuses (via `UnsafeFrontmatterError`) to let `setCreatedProperty` touch a
+ * `created` line unless it can be confident the line is an ordinary,
+ * self-contained scalar. A no-op when there is no top-level `created` key at
+ * all — `setCreatedProperty` inserts one fresh in that case, with nothing
+ * existing to misjudge. Four distinct shapes are rejected:
+ *
+ * - More than one line matches `CREATED_LINE`. Most often a genuine
+ *   duplicate key (which `created:` value Obsidian's own YAML reader
+ *   resolves to isn't something this function should guess at either), but
+ *   also how the multi-line-scalar collision above gets caught: a line deep
+ *   inside another property's own value that happens to start with
+ *   `created:` at column 0 produces a second match, and this bails before
+ *   either one is touched.
+ * - The value starts with `|` or `>`: a multi-line YAML block scalar.
+ *   Replacing only the header line would leave its indented body behind as
+ *   an orphaned fragment.
+ * - The line right after the match is indented. A plain YAML scalar can
+ *   fold onto such a line without any `|`/`>` marker at all; the same
+ *   orphaning risk applies.
+ * - The value has a `#` preceded by whitespace (or starting it) — a YAML
+ *   comment. Replacing the line would silently drop it, and telling a real
+ *   comment apart from a value that merely contains `#` needs a full YAML
+ *   parser this function deliberately doesn't have.
+ */
+function assertSafeCreatedLine(frontmatter: string): void {
+  const matches = frontmatter.match(CREATED_LINE_GLOBAL) ?? [];
+  if (matches.length > 1) {
+    throw new UnsafeFrontmatterError(
+      "This entry's frontmatter has more than one line that looks like a top-level \"created\" key.",
+    );
+  }
+  if (matches.length === 0) return;
+
+  const match = CREATED_LINE.exec(frontmatter)!;
+  const value = match[0].slice(match[0].indexOf(":") + 1).trim();
+
+  if (value.startsWith("|") || value.startsWith(">")) {
+    throw new UnsafeFrontmatterError("This entry's \"created\" property is a multi-line YAML block scalar.");
+  }
+
+  if (/(^|[ \t])#/.test(value)) {
+    throw new UnsafeFrontmatterError("This entry's \"created\" line has a trailing comment.");
+  }
+
+  const rest = frontmatter.slice(match.index + match[0].length);
+  if (/^\r?\n[ \t]+\S/.test(rest)) {
+    throw new UnsafeFrontmatterError("This entry's \"created\" property continues onto an indented line.");
+  }
+}
 
 /**
  * Replaces the value of the top-level `created` property, and nothing else.
@@ -138,6 +216,10 @@ const OPENING_DELIMITER = /^﻿?---[ \t]*\r?\n/;
  * created — the whole original document becomes the body, byte-identical,
  * exactly as `splitFrontmatter` would already report it (an empty
  * frontmatter, the original text as body).
+ *
+ * Throws `UnsafeFrontmatterError` — writing nothing — rather than guess at a
+ * `created` line it cannot safely treat as a single-line scalar. See
+ * `assertSafeCreatedLine`.
  */
 export function setCreatedProperty(data: string, value: string): string {
   const { frontmatter, body } = splitFrontmatter(data);
@@ -146,6 +228,8 @@ export function setCreatedProperty(data: string, value: string): string {
   if (!frontmatter) {
     return `---\ncreated: ${quoted}\n---\n${data}`;
   }
+
+  assertSafeCreatedLine(frontmatter);
 
   if (CREATED_LINE.test(frontmatter)) {
     return frontmatter.replace(CREATED_LINE, `created: ${quoted}`) + body;

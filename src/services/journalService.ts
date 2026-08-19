@@ -121,6 +121,35 @@ export class JournalService extends Component {
     return this.index;
   }
 
+  /**
+   * Directly inserts/repositions a known-good `entry` in the index, without
+   * waiting for (or trusting the timing of) the vault/metadata-cache events
+   * for the write that produced it.
+   *
+   * The event path this class's `onload` listeners drive re-derives an
+   * entry from `EntryRepository.entryFor`, which reads
+   * `metadataCache.getFileCache()` — not guaranteed to already reflect a
+   * write whose own promise has merely resolved; the metadata cache's
+   * re-parse is a separate pipeline with its own timing, and the debounce
+   * on top of it adds up to `DEBOUNCE_MS` more. A caller that already knows
+   * the exact entry it just wrote — e.g. `JournalView.changeEntryTime`,
+   * right after writing a `created` value it computed itself — can use
+   * this to make the index correct immediately, and use the returned
+   * `JournalChange` to update its own rendering right away, rather than at
+   * the mercy of that timing.
+   *
+   * Does not emit to `onChange` listeners: unlike the debounced event path,
+   * the caller here already knows exactly what changed and is expected to
+   * act on the returned value itself. Idempotent with the eventual real
+   * vault/metadata event for the same write: when it arrives, `applyUpsert`
+   * re-derives the entry from disk/metadata and finds it already matches
+   * what this applied, reporting harmless "content" rather than a second
+   * "moved".
+   */
+  applyKnownEntry(entry: JournalEntry): JournalChange {
+    return this.applyUpsert(entry);
+  }
+
   onChange(callback: (changes: JournalChange[]) => void): () => void {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);

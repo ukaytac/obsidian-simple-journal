@@ -5,6 +5,7 @@ import {
   setCreatedProperty,
   splitFrontmatter,
   stripSeparator,
+  UnsafeFrontmatterError,
 } from "../src/journal/markdownDoc";
 
 const withFrontmatter = `---
@@ -269,15 +270,31 @@ describe("setCreatedProperty", () => {
     );
   });
 
+  it("treats an unterminated frontmatter block the same as no frontmatter at all: wraps a fresh block around the untouched original", () => {
+    const data = "---\ncreated: 2026-08-12T22:41:52+03:00\nno closing delimiter\n";
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\n---\n${data}`);
+  });
+
+  it("replaces an empty ('created' with no value) property, when it is followed by an ordinary unindented sibling", () => {
+    // Nothing to lose here — an empty value is safely replaced like any
+    // other. Contrast with the nested-mapping shape below, where an
+    // "empty" `created:` is actually followed by an indented child and
+    // must be refused instead.
+    const data = `---\ncreated:\nmood: calm\n---\nBody.\n`;
+    expect(setCreatedProperty(data, NEW_VALUE)).toBe(`---\ncreated: "${NEW_VALUE}"\nmood: calm\n---\nBody.\n`);
+  });
+
   // Regression-style invariant: the body region (per splitFrontmatter) must
-  // be byte-identical before and after, for every shape splitFrontmatter
-  // itself is exercised against above, including the ones with no
-  // recognizable frontmatter at all.
+  // be byte-identical before and after, for every shape that actually
+  // exercises the value-REPLACE path (a real, single, top-level `created`
+  // match). Deliberately excludes shapes where `frontmatter` is empty (no
+  // frontmatter at all, an empty document, an unterminated block): for
+  // those, `setCreatedProperty` always returns `prefix + data` verbatim, so
+  // the body is trivially unchanged no matter what `data` is — an
+  // assertion that can never fail is not a test, and each of those shapes
+  // already has its own exact-output assertion above instead.
   const bodyInvariantTable: Array<[string, string]> = [
     ["canonical entry", withFrontmatter],
-    ["no frontmatter at all", "Just some text.\n"],
-    ["empty string", ""],
-    ["unterminated frontmatter block", "---\ncreated: 2026-08-12T22:41:52+03:00\nno closing delimiter\n"],
     ["CRLF", "---\r\ncreated: x\r\n---\r\nBody.\r\n"],
     ["horizontal rule in the body", "---\ncreated: x\n---\n\nSome text\n\n---\n\nMore text\n"],
     ["body line starting with 'created:'", "---\ncreated: x\n---\ncreated: not frontmatter.\n"],
@@ -287,5 +304,47 @@ describe("setCreatedProperty", () => {
     const before = splitFrontmatter(input).body;
     const after = splitFrontmatter(setCreatedProperty(input, NEW_VALUE)).body;
     expect(after).toBe(before);
+  });
+});
+
+describe("setCreatedProperty: refuses rather than mangles unsafe frontmatter", () => {
+  const NEW_VALUE = "2026-08-13T09:00:00+03:00";
+
+  it("refuses when the match lands inside another property's own multi-line quoted value (does not touch anything)", () => {
+    // The exact shape found in review: `note`'s multi-line quoted value
+    // contains a line that starts with `created:` at column 0, producing a
+    // second match alongside the real one below it.
+    const data = '---\nnote: "hello\ncreated: bad"\nmood: calm\ncreated: 2026-08-12T22:41:52+03:00\n---\nBody.\n';
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses on a duplicate top-level 'created' key", () => {
+    const data = "---\ncreated: 2026-08-12T22:41:52+03:00\nmood: calm\ncreated: 2026-08-13T00:00:00+03:00\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses a literal block scalar ('|')", () => {
+    const data = "---\ncreated: |\n  2026-08-12T22:41:52+03:00\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses a folded block scalar ('>')", () => {
+    const data = "---\ncreated: >\n  2026-08-12T22:41:52+03:00\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses a plain scalar that folds onto an indented continuation line, even with no '|'/'>' marker", () => {
+    const data = "---\ncreated: 2026-08-12T22:41:52+03:00\n  continued\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses an empty 'created' followed by an indented nested mapping (not a scalar at all)", () => {
+    const data = "---\ncreated:\n  foo: bar\nmood: calm\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
+  });
+
+  it("refuses a trailing inline comment on the 'created' line", () => {
+    const data = "---\ncreated: 2026-08-12T22:41:52+03:00 # when I wrote this\n---\nBody.\n";
+    expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
   });
 });
