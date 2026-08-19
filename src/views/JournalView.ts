@@ -13,9 +13,9 @@ import {
 import type { JournalEntry } from "../journal/entry";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
-import { anchorPosition, anchorSeed, compareEntries, pageAfter } from "../services/entryIndex";
+import { anchorSeed, compareEntries, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
-import { dayKey, formatDayHeader, formatMonthHeader, formatTime } from "../utils/dates";
+import { dayKey, formatDayHeader, formatTime } from "../utils/dates";
 import { decideChangeAction, type RenderedState } from "./applyChange";
 import { ChangeEntryTimeModal } from "./ChangeEntryTimeModal";
 import { isMeaningful, resolveComposerContent } from "./composerCommit";
@@ -27,6 +27,7 @@ import {
   type SaveDeps,
 } from "./entrySave";
 import { createMountLifecycle, type MountLifecycle } from "./mountLifecycle";
+import { createTimelineDom, type TimelineDom } from "./timelineDom";
 import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
@@ -191,9 +192,17 @@ interface ComposerSnapshot {
 export class JournalView extends ItemView {
   private timelineEl!: HTMLElement;
   private rendered = new Map<string, RenderedEntry>();
-  /** Day-group `.journal-day-entries` containers, keyed by `dayKey`, so lookup is O(1). */
-  private dayGroups = new Map<string, HTMLElement>();
-  private lastRenderedMonth: string | null = null;
+  /**
+   * Day-group `.journal-day-entries` containers, keyed by `dayKey`, so
+   * lookup is O(1). Forwards to `timelineDom`, which actually owns this map
+   * (see `timelineDom.ts`) — kept as a getter, rather than dropped, purely so
+   * `internals(view).dayGroups` in `tests/JournalView.*.test.ts` keeps
+   * reaching the real map without needing to reach through `timelineDom`
+   * itself.
+   */
+  private get dayGroups(): Map<string, HTMLElement> {
+    return this.timelineDom.dayGroups;
+  }
   /**
    * Bumped every time the timeline is discarded. `renderStatic` captures it
    * before doing any async work and bails if it has since changed, so a
@@ -371,6 +380,32 @@ export class JournalView extends ItemView {
     editorFactory: this.plugin.editorFactory,
     lookup: (path) => this.rendered.get(path),
     save: this.saveDeps,
+  });
+  /**
+   * The bound DOM-layer pipeline (see `timelineDom.ts`), owning `dayGroups`/
+   * `lastRenderedMonth` outright. `getTimelineEl`/`hasRendered`/`getRendered`/
+   * `setRendered`/`renderedCount`/`renderStatic`/`observeForMount`/`getIndex`/
+   * `getAnchorDate`/`hasSentinel` are the narrow accessors back into state
+   * this pipeline doesn't own (storage, paging/anchor state, the mount
+   * observer, static rendering) — see that module's doc. `createEntryEl` is
+   * this view's own DOM/wiring for one row, also not part of this seam.
+   * The `as RenderedEntry`/`as DomRenderedEntry` casts mirror
+   * `mountLifecycle`'s: every `DomRenderedEntry` this pipeline is ever
+   * actually called with (`this.rendered`'s values, or a fresh
+   * `this.createEntryEl(...)`) already IS a full `RenderedEntry`.
+   */
+  private readonly timelineDom: TimelineDom = createTimelineDom({
+    getTimelineEl: () => this.timelineEl,
+    hasRendered: (path) => this.rendered.has(path),
+    getRendered: (path) => this.rendered.get(path),
+    setRendered: (path, rendered) => this.rendered.set(path, rendered as RenderedEntry),
+    renderedCount: () => this.rendered.size,
+    createEntryEl: (entry) => this.createEntryEl(entry),
+    renderStatic: (target) => this.renderStatic(target as RenderedEntry),
+    observeForMount: (el) => this.mountObserver?.observe(el),
+    getIndex: () => this.index,
+    getAnchorDate: () => this.anchorDate,
+    hasSentinel: () => this.sentinelEl !== null,
   });
 
   constructor(
@@ -735,11 +770,12 @@ export class JournalView extends ItemView {
     }
 
     this.rendered.clear();
-    this.dayGroups.clear();
+    // Clears `dayGroups`/`lastRenderedMonth`, both owned by `timelineDom`
+    // (see `timelineDom.ts`) since the DOM-layer split.
+    this.timelineDom.reset();
     // Truncated in place, never reassigned — `mountOrder` is `readonly`
     // precisely so this stays true; see its doc.
     this.mountOrder.length = 0;
-    this.lastRenderedMonth = null;
     this.timelineEl.empty();
 
     return composerSnapshot;
@@ -1027,121 +1063,39 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * `anchored` distinguishes a genuinely empty journal from an anchored
-   * (`goToDate`) view that excludes every entry because the anchor is older
-   * than everything in it — the index isn't empty in that case, so "no
-   * journal entries yet" would be misleading.
+   * See `renderEmptyState` in `timelineDom.ts` for what this actually does
+   * and why; this wrapper exists only so calls go through `this.` — same
+   * reasoning as `mountEditor`'s doc in `mountLifecycle.ts`.
    */
   private renderEmptyState(anchored = false): void {
-    this.timelineEl.createDiv({
-      cls: "journal-empty",
-      text: anchored
-        ? "Nothing on or before this date."
-        : "No journal entries yet. Use the + button above to write the first one.",
-    });
+    this.timelineDom.renderEmptyState(anchored);
   }
 
   /**
-   * Appends an entry below everything currently rendered. Rendered
-   * statically and handed to `mountObserver`, not mounted directly:
-   * `observe()` delivers an immediate callback with the entry's current
-   * intersection state, which mounts a live editor right away for whatever
-   * is already on screen and leaves everything else — most of a 40-entry
-   * page, in the common case — statically rendered until it actually nears
-   * the viewport. `mountEditor`/`renderStatic`'s shared `opToken` resolves the
-   * race this creates when that immediate callback fires before this
-   * static render has finished reading the file.
-   *
-   * Guards against a path already in `rendered`: reachable when a page
-   * boundary and an `insertEntryInPlace`-driven insert (an "added"/"moved"/
-   * "content" change for an entry just past the loaded window) land on the
-   * very same entry — without this, `appendEntry` would silently overwrite
-   * the map's entry for that path with a second `RenderedEntry`/DOM node
-   * while the first stays in the DOM, still `observe()`d, its editor (if
-   * mounted) never destroyed: a leaked editor, and for `ObsidianEmbedEditor`
-   * a leaked 250ms poll, for the rest of the session.
+   * See `appendEntry` in `timelineDom.ts` for what this actually does and
+   * why; this wrapper exists only so calls go through `this.` (see
+   * `renderEmptyState`'s doc above).
    */
   private appendEntry(entry: JournalEntry): void {
-    if (this.rendered.has(entry.file.path)) return;
-
-    const group = this.ensureDayGroup(entry.created, "append");
-    const rendered = this.createEntryEl(entry);
-    group.appendChild(rendered.el);
-    this.rendered.set(entry.file.path, rendered);
-    void this.renderStatic(rendered);
-    this.mountObserver?.observe(rendered.el);
+    this.timelineDom.appendEntry(entry);
   }
 
   /**
-   * Returns the day group for this date, creating it — and its month header
-   * when the month changes — if it does not exist yet. Looked up in the
-   * `dayGroups` map rather than via `querySelector`, which would otherwise
-   * re-scan an ever-growing subtree on every call.
+   * See `ensureDayGroup` in `timelineDom.ts` for what this actually does and
+   * why; this wrapper exists only so calls go through `this.` (see
+   * `renderEmptyState`'s doc above).
    */
   private ensureDayGroup(date: Date, position: "append" | "prepend"): HTMLElement {
-    const key = dayKey(date);
-    const existing = this.dayGroups.get(key);
-    if (existing) return existing;
-
-    // Derived from dayKey (zero-padded "YYYY-MM") so this always matches the
-    // month key rebuildMonthHeaders computes from the same dayKey string —
-    // using getMonth() here instead would produce an unpadded, zero-based
-    // value ("2026-7") that never equals rebuildMonthHeaders's ("2026-08").
-    const monthKey = key.slice(0, 7);
-
-    const dayEl = createDiv({ cls: "journal-day" });
-    dayEl.dataset.day = key;
-    dayEl.createDiv({ cls: "journal-day-header", text: formatDayHeader(date) });
-    const entriesEl = dayEl.createDiv({ cls: "journal-day-entries" });
-    this.dayGroups.set(key, entriesEl);
-
-    if (position === "append") {
-      if (monthKey !== this.lastRenderedMonth) {
-        this.timelineEl.createDiv({
-          cls: "journal-month-header",
-          text: formatMonthHeader(date),
-        });
-        this.lastRenderedMonth = monthKey;
-      }
-      this.timelineEl.appendChild(dayEl);
-    } else {
-      this.timelineEl.prepend(dayEl);
-      // Prepending can introduce a new topmost month; rebuild month headers.
-      this.rebuildMonthHeaders();
-    }
-
-    return entriesEl;
+    return this.timelineDom.ensureDayGroup(date, position);
   }
 
   /**
-   * Month headers depend on their neighbours, so after any insertion that is
-   * not a plain append they are recomputed from the day groups in the DOM.
+   * See `rebuildMonthHeaders` in `timelineDom.ts` for what this actually
+   * does and why; this wrapper exists only so calls go through `this.` (see
+   * `renderEmptyState`'s doc above).
    */
   private rebuildMonthHeaders(): void {
-    for (const el of Array.from(this.timelineEl.querySelectorAll(".journal-month-header"))) {
-      el.remove();
-    }
-
-    let previousMonth: string | null = null;
-
-    for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
-      const day = dayEl.dataset.day;
-      if (!day) continue;
-
-      // Same "YYYY-MM" slice ensureDayGroup uses, so the two paths agree.
-      const monthKey = day.slice(0, 7);
-      if (monthKey === previousMonth) continue;
-
-      const [year, month] = monthKey.split("-");
-      const header = createDiv({
-        cls: "journal-month-header",
-        text: formatMonthHeader(new Date(Number(year), Number(month) - 1, 1)),
-      });
-      dayEl.parentElement?.insertBefore(header, dayEl);
-      previousMonth = monthKey;
-    }
-
-    this.lastRenderedMonth = previousMonth;
+    this.timelineDom.rebuildMonthHeaders();
   }
 
   private createEntryEl(entry: JournalEntry): RenderedEntry {
@@ -2332,104 +2286,24 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Removes day groups that no longer hold an entry.
-   *
-   * The `dayGroups` map must lose the key in the same pass. Leaving it
-   * behind means `ensureDayGroup` later hands back a detached container, and
-   * every entry written on that day renders into nothing — visible as an
-   * entry that silently fails to appear.
+   * See `removeEmptyDayGroups` in `timelineDom.ts` for what this actually
+   * does and why; this wrapper exists only so calls go through `this.` (see
+   * `renderEmptyState`'s doc above).
    */
   private removeEmptyDayGroups(): void {
-    for (const dayEl of Array.from(this.timelineEl.querySelectorAll<HTMLElement>(".journal-day"))) {
-      if (dayEl.querySelector(".journal-entry")) continue;
-
-      const key = dayEl.dataset.day;
-      if (key) this.dayGroups.delete(key);
-      dayEl.remove();
-    }
-
-    this.rebuildMonthHeaders();
+    this.timelineDom.removeEmptyDayGroups();
   }
 
   /**
-   * Inserts an entry at its correct reverse-chronological position, but only
-   * if it belongs inside the range currently loaded. Entries older than
-   * everything loaded are left to normal paging (they'll appear once the
-   * user scrolls that far, `pageAfter` reading them out of the same shared
-   * index this just inserted into).
-   *
-   * Rendered statically and handed to `mountObserver`, exactly like
-   * `appendEntry` — not mounted directly. `mountEditor` bails to a static
-   * render whenever `rendered.intersecting` is false, and that flag is only
-   * ever set by `mountObserver`'s own callback; mounting here directly
-   * without first `observe()`-ing the element would leave `intersecting`
-   * stuck at its `false` default forever, so `mountEditor` would always bail,
-   * and the entry would never become eligible for the viewport-driven
-   * unmount that keeps the mounted set bounded.
-   *
-   * The in-range check is `position - offset >= loadedCount`, not `>`: with
-   * `loadedCount` entries loaded starting at `offset` (indices
-   * `offset..offset+loadedCount-1`), `offset+loadedCount` itself is the
-   * first index NOT yet loaded — `pageAfter`'s next page starts there. `>`
-   * would let that boundary entry (and only that one) through: this method
-   * would insert it AND `appendEntry` would later insert it again as part of
-   * the next page, each holding its own `RenderedEntry`/DOM node/editor for
-   * the same path — one leaked indefinitely, since only the map's most
-   * recent entry for that path is ever reachable to tear down.
-   *
-   * `offset` — `anchorPosition(this.index, this.anchorDate)` when an anchor
-   * is active, `0` otherwise — is where the loaded window actually starts.
-   * Without it, an anchored timeline's loaded window no longer begins at
-   * index 0, so comparing a raw `position` against `loadedCount` alone would
-   * misjudge entries near either edge: one just past the anchor boundary but
-   * still within the loaded page would wrongly be treated as "not yet
-   * loaded" and dropped until the next scroll, while one far below the
-   * loaded window could wrongly be treated as "in range" and inserted twice
-   * once paging actually reached it. Recomputed fresh on every call rather
-   * than cached at anchor time, so it never drifts stale as entries newer
-   * than the anchor are created or removed elsewhere in the same session.
-   *
-   * A position strictly before `offset` is newer than the anchor and must
-   * never render at all, regardless of the loaded window — checked first,
-   * unconditionally (not gated on `this.sentinelEl` like the in-range check
-   * below), since exclusion here is permanent, not a paging state.
+   * See `insertEntryInPlace` in `timelineDom.ts` for what this actually does
+   * and why — including the `this.index.indexOf(entry)` reference-identity
+   * lookup, which depends on `applyUpsert` (`journalService.ts`) always
+   * handing back the exact object already living in `this.index`; this
+   * wrapper exists only so calls go through `this.` (see `renderEmptyState`'s
+   * doc above).
    */
   private insertEntryInPlace(entry: JournalEntry): void {
-    if (this.rendered.has(entry.file.path)) return;
-
-    const position = this.index.indexOf(entry);
-    if (position < 0) return;
-
-    const offset = this.anchorDate ? anchorPosition(this.index, this.anchorDate) : 0;
-    if (position < offset) return;
-
-    const loadedCount = this.rendered.size;
-    if (position - offset >= loadedCount && this.sentinelEl) return;
-
-    // The empty-state message (`renderEmptyState`) is only ever present when
-    // nothing is rendered yet, so this is a cheap no-op on every insert past
-    // the first. Removed here rather than left for the next full reload:
-    // this is the ONLY path that inserts into a timeline that was rendered
-    // empty (a genuine full reload already clears everything, including this
-    // element, via `clearTimeline`).
-    this.timelineEl.querySelector(".journal-empty")?.remove();
-
-    const group = this.ensureDayGroup(entry.created, "prepend");
-    const rendered = this.createEntryEl(entry);
-
-    // Find the first already-rendered sibling that is older than this entry.
-    const siblings = Array.from(group.querySelectorAll<HTMLElement>(".journal-entry"));
-    const olderSibling = siblings.find((el) => {
-      const siblingEntry = this.rendered.get(el.dataset.path ?? "");
-      return siblingEntry ? compareEntries(entry, siblingEntry.entry) < 0 : false;
-    });
-
-    if (olderSibling) group.insertBefore(rendered.el, olderSibling);
-    else group.appendChild(rendered.el);
-
-    this.rendered.set(entry.file.path, rendered);
-    void this.renderStatic(rendered);
-    this.mountObserver?.observe(rendered.el);
+    this.timelineDom.insertEntryInPlace(entry);
   }
 
   /**
