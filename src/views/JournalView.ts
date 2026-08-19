@@ -1222,7 +1222,15 @@ export class JournalView extends ItemView {
       visiblePath = file.path;
     }
 
-    if (this.rendered.has(visiblePath)) return;
+    // Both keys, deliberately. The row can already sit at either one, and
+    // which depends on timing we do not control: if Obsidian dispatches its
+    // "rename" early and `renameFile` then spends longer than the service's
+    // debounce rewriting links — the very case that API exists for —
+    // JournalService flushes during the await above and re-inserts the row at
+    // the new path itself, so the re-key finds nothing to move. Checking only
+    // one key jumps the view and announces a move for an entry already on
+    // screen. Checking both makes this independent of the dispatch order.
+    if (this.rendered.has(visiblePath) || this.rendered.has(file.path)) return;
 
     await this.goToDate(value);
     new Notice(`Moved entry to ${formatDayHeader(value)}, ${formatTime(value)}`);
