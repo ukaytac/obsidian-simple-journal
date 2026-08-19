@@ -6,6 +6,7 @@ import {
   Menu,
   Notice,
   Platform,
+  setTooltip,
   type TFile,
   WorkspaceLeaf,
 } from "obsidian";
@@ -816,7 +817,24 @@ export class JournalView extends ItemView {
     if (entry.file) el.dataset.path = entry.file.path;
 
     const headerEl = el.createDiv({ cls: "journal-entry-header" });
-    headerEl.createSpan({ cls: "journal-entry-time", text: formatTime(entry.created) });
+    // A real <button>, not a span+click: it needs no extra wiring to be
+    // reachable by keyboard and to activate on Enter/Space, and disabling it
+    // (below, for the composer) removes it from the tab order for free
+    // instead of a hand-rolled tabindex/aria-disabled combination.
+    // `type="button"` only to keep it inert if this element ever ends up
+    // inside a <form> — there isn't one today, but nothing here guarantees
+    // that stays true.
+    const timeButton = headerEl.createEl("button", {
+      cls: "journal-entry-time",
+      text: formatTime(entry.created),
+      attr: { type: "button" },
+    });
+    // The composer (see the `data-path` comment above) has no file to
+    // correct yet — disabled both keeps it out of the tab order (so keyboard
+    // navigation doesn't land on a dead control) and blocks the click, same
+    // intent as `journal-entry-actions-pending` for the actions button just
+    // below. `commitComposer` re-enables it the moment the entry gets a file.
+    if (!entry.file) timeButton.disabled = true;
 
     // Hidden until hover/focus (see styles.css) — the timeline is a writing
     // surface, not a dashboard, so nothing but the timestamp is visible at rest.
@@ -856,6 +874,18 @@ export class JournalView extends ItemView {
     };
 
     button.onClick((event) => this.showEntryMenu(rendered, event));
+
+    // Same code path as the "Change entry time" menu item below, so the two
+    // affordances can never diverge — `changeEntryTime` already no-ops for
+    // the composer (no file), which is belt-and-suspenders here since
+    // `disabled` above already keeps this click from firing in that case.
+    // The visible text is only the bare time ("14:22"), which reads as
+    // nothing more than a label to a screen reader; the tooltip doubles as
+    // the accessible name and folds the time back in (`aria-label` replaces
+    // rather than supplements visible text) so it still identifies which
+    // entry this is, not just that the control exists.
+    timeButton.addEventListener("click", () => this.changeEntryTime(rendered));
+    setTooltip(timeButton, `Change entry time (${formatTime(entry.created)})`);
 
     // Bound on the entry element, not the body: `.journal-entry-body` holds
     // the live editor (or its static rendering), and — while an editor is
@@ -933,10 +963,11 @@ export class JournalView extends ItemView {
       // right-click above. Bails immediately on a touch that starts inside
       // `.journal-entry-body`: that surface is an editing surface first, and
       // a long-press there is the editor's own text-selection gesture, not a
-      // request for this menu. Also bails inside `.journal-entry-actions`:
-      // that button already opens this same menu on tap, and without this a
-      // long-press on it would open the menu at 500ms and the touch's own
-      // `touchend`-driven `click` would then open a second one.
+      // request for this menu. Also bails inside `.journal-entry-actions` and
+      // `.journal-entry-time`: both already open something on tap (this same
+      // menu, and the time editor, respectively), and without this a
+      // long-press on either would open the menu at 500ms and the touch's own
+      // `touchend`-driven `click` would then fire right after.
       //
       // `instanceof Element`, not `HTMLElement`, matching the `contextmenu`
       // handler above and for the same reason: an SVG target (a Mermaid
@@ -956,7 +987,7 @@ export class JournalView extends ItemView {
         }
 
         const target = event.target;
-        if (target instanceof Element && target.closest(".journal-entry-body, .journal-entry-actions")) {
+        if (target instanceof Element && target.closest(".journal-entry-body, .journal-entry-actions, .journal-entry-time")) {
           return;
         }
 
@@ -2079,7 +2110,14 @@ export class JournalView extends ItemView {
           if (rendered && this.repositionIsNoOp(rendered, change.entry)) {
             rendered.entry = change.entry;
             const timeEl = rendered.el.querySelector<HTMLElement>(".journal-entry-time");
-            if (timeEl) timeEl.textContent = formatTime(change.entry.created);
+            if (timeEl) {
+              const label = formatTime(change.entry.created);
+              timeEl.textContent = label;
+              // The tooltip/aria-label baked the old time in at creation
+              // (see createEntryEl) — stale otherwise, since nothing else
+              // refreshes it and a correction is exactly when it's wrong.
+              setTooltip(timeEl, `Change entry time (${label})`);
+            }
             break;
           }
 
@@ -2641,6 +2679,10 @@ export class JournalView extends ItemView {
     // Reveal the actions button now that there's a file for it to act on
     // (see createEntryEl's doc on why it starts hidden for the composer).
     rendered.el.querySelector<HTMLElement>(".journal-entry-actions")?.removeClass("journal-entry-actions-pending");
+    // Same moment: the timestamp button was disabled for the exact same
+    // reason (see createEntryEl) and is now correctable too.
+    const timeButton = rendered.el.querySelector<HTMLButtonElement>(".journal-entry-time");
+    if (timeButton) timeButton.disabled = false;
     this.rendered.set(file.path, rendered);
     // savedBody starts matching exactly what createEntry just wrote;
     // resolveComposerContent's own persist (only invoked if typing outran
