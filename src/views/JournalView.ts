@@ -2537,24 +2537,50 @@ export class JournalView extends ItemView {
     // yet, and a composer enqueued ahead of it gets destroyed by that
     // reload's `clearTimeline`. The journal then opens with no composer,
     // which reads as the command having done nothing but open the tab.
+    // TEMPORARY TRACE — remove once the composer bug is settled.
+    console.log("[JE] startNewEntry: entered", {
+      closed: this.closed,
+      hasTimelineEl: Boolean(this.timelineEl),
+      composer: Boolean(this.composer),
+      anchorDate: this.anchorDate?.toISOString() ?? null,
+    });
+
     await this.initialLoad;
+    console.log("[JE] startNewEntry: initialLoad settled", { closed: this.closed });
 
     if (this.closed) return;
 
     if (this.composer) {
+      console.log("[JE] startNewEntry: a composer already exists — focusing it");
       this.composer.editor?.focus();
       this.scrollToTop();
       return;
     }
 
     if (this.anchorDate !== null) {
+      console.log("[JE] startNewEntry: clearing anchor first");
       await this.goToDate(null);
     }
 
+    console.log("[JE] startNewEntry: enqueueing openComposer");
     await this.enqueueTimelineMutation(() => this.openComposer());
+    const settled = this.composer as RenderedEntry | null;
+    console.log("[JE] startNewEntry: openComposer settled", {
+      composer: Boolean(settled),
+      inDom: settled ? settled.el.isConnected : null,
+      focused: settled?.editor?.hasFocus() ?? null,
+    });
   }
 
   private async openComposer(): Promise<void> {
+    // TEMPORARY TRACE — remove once the composer bug is settled.
+    console.log("[JE] openComposer: entered", {
+      closed: this.closed,
+      hasTimelineEl: Boolean(this.timelineEl),
+      timelineInDom: this.timelineEl?.isConnected ?? null,
+      composer: Boolean(this.composer),
+    });
+
     if (this.closed) return;
 
     if (this.composer) {
@@ -2612,6 +2638,13 @@ export class JournalView extends ItemView {
 
     rendered.editor = editor;
     this.composer = rendered;
+
+    // TEMPORARY TRACE — remove once the composer bug is settled.
+    console.log("[JE] openComposer: composer built", {
+      inDom: rendered.el.isConnected,
+      groupInDom: group.isConnected,
+      timelineChildren: this.timelineEl.children.length,
+    });
 
     this.scrollToTop();
     editor.focus();
