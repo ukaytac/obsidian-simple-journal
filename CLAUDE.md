@@ -421,10 +421,15 @@ New journal entry
 Go to today
 ```
 
-Later:
+Also implemented:
 
 ```text
-Go to date
+Open calendar
+```
+
+Still later:
+
+```text
 Search journal
 ```
 
@@ -432,7 +437,30 @@ When opening the journal, focusing the newest entries is the default.
 
 The view should open at or near the top of the timeline.
 
-Do not make calendar navigation part of the first implementation unless core architecture already supports it cleanly.
+## The calendar
+
+A companion view in the sidebar, opened by `Open calendar` and placed there once
+automatically on the plugin's first load — never forced again afterwards, since
+Obsidian persists the workspace layout and a user who closes it means it.
+
+It marks days holding entries with a dot, and today with emphasis. Those are two
+different signals and must stay distinguishable: **the dot means "there is
+something here", the emphasis means "this is today"**. Only days with a dot are
+clickable; a day with nothing in it is inert, because clicking an empty square
+and being taken months back into history contradicts the affordance the dot
+establishes.
+
+Clicking a day **anchors** the timeline to it: that day and everything older.
+Anchoring, not filtering — the timeline stays continuous, which is the whole
+product. A single-day filter was considered and rejected for that reason.
+
+## Reaching capture from outside Obsidian
+
+`obsidian://journal-new` opens a new entry, so a phone home-screen shortcut or
+any other launcher can capture a thought in one tap. It runs the same path as
+the command and the ribbon icon; nothing about capture is duplicated for it.
+
+Which vault receives the URI is Obsidian's decision, not this plugin's.
 
 ---
 
@@ -625,6 +653,17 @@ Mobile is not a separate UI. It is the same timeline and the same code paths, wi
 * a lower cap on simultaneously mounted editors
 
 Do not build a mobile-specific redesign.
+
+**None of the mobile code has run on a device.** The keyboard-scroll
+correction, the long-press menu and the touch targets were all written by
+reasoning from documented behaviour, and their timings — 300 ms for the
+keyboard, 500 ms for the long press — are guesses, not measurements. Treat them
+as unverified until someone runs `docs/manual-testing.md` on a phone.
+
+That caveat is not a formality. Losing a focus race on desktop took six
+attempts to diagnose, four of which shipped without changing anything, because
+the real ordering was not knowable from the source. A keyboard opening on a
+real device is less predictable than that, not more.
 
 ---
 
@@ -932,6 +971,14 @@ Important cases:
 
 # MVP Definition
 
+**Status: met.** All seven steps below work, and the two assumptions they rested
+on that could only be settled in a running Obsidian have been verified by hand —
+that the embedded editor does not reload its buffer over in-flight typing, and
+that a throw inside `vault.process` writes nothing. See `docs/manual-testing.md`.
+
+Kept here as the definition of "working", not as a to-do list: a change that
+breaks any of these seven has broken the product, whatever else it improves.
+
 The first usable MVP is deliberately narrow.
 
 It is complete when the following flow works reliably:
@@ -978,20 +1025,25 @@ Anything beyond these seven requirements is secondary until they are reliable.
 
 ---
 
-# Non-Goals for MVP
+# Non-Goals
 
-Do NOT implement yet:
+The MVP above is met, and a few things have deliberately been built past it —
+the calendar, the capture URI, timeline anchoring, and correcting an entry's
+time. Each is documented in its own section as a product decision, not left as
+an undocumented feature.
+
+Still NOT to implement:
 
 * AI features
 * mood tracking
 * prompts
 * analytics
 * streaks
-* calendar heatmaps
+* activity heatmaps — the calendar marks which days hold entries, deliberately
+  as a plain dot; density shading is a different feature and remains out
 * multiple journals
 * encryption
 * sync
-* mobile-specific redesign
 * templates
 * automatic tagging
 * semantic search
@@ -1000,8 +1052,15 @@ Do NOT implement yet:
 * Bases integration
 * advanced filters
 * alternative sort modes
+* single-day filtering — clicking a calendar day anchors the timeline rather
+  than filtering it; see the calendar section for why
 
-Do not expand scope unless explicitly asked.
+Mobile is no longer a non-goal, but it is still **not a separate UI**: see
+`# Target Platforms`. The same timeline and the same code paths, adapted, never
+redesigned.
+
+Do not expand scope unless explicitly asked. "Past the MVP" is not licence to
+keep going — every addition above was asked for.
 
 ---
 
