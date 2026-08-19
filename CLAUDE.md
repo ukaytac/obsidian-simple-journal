@@ -196,6 +196,14 @@ Do not generate slugs from the first sentence.
 
 Do not rename files when their content changes.
 
+The one exception is a deliberate timestamp correction through `Change entry time`: because the filename convention *is* the timestamp, an entry named `2026-08-18-18-12-21.md` holding `created: 2026-07-01T09:00` contradicts itself. Such a correction moves the file to match — new filename, and a new `YYYY/MM` folder when the month or year changed.
+
+That move uses `fileManager.renameFile`, so Obsidian updates links to the entry according to the user's own preferences, and it never overwrites: a name already taken gets the same numeric suffix `createEntry` uses.
+
+A file whose name does not already follow the convention is left alone — only `created` is written. A name the user chose deliberately is not the plugin's to overwrite.
+
+Nothing else may rename an entry. Editing an entry's body never does.
+
 ---
 
 # Entry Metadata
