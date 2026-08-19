@@ -11,6 +11,65 @@ and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
 Everything else — timeline, mount window, composer, entry actions, saving,
 and vault events — lives here.
 
+## Run these first
+
+Five checks, in order. Each one closes an assumption that three rounds of code
+review could not settle by reasoning, and the first two are in the data-loss
+class. If any of them fails, stop and report it — the rest of this document is
+mostly cosmetic by comparison.
+
+- [ ] **1. Does the embedded editor reload its own buffer under a write?**
+      This is the plugin's single biggest unverified assumption.
+      `ObsidianEmbedEditor` neutralises the embed's `onFileChanged` so that only
+      this plugin writes and only this plugin decides when the buffer changes.
+      Whether that neutralisation actually holds cannot be reasoned about — the
+      embed may capture its own handler at construction, or reload through
+      another route.
+
+      `Change entry time` is the sharpest probe, because it is the only path
+      that deliberately rewrites frontmatter under a mounted editor *without* a
+      self-write mark. Type into an entry, and **without pausing**, use
+      `Change entry time` to move it a few minutes, then keep typing. Open the
+      file afterwards: every character you typed is present. Any gap means the
+      embed self-reloaded and a poll tick read the reload as an edit.
+
+- [ ] **2. Does throwing inside `vault.process` really leave the file alone?**
+      The whole refusal mechanism rests on it. Obsidian documents `process` as
+      consuming the callback's return value, so a throw should write nothing —
+      but "should" is not "does", and the failure mode is the guard destroying
+      the file it exists to protect.
+
+      Put a note in the journal folder whose frontmatter is:
+
+      ```
+      ---
+      note: "hello
+      created: bad"
+      mood: calm
+      ---
+      Body text.
+      ```
+
+      Run `Change entry time` on it. Expected: a notice explaining the
+      frontmatter is too complex, and the file **byte-identical** afterwards —
+      `note` and `mood` both intact. A truncated or emptied file is a critical
+      failure.
+
+- [ ] **3. The write-echo race.** Type a long sentence steadily, without
+      pausing, long enough that the debounced save reaches disk at least twice
+      while you are still typing. Read it back: no characters dropped
+      mid-sentence.
+
+- [ ] **4. Minimal theme parity.** With the Minimal theme active, watch an entry
+      as its editor mounts and unmounts. The font, size and weight must not jump
+      between the static render and the editor, and no inline title or
+      properties panel may appear.
+
+- [ ] **5. Mobile, on a real device.** Nothing in the mobile code path has ever
+      run on a phone or tablet. Focus an entry: the on-screen keyboard must not
+      cover it. Long-press an entry: the actions menu opens. Scroll: older
+      entries load.
+
 ## Coverage against CLAUDE.md's 21 testing priorities
 
 | # | Case | Automated | Manual |
