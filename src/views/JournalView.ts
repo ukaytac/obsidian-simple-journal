@@ -271,7 +271,21 @@ export class JournalView extends ItemView {
     // between now and the actual teardown below must see this immediately,
     // not after an await hands control back to it first.
     this.closed = true;
-    await this.enqueueTimelineMutation(() => this.clearTimeline());
+    const composerSnapshot = await this.enqueueTimelineMutation(() => this.clearTimeline());
+
+    // Unlike `reloadNow`, there is no fresh timeline to put a composer back
+    // into — the view is genuinely going away. This is the one path where an
+    // open, uncommitted composer is really, finally lost, so it gets the same
+    // last-resort log every other unavoidable-discard path leaves (see
+    // `logUnsavedTextIfLost`) — quiet for an empty composer, which is the
+    // overwhelmingly common case (CLAUDE.md's Lazy Creation).
+    if (composerSnapshot && isMeaningful(composerSnapshot.value)) {
+      console.error(
+        "Journal Entries: discarding unsaved text for (uncommitted composer) — recover it from this line before it is lost:",
+        composerSnapshot.value,
+      );
+    }
+
     this.contentEl.empty();
   }
 
@@ -330,7 +344,7 @@ export class JournalView extends ItemView {
     // rather than rebuild a timeline nothing will ever tear back down.
     if (this.closed) return;
 
-    await this.clearTimeline();
+    const composerSnapshot = await this.clearTimeline();
 
     this.index = this.plugin.journal.getEntries();
     // With no anchor this is `null` — page one, exactly as before. With an
@@ -349,6 +363,7 @@ export class JournalView extends ItemView {
       // this only matters so a *later* full reload isn't the sole way back
       // into a paging-capable state.
       this.installSentinel();
+      await this.reestablishComposer(composerSnapshot);
       return;
     }
 
@@ -362,6 +377,30 @@ export class JournalView extends ItemView {
     if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null);
 
     this.installSentinel();
+    await this.reestablishComposer(composerSnapshot);
+  }
+
+  /**
+   * Puts a composer `clearTimeline` just tore down back onto the freshly
+   * rebuilt timeline, with the same (possibly empty) text and the same focus
+   * state it had — restoring exactly what the rebuild disturbed rather than
+   * upgrading a background composer into a focus-stealing one or downgrading
+   * a focused one into a silent background reappearance. A no-op when
+   * `snapshot` is `null` (no composer was open) or the view closed while the
+   * rebuild above was in flight — nothing left to put a composer into, and
+   * building one now would either be dead work (`onClose`'s own queued
+   * `clearTimeline` would just tear it straight back down) or, worse, outlive
+   * `contentEl.empty()` and leak.
+   *
+   * Calls `openComposer` directly rather than through
+   * `enqueueTimelineMutation`: this already runs inside the one task that
+   * chain is currently executing (`reloadNow`, itself always reached via
+   * `enqueueTimelineMutation`), so re-enqueueing would only delay this to
+   * "after the task now running finishes" — i.e. after itself.
+   */
+  private async reestablishComposer(snapshot: { value: string; hadFocus: boolean } | null): Promise<void> {
+    if (snapshot === null || this.closed) return;
+    await this.openComposer(snapshot.value, snapshot.hadFocus);
   }
 
   /**
@@ -386,8 +425,18 @@ export class JournalView extends ItemView {
    * `reload` themselves rejecting. `allSettled` guarantees every flush is
    * given the chance to finish, successfully or not, before teardown
    * proceeds regardless.
+   *
+   * Returns a snapshot of the composer that was open when this ran, or
+   * `null` if none was. `reloadNow` uses it to re-establish the composer
+   * once the fresh timeline is built — a rebuild (the settings tab's
+   * debounced `refreshJournal`, a folder-rename `"reload"` change, or
+   * `onOpen`'s own first `reload()` landing after `startNewEntry` already
+   * opened one — see `startNewEntry`'s doc) should not be able to silently
+   * sweep away a composer the user has open. `onClose` gets the same
+   * snapshot back but discards it: the view itself is going away, so there
+   * is nothing left to re-establish it into.
    */
-  private async clearTimeline(): Promise<void> {
+  private async clearTimeline(): Promise<{ value: string; hadFocus: boolean } | null> {
     this.teardownSentinel();
     this.teardownMountObserver();
 
@@ -399,25 +448,20 @@ export class JournalView extends ItemView {
     // before the loop's only await, so `discardEmptyComposer`/
     // `commitComposer` — which both re-check `this.composer === rendered` —
     // see this as already torn down regardless of when they happen to run.
+    //
+    // Not committing it here on the way out: creating a file during teardown
+    // is a worse failure mode than losing an unsent draft, and committing
+    // only on meaningful input (CLAUDE.md's Lazy Creation) is a product
+    // rule, not merely this method's default. The snapshot below is what
+    // lets the caller put the same (possibly meaningful, possibly empty)
+    // text back into a fresh composer instead, without ever writing a file
+    // here.
+    let composerSnapshot: { value: string; hadFocus: boolean } | null = null;
     if (this.composer) {
-      // Not committing it here on the way out: creating a file during
-      // teardown is a worse failure mode than losing an unsent draft, and
-      // committing only on meaningful input (CLAUDE.md's Lazy Creation) is a
-      // product rule, not merely this method's default. Best this can do is
-      // leave the same console trace every other unavoidable-discard path
-      // now leaves — see `logUnsavedTextIfLost`'s doc on why it also covers
-      // this case.
-      this.logUnsavedTextIfLost(this.composer);
-
-      // `logUnsavedTextIfLost` stays quiet for an *empty* composer, which is
-      // exactly the case that made "open the journal and start an entry" look
-      // like it only opened the journal: the composer was built, then swept
-      // away by this teardown, with nothing anywhere saying so. `initialLoad`
-      // closes the ordering hole that caused it; this line is how we find out
-      // if some other path still reaches here with a composer open.
-      if (!isMeaningful(this.composer.editor?.getValue() ?? "")) {
-        console.debug("Journal Entries: discarded an open, empty composer while rebuilding the timeline");
-      }
+      composerSnapshot = {
+        value: this.composer.editor?.getValue() ?? "",
+        hadFocus: this.composer.editor?.hasFocus() ?? false,
+      };
 
       this.clearMobileTimers(this.composer);
       this.composer.editor?.destroy();
@@ -448,6 +492,8 @@ export class JournalView extends ItemView {
     this.mountOrder = [];
     this.lastRenderedMonth = null;
     this.timelineEl.empty();
+
+    return composerSnapshot;
   }
 
   /**
@@ -2534,53 +2580,35 @@ export class JournalView extends ItemView {
     // The first load has to finish before a composer is worth opening. When
     // this is reached straight out of `openJournal` — the hotkey pressed from
     // some other note — `onOpen`'s reload may not be on the mutation chain
-    // yet, and a composer enqueued ahead of it gets destroyed by that
-    // reload's `clearTimeline`. The journal then opens with no composer,
-    // which reads as the command having done nothing but open the tab.
-    // TEMPORARY TRACE — remove once the composer bug is settled.
-    console.log("[JE] startNewEntry: entered", {
-      closed: this.closed,
-      hasTimelineEl: Boolean(this.timelineEl),
-      composer: Boolean(this.composer),
-      anchorDate: this.anchorDate?.toISOString() ?? null,
-    });
-
+    // yet, and a composer enqueued ahead of it used to be destroyed by that
+    // reload's `clearTimeline`. `reloadNow` now re-establishes a composer
+    // that was open when it started (see `reestablishComposer`), so even if
+    // that race is lost this composer survives the reload instead of
+    // silently vanishing.
     await this.initialLoad;
-    console.log("[JE] startNewEntry: initialLoad settled", { closed: this.closed });
 
     if (this.closed) return;
 
     if (this.composer) {
-      console.log("[JE] startNewEntry: a composer already exists — focusing it");
       this.composer.editor?.focus();
       this.scrollToTop();
       return;
     }
 
     if (this.anchorDate !== null) {
-      console.log("[JE] startNewEntry: clearing anchor first");
       await this.goToDate(null);
     }
 
-    console.log("[JE] startNewEntry: enqueueing openComposer");
     await this.enqueueTimelineMutation(() => this.openComposer());
-    const settled = this.composer as RenderedEntry | null;
-    console.log("[JE] startNewEntry: openComposer settled", {
-      composer: Boolean(settled),
-      inDom: settled ? settled.el.isConnected : null,
-      focused: settled?.editor?.hasFocus() ?? null,
-    });
   }
 
-  private async openComposer(): Promise<void> {
-    // TEMPORARY TRACE — remove once the composer bug is settled.
-    console.log("[JE] openComposer: entered", {
-      closed: this.closed,
-      hasTimelineEl: Boolean(this.timelineEl),
-      timelineInDom: this.timelineEl?.isConnected ?? null,
-      composer: Boolean(this.composer),
-    });
-
+  /**
+   * `initialValue`/`focus` are used only by `reestablishComposer`, to put a
+   * composer a reload just tore down back with the text and focus state it
+   * had. `startNewEntry` always calls this with the defaults — an empty,
+   * focused composer for a genuinely new entry.
+   */
+  private async openComposer(initialValue = "", focus = true): Promise<void> {
     if (this.closed) return;
 
     if (this.composer) {
@@ -2634,17 +2662,16 @@ export class JournalView extends ItemView {
       this.composerEverFocused = true;
     });
 
-    editor.mount(rendered.bodyEl, null, "");
+    editor.mount(rendered.bodyEl, null, initialValue);
 
     rendered.editor = editor;
     this.composer = rendered;
 
-    // TEMPORARY TRACE — remove once the composer bug is settled.
-    console.log("[JE] openComposer: composer built", {
-      inDom: rendered.el.isConnected,
-      groupInDom: group.isConnected,
-      timelineChildren: this.timelineEl.children.length,
-    });
+    // `focus` is false only when `reestablishComposer` is putting an
+    // unfocused composer back after a reload — restoring exactly the state
+    // the rebuild disturbed, not upgrading a background composer into one
+    // that steals focus from whatever the user is actually doing elsewhere.
+    if (!focus) return;
 
     this.scrollToTop();
     editor.focus();

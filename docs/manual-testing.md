@@ -11,35 +11,32 @@ and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
 Everything else — timeline, mount window, composer, entry actions, saving,
 and vault events — lives here.
 
-## Open bug: the composer does not appear when the journal is not already open
-
-Reported and reproduced by hand; **not** fixed. Two hypotheses have already been
-wrong, so the build carries temporary tracing rather than a third guess.
+## Fixed: the composer did not appear when the journal was not already open
 
 Reproduction: with the Journal tab **closed**, from any other note, press the
-`New journal entry` hotkey. The journal opens and the timeline renders, but no
-composer appears and no caret is placed. From the Journal tab itself the same
-command works correctly.
+`New journal entry` hotkey. The journal opened and the timeline rendered, but
+no composer appeared and no caret was placed. From the Journal tab itself the
+same command worked correctly.
 
-- [ ] **Collect the trace.** Reload the plugin, close the Journal tab, open a
-      note, open the developer console and clear it, then press the hotkey.
-      Paste every line beginning `[JE]`, plus anything beginning
-      `Journal Entries:`. The missing line, or the first unexpected value,
-      identifies the cause:
+Root cause: `clearTimeline` — run by every `reload()`, for any reason (a
+settings change, a folder-rename `"reload"` change, or `JournalView.onOpen`
+running again over the view's life) — unconditionally destroyed an open,
+uncommitted composer with no way back. Whatever reload landed after
+`startNewEntry` had already opened one (the exact trigger in the closed-tab
+case was never confirmed against a live trace) silently swept it away.
 
-      | Observation | Meaning |
-      | --- | --- |
-      | `gotView: false` | the view is never returned |
-      | `hasTimelineEl: false` | `onOpen` has not run yet |
-      | no `openComposer: entered` | the mutation queue never runs it |
-      | `composer built` but `inDom: false` | something detaches it |
-      | `focused: false` | it exists but never takes focus |
-      | no `[JE]` lines at all | the command does not reach this code |
-      | `discarded an open, empty composer` | a rebuild is sweeping it away |
+Fix: `clearTimeline` now returns a snapshot (text + focus state) of the
+composer it tore down, and `reloadNow` re-establishes a fresh composer from
+that snapshot once the new timeline is built (`reestablishComposer`) — the
+composer survives any reload instead of being destroyed and hoped for. Only
+`onClose` (the view genuinely going away) discards the snapshot for real.
+Covered by `tests/JournalView.composer.test.ts`; the temporary `[JE]` console
+tracing has been removed.
 
-Already ruled out: the hotkey binding is correct
-(`journal-entries:new-journal-entry` → `Mod+Shift+N`), and the failure is not
-the blur-discard path (that fix shipped and changed nothing).
+Already ruled out during diagnosis: the hotkey binding is correct
+(`journal-entries:new-journal-entry` → `Mod+Shift+N`), and the failure was not
+the blur-discard path (that fix shipped separately and changed nothing on its
+own — the underlying `clearTimeline` defect above is what actually mattered).
 
 ## Not a bug: ribbon order
 

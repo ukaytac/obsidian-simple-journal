@@ -107,30 +107,16 @@ describe("JournalView composer lifecycle", () => {
   });
 
   /**
-   * FAILS against the current implementation — pins the intended behaviour
-   * per the task brief, not a claim that this is unintentional: this is the
-   * open "composer bug" `JournalView.startNewEntry`/`openComposer` and
-   * `main.ts`'s `newEntry` currently carry TEMPORARY TRACE console logging
-   * for. `clearTimeline` (run by every `reload()`, including one triggered
-   * by something entirely unrelated to the composer — a settings change, a
-   * folder-rename `"reload"` change, ...) unconditionally destroys an open,
-   * uncommitted composer:
-   *
-   * ```
-   * if (this.composer) {
-   *   ...
-   *   this.composer.editor?.destroy();
-   *   this.composer = null;
-   * }
-   * ```
-   *
-   * with only a `console.debug`/`console.error` left behind as a trace. An
-   * unrelated background reload should not be able to silently sweep away a
-   * composer the user has open (and may be about to type into) — that is
-   * the "does not silently sweep an open composer away" requirement this
-   * test pins.
+   * Pins the fix for the "composer bug": `clearTimeline` (run by every
+   * `reload()`, including one triggered by something entirely unrelated to
+   * the composer — a settings change, a folder-rename `"reload"` change, or
+   * `onOpen`'s own first `reload()` landing after `startNewEntry` already
+   * opened one) used to unconditionally destroy an open, uncommitted
+   * composer. `reloadNow` now snapshots it via `clearTimeline`'s return
+   * value and re-establishes it afterwards (`reestablishComposer`), so an
+   * unrelated background reload can no longer silently sweep it away.
    */
-  it.fails("a reload triggered by something unrelated does not discard an open, empty composer", async () => {
+  it("a reload triggered by something unrelated does not discard an open, empty composer", async () => {
     const h = createHarness();
     addEntry(h, new Date(2026, 7, 1, 9, 0, 0), "pre-existing entry");
     h.service.load();
@@ -142,6 +128,58 @@ describe("JournalView composer lifecycle", () => {
     // A reload triggered for a reason that has nothing to do with the
     // composer itself (e.g. the settings tab's debounced `refreshJournal`).
     await h.view.reload();
+
+    expect(internals(h.view).composer).not.toBeNull();
+    expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeTruthy();
+  });
+
+  /**
+   * Reproduces the user's actual reported path as faithfully as this harness
+   * can: "journal not open, `New journal entry` hotkey pressed from another
+   * note." `main.ts`'s `newEntry()` is `await this.openJournal(); await
+   * view.startNewEntry();`, and `openJournal()`'s doc already flags the
+   * hazard under test — `setViewState` resolving does not guarantee
+   * `JournalView.onOpen()` has run, let alone finished (`initialLoad`'s doc
+   * says the same from the other side).
+   *
+   * This harness cannot drive that literally: `createHarness`'s
+   * `createFakeApp()` returns only `{ vault, metadataCache, fileManager }` —
+   * no `app.workspace` at all — and `obsidian-mock.ts`'s `Plugin`/
+   * `WorkspaceLeaf` are empty stubs with no `getLeaf`/`setViewState`/
+   * `revealLeaf`. Inventing a fake `setViewState` would mean guessing at
+   * real Obsidian's closed-source leaf-opening scheduling — exactly the kind
+   * of unverified assumption behind the two already-wrong fixes this bug
+   * survived (Context7's official API docs describe only that `setViewState`
+   * "resolves when the view state has been updated" and `onOpen()` "resolves
+   * when the opening process is complete," and say nothing about exact
+   * timing or re-invocation), so this deliberately does not go through
+   * `main.ts`.
+   *
+   * Instead it exercises the one adjacent fact the codebase already commits
+   * to in its own comments — `JournalView.onOpen can run more than once over
+   * a view's life` (see the ribbon "+" action's registration comment) — by
+   * calling `onOpen()` a second time after a composer is already open, the
+   * same way Obsidian re-invoking it on this instance would. This is a
+   * genuine, independently-reachable trigger for the same `clearTimeline`
+   * defect the test above pins, not a restatement of it; it is NOT proof
+   * that a second `onOpen()` call is what the user's own trace would show —
+   * only that if the timing hazard `openJournal`'s doc describes manifests
+   * as *any* extra reload landing after `startNewEntry` succeeds (a second
+   * `onOpen`, a deferred-leaf hydration, a revealLeaf-triggered refresh —
+   * this harness cannot distinguish between them), the fix below is what
+   * makes the composer survive it regardless of which one it is.
+   */
+  it("a composer survives onOpen running again over the view's life", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    expect(internals(h.view).composer).not.toBeNull();
+
+    // Obsidian re-invoking onOpen() on the same view instance later in its
+    // life — not a reload the plugin itself chose to trigger.
+    await h.view.onOpen();
 
     expect(internals(h.view).composer).not.toBeNull();
     expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeTruthy();

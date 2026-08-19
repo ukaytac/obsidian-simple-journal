@@ -186,13 +186,7 @@ export default class JournalEntriesPlugin extends Plugin {
    */
   async newEntry(): Promise<void> {
     try {
-      // TEMPORARY TRACE — remove once the composer bug is settled.
-      const before = this.app.workspace.getLeavesOfType(VIEW_TYPE_JOURNAL).length;
       const view = await this.openJournal();
-      console.log("[JE] newEntry: openJournal returned", {
-        leavesBefore: before,
-        gotView: Boolean(view),
-      });
 
       if (!view) {
         console.error("Journal Entries: the journal view was not available after opening it");
