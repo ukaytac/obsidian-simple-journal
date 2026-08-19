@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dayKey, formatCreatedProperty, formatTime } from "../src/utils/dates";
+import { TFile as FakeTFile, type FakeIntersectionObserver } from "./obsidian-mock";
+import { dayKey, formatCreatedProperty, formatMonthHeader, formatTime } from "../src/utils/dates";
 import { addEntry, createHarness, internals, settle, timelineEl } from "./journalViewHarness";
 
 beforeEach(() => {
@@ -208,5 +209,347 @@ describe("JournalView external-change reconciliation", () => {
     // across a correction that does not actually reorder anything on screen.
     expect(after.el).toBe(elBefore);
     expect(after.el.querySelector(".journal-entry-time")?.textContent).toBe(formatTime(correctedAt));
+  });
+});
+
+/**
+ * Gaps surfaced by a deliberate mutation scan of `applyChangesNow`/
+ * `reKeyRenderedEntry`/`removeRenderedEntry`/`repositionIsNoOp`/
+ * `renderedStateFor` before this seam was extracted into its own module.
+ * Each test below was verified to go red against the specific mutation named
+ * in its comment (and, in each case, at least one further mutation of the
+ * same invariant) before being written; the suite above, plus
+ * `tests/applyChange.test.ts`'s coverage of the pure decision table, already
+ * passed against every one of them.
+ */
+describe("JournalView change-application: pinned edge cases", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  /**
+   * Mutation: delete the `if (this.rendered.has(newPath)) return false;`
+   * guard in `reKeyRenderedEntry`. The suite stayed fully green with that
+   * line gone — this test is what makes it red again.
+   *
+   * Scenario (see `reKeyRenderedEntry`'s own doc): a dirty entry (A) gets
+   * renamed onto a path a DIFFERENT, currently-rendered entry (B) occupies —
+   * reachable when B was deleted at the vault level within the same
+   * debounce window, freeing the path, before A's rename lands. Modeled
+   * directly (removing B from the fake vault's own file map, then renaming A
+   * into the freed path, then calling `applyChangesNow` with only A's
+   * "removed" half) so the exact narrow window is exercised deterministically
+   * rather than left to the service's real batching order.
+   */
+  it("declines to re-key a dirty rename onto an already-rendered path, rather than silently overwriting the occupant", async () => {
+    const h = createHarness();
+    const fileA = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "A original");
+    const fileB = addEntry(h, new Date(2026, 7, 12, 10, 0, 0), "B original");
+    h.service.load();
+    await h.view.onOpen();
+
+    const view = internals(h.view);
+    const renderedA = view.rendered.get(fileA.path);
+    const renderedB = view.rendered.get(fileB.path);
+    const oldPathA = fileA.path;
+
+    // Mount and dirty A's editor.
+    const mountObserver = view.mountObserver as FakeIntersectionObserver;
+    mountObserver.trigger([{ target: renderedA.el, isIntersecting: true }]);
+    await settle();
+    const textarea = renderedA.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.value = "A edited, not yet saved";
+    textarea.dispatchEvent(new InputEvent("input", { inputType: "insertText" }));
+    expect(renderedA.editor.getValue()).toBe("A edited, not yet saved");
+
+    // B is deleted at the vault level (the view has not processed that
+    // removal yet — its row is still in `view.rendered`), freeing its path...
+    h.app.vault.files.delete(fileB.path);
+    h.app.vault.contents.delete(fileB.path);
+    // ...and A is renamed into it.
+    await h.app.fileManager.renameFile(fileA, fileB.path);
+
+    // A's flush must fail, or a successful flush would clear `isDirty` before
+    // the re-key branch is ever reached (see `applyChangesNow`'s own "removed"
+    // handling) — this models the write still failing at the moment the
+    // rename's "removed" change for A's stale old path is processed.
+    h.app.vault.process = async () => {
+      throw new Error("disk write failing");
+    };
+
+    await view.applyChangesNow([{ kind: "removed", path: oldPathA }]);
+
+    // B's rendering must be exactly what it always was — never silently
+    // replaced by A's.
+    expect(view.rendered.get(fileB.path)).toBe(renderedB);
+    expect(view.rendered.has(oldPathA)).toBe(false);
+  });
+
+  /**
+   * Mutation: drop either sibling check in `repositionIsNoOp` (both the
+   * `prevEntry`/`nextEntry` comparisons, and — as a second, self-devised
+   * mutation — just the `nextEntry` one alone). Both left the suite green:
+   * every existing "same-day correction" test only ever has ONE entry on the
+   * day in question, so the sibling comparisons never actually run.
+   *
+   * `repositionIsNoOp` reporting a false no-op is the worst outcome CLAUDE.md
+   * calls out for this seam: the row gets a corrected label but stays in the
+   * wrong place — silent mis-ordering, not a visible failure.
+   */
+  it("a same-day correction that crosses a rendered sibling actually reorders the row, not merely relabels it", async () => {
+    const h = createHarness();
+    addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "earliest");
+    const target = addEntry(h, new Date(2026, 7, 12, 10, 0, 0), "moving later");
+    const laterSibling = addEntry(h, new Date(2026, 7, 12, 11, 0, 0), "already later");
+    h.service.load();
+    await h.view.onOpen();
+
+    // Corrected past `laterSibling`, but still on the same calendar day —
+    // exactly the case `repositionIsNoOp`'s day-key check alone cannot catch.
+    const correctedAt = new Date(2026, 7, 12, 11, 30, 0);
+    h.app.metadataCache.frontmatter.set(target.path, { created: formatCreatedProperty(correctedAt) });
+    h.app.vault.trigger("modify", target);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    const domPaths = Array.from(
+      timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-entry"),
+    ).map((el) => el.dataset.path);
+
+    // Reverse-chronological: the corrected entry is now the newest of the
+    // three and must lead; `laterSibling` — now older than the correction —
+    // must have moved to second. A wrongly-declared no-op would leave
+    // `target` sitting in its OLD slot (between `laterSibling` and the
+    // earliest entry) with only its label corrected.
+    expect(domPaths).toEqual([target.path, laterSibling.path, expect.stringContaining("09-00-00")]);
+    expect(
+      timelineEl(h.view).querySelector<HTMLElement>(`[data-path="${target.path}"] .journal-entry-time`)
+        ?.textContent,
+    ).toBe(formatTime(correctedAt));
+  });
+
+  /**
+   * The mirror image of the test above, needed because `repositionIsNoOp`
+   * has two independent sibling checks (`prevEntry`/`nextEntry`) and the test
+   * above only happens to exercise the `prevEntry` one — removing only the
+   * `nextEntry` check on its own left that test (and the rest of the suite)
+   * green. This one crosses the OLDER neighbour instead of the newer one, so
+   * only the `nextEntry` check can catch it.
+   */
+  it("a same-day correction moving earlier that crosses its older rendered sibling also reorders the row", async () => {
+    const h = createHarness();
+    // An older, untouched entry on a separate day pads the loaded window so
+    // the correction below — which briefly drops the rendered count to 3
+    // while `applyChangesNow` removes-then-reinserts it — doesn't land
+    // exactly on `insertEntryInPlace`'s "not yet loaded" boundary, a real but
+    // unrelated edge case (see `insertEntryInPlace`'s own doc) this test does
+    // not intend to exercise.
+    addEntry(h, new Date(2026, 7, 11, 9, 0, 0), "unrelated, stays put");
+    addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "oldest");
+    const target = addEntry(h, new Date(2026, 7, 12, 10, 0, 0), "moving earlier");
+    addEntry(h, new Date(2026, 7, 12, 11, 0, 0), "newest");
+    h.service.load();
+    await h.view.onOpen();
+
+    // Corrected past the 09:00 entry, but still the same calendar day —
+    // the `prevEntry` check (against the 11:00 entry) stays satisfied
+    // throughout; only `nextEntry` (against the 09:00 entry) can detect this.
+    const correctedAt = new Date(2026, 7, 12, 8, 30, 0);
+    h.app.metadataCache.frontmatter.set(target.path, { created: formatCreatedProperty(correctedAt) });
+    h.app.vault.trigger("modify", target);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    const domPaths = Array.from(
+      timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-entry"),
+    ).map((el) => el.dataset.path);
+
+    // Reverse-chronological: the corrected entry is now older than the
+    // 09:00 entry on the same day, so it must trail that entry (and still
+    // lead the unrelated, older day) — not stay sandwiched between 11:00 and
+    // 09:00.
+    expect(domPaths).toEqual([
+      expect.stringContaining("2026-08-12-11-00-00"),
+      expect.stringContaining("2026-08-12-09-00-00"),
+      target.path,
+      expect.stringContaining("2026-08-11-09-00-00"),
+    ]);
+  });
+
+  /**
+   * Mutation: in `applyChangesNow`'s "reposition" branch, remove the entry
+   * without recording `dayGroupsDirty` (e.g. `this.removeRenderedEntry(path)`
+   * without the `if (...) dayGroupsDirty = true`). The suite stayed green —
+   * every existing reposition test either stays within one day/month, or
+   * (the "moves to its new correct position" test) crosses a day boundary
+   * but never actually empties a day/month it leaves behind.
+   *
+   * Without `removeEmptyDayGroups`/`rebuildMonthHeaders` running at the end of
+   * the batch, an emptied month's header and now-empty day group are left
+   * behind in the DOM indefinitely.
+   */
+  it("a correction crossing a month boundary removes the emptied month's day group and header", async () => {
+    const h = createHarness();
+    addEntry(h, new Date(2026, 5, 15, 9, 0, 0), "june stays put");
+    const moving = addEntry(h, new Date(2026, 6, 31, 9, 0, 0), "the only entry in july");
+    h.service.load();
+    await h.view.onOpen();
+
+    expect(
+      Array.from(timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-month-header")).map(
+        (el) => el.textContent,
+      ),
+    ).toEqual([formatMonthHeader(new Date(2026, 6, 1)), formatMonthHeader(new Date(2026, 5, 1))]);
+
+    const correctedAt = new Date(2026, 7, 1, 9, 0, 0); // August 1st — a new month, and empties July entirely.
+    h.app.metadataCache.frontmatter.set(moving.path, { created: formatCreatedProperty(correctedAt) });
+    h.app.vault.trigger("modify", moving);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    expect(internals(h.view).dayGroups.has(dayKey(new Date(2026, 6, 31)))).toBe(false);
+    expect(internals(h.view).dayGroups.has(dayKey(correctedAt))).toBe(true);
+    expect(
+      Array.from(timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-month-header")).map(
+        (el) => el.textContent,
+      ),
+    ).toEqual([formatMonthHeader(correctedAt), formatMonthHeader(new Date(2026, 5, 1))]);
+  });
+
+  /**
+   * Mutation: in `renderedStateFor`, compare `fileStillExists` by mere path
+   * resolution (`!== null`) instead of by object identity (`===
+   * rendered.entry.file`). The suite stayed green — no existing test ever
+   * installs a genuinely different `TFile` object at a rendering's own path.
+   *
+   * Without the identity check, a delete-then-recreate at the same path
+   * within one debounce window reads as "the file still exists," which would
+   * flush a stale editor's held text through `writeBody` — landing on
+   * whatever now-unrelated file the vault's `process` resolves by path,
+   * clobbering it with content it never had.
+   */
+  it("a delete-then-recreate at the same path is not mistaken for the same file, so a stale dirty edit is dropped rather than written into the replacement", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original");
+    h.service.load();
+    await h.view.onOpen();
+
+    const view = internals(h.view);
+    const rendered = view.rendered.get(file.path);
+
+    expect(view.renderedStateFor(rendered).fileStillExists).toBe(true);
+
+    // Mount and dirty its editor.
+    const mountObserver = view.mountObserver as FakeIntersectionObserver;
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+    const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.value = "stale, unsaved edit";
+    textarea.dispatchEvent(new InputEvent("input", { inputType: "insertText" }));
+
+    // A genuinely different TFile object now resolves at the exact same
+    // path — the delete-then-recreate this test's name describes.
+    h.app.vault.files.set(file.path, new FakeTFile(file.path, 0));
+    expect(view.renderedStateFor(rendered).fileStillExists).toBe(false);
+
+    const writeSpy = vi.spyOn(h.app.vault, "process");
+    await view.applyChangesNow([{ kind: "removed", path: file.path }]);
+
+    // The stale edit must never reach the replacement file...
+    expect(writeSpy).not.toHaveBeenCalled();
+    // ...and the stale rendering is simply gone, not left dangling.
+    expect(view.rendered.has(file.path)).toBe(false);
+  });
+
+  /**
+   * Mutation: in `renderedStateFor`, hardcode `focused: false, dirty: false`
+   * instead of reading the live editor. The suite stayed green —
+   * `tests/applyChange.test.ts` only pins `decideChangeAction`'s pure
+   * decision given a `focused`/`dirty` input; nothing exercises whether
+   * `renderedStateFor` actually computes those from a real, live, focused,
+   * unsaved editor before an external "content" change arrives.
+   *
+   * This is CLAUDE.md's loop/clobber-suppression invariant, exercised at the
+   * wiring level rather than the pure-function level `applyChange.test.ts`
+   * already covers.
+   */
+  it("an external content change never overwrites a focused, unsaved editor", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const view = internals(h.view);
+    const rendered = view.rendered.get(file.path);
+
+    const mountObserver = view.mountObserver as FakeIntersectionObserver;
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+
+    const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.value = "the user's own in-progress sentence";
+    textarea.dispatchEvent(new InputEvent("input", { inputType: "insertText" }));
+    expect(rendered.editor.hasFocus()).toBe(true);
+
+    // A genuine external edit to the same file's body — via the fake vault
+    // directly, mirroring another Obsidian pane saving over the same file —
+    // with `created` left untouched, so `JournalService.applyUpsert` takes
+    // its "content" branch rather than "moved".
+    h.app.vault.contents.set(
+      file.path,
+      `---\ncreated: "${formatCreatedProperty(new Date(2026, 7, 12, 9, 0, 0))}"\n---\n\nexternal change from another pane`,
+    );
+    h.app.vault.trigger("modify", file);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    // The user's own unsaved text must survive untouched.
+    expect(rendered.editor.getValue()).toBe("the user's own in-progress sentence");
+  });
+
+  /**
+   * Mutation: in `handleDeleteFallback`, drop the "does the file still
+   * resolve" check and unconditionally call `removeRenderedEntry`. The suite
+   * stayed green — no existing test exercises `confirmDelete`/
+   * `handleDeleteFallback` at all.
+   *
+   * `promptForDeletion` resolving `true` means the user confirmed, not that
+   * the trash itself actually succeeded (disabled system trash, permissions,
+   * ...). If the file is still there, removing the row would make the
+   * timeline silently misrepresent the vault.
+   */
+  it("restores a row instead of removing it when a confirmed deletion's file actually survived", async () => {
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "hello");
+    h.service.load();
+    await h.view.onOpen();
+
+    const view = internals(h.view);
+    const rendered = view.rendered.get(file.path);
+
+    // Fake vault has no `promptForDeletion` of its own; the user confirming
+    // the (unthemed, native) dialog is exactly this call resolving `true`.
+    (h.app.fileManager as unknown as { promptForDeletion: () => Promise<boolean> }).promptForDeletion =
+      async () => true;
+
+    await view.confirmDelete(rendered);
+    expect(rendered.el.classList.contains("is-deleting")).toBe(true);
+
+    // The trash itself did not actually happen — the file is still there —
+    // simulated simply by never having removed it from the fake vault.
+    // `DELETE_FALLBACK_MS` (2000ms; see `JournalView.ts`) is how long
+    // `confirmDelete` waits for the vault's own "delete" event before this
+    // fallback runs.
+    vi.advanceTimersByTime(2000);
+    await settle();
+
+    expect(rendered.el.classList.contains("is-deleting")).toBe(false);
+    expect(view.rendered.has(file.path)).toBe(true);
+    expect(view.rendered.get(file.path)).toBe(rendered);
   });
 });
