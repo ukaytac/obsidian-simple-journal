@@ -75,35 +75,23 @@ describe("JournalView mount window", () => {
   });
 
   /**
-   * FAILS against the current implementation — a genuine gap found while
-   * writing this suite, not a pre-existing known one.
-   *
    * `enforceMountLimit`'s backstop exists, per `mountWindow.ts`'s own doc,
    * for exactly this shape: "more entries simultaneously within
    * MOUNT_ROOT_MARGIN than MAX_MOUNTED_EDITORS allows — a very tall pane,
-   * or many short entries packed into MOUNT_ROOT_MARGIN." But every entry
-   * in that scenario is, by definition, currently `intersecting` — and
-   * `unmountEditor` unconditionally declines to unmount ANY entry with
-   * `rendered.intersecting === true` (see its own "Re-entered
-   * MOUNT_ROOT_MARGIN while the flush was in flight" branch), re-adding it
-   * to `mountOrder` via `ensureMountOrderContains` instead of tearing it
-   * down.
-   *
-   * `enforceMountLimit` (in `mountWindow.ts`) splices its chosen victim out
-   * of `mountOrder` SYNCHRONOUSLY, before ever calling `onEvict` — so its
-   * own `while (order.length > max)` loop sees the count drop and can
-   * correctly select `max` survivors in one synchronous pass. But
-   * `onEvict` here is `void this.unmountEditor(rendered)`, fire-and-forget:
-   * every one of those evictions is an async call that, once it actually
-   * runs, finds `rendered.intersecting` still true (nothing changed it) and
-   * calls `ensureMountOrderContains` — which pushes the very same path
-   * back onto the end of `mountOrder`. Once all of them have resolved, the
-   * count is back to its pre-eviction size; only the *order* of
-   * `mountOrder` changed. Net result: when every candidate is intersecting
-   * — precisely the scenario this backstop's doc cites as its reason to
-   * exist — it does not actually bound the mounted count at all.
+   * or many short entries packed into MOUNT_ROOT_MARGIN." Every entry in
+   * that scenario is, by definition, currently `intersecting`, so
+   * `unmountEditor` must actually tear one down even though it is on
+   * screen: it takes an `{ evict: true }` flag from `enforceMountLimit`'s
+   * `onEvict` specifically to bypass its ordinary "re-entered
+   * MOUNT_ROOT_MARGIN while the flush was in flight" decline for this one
+   * caller, while still honoring the focused/dirty declines unconditionally
+   * (see `unmountEditor`'s doc). Without that flag, every eviction's
+   * fire-and-forget `unmountEditor` call would find `rendered.intersecting`
+   * still true and re-add the victim via `ensureMountOrderContains`,
+   * silently undoing the synchronous splice `enforceMountLimit` already did
+   * — the cap would never actually bind.
    */
-  it.fails("enforces the mount cap: mounting beyond MAX_MOUNTED_EDITORS evicts down to the cap", async () => {
+  it("enforces the mount cap: mounting beyond MAX_MOUNTED_EDITORS evicts down to the cap", async () => {
     const h = createHarness();
     // 65 entries: > the desktop cap (60), and > PAGE_SIZE (40), so a second
     // page has to load for all of them to be simultaneously rendered.
@@ -134,6 +122,76 @@ describe("JournalView mount window", () => {
       (r: { editor: unknown }) => r.editor !== null,
     ).length;
     expect(mountedCount).toBeLessThanOrEqual(60);
+  });
+
+  /**
+   * Pins the eviction semantics chosen to fix the test above: `unmountEditor`
+   * takes an `{ evict: true }` flag (only ever passed by
+   * `enforceMountLimit`'s `onEvict`) that lets it tear down an editor even
+   * though `rendered.intersecting` is still true — the whole point of that
+   * fix. But `evict` never overrides the focused/dirty declines: a focused
+   * editor must survive being repeatedly the oldest-mounted, hence
+   * `pickEvictionCandidate`'s fallback, candidate in an all-intersecting
+   * overload — losing keyboard focus mid-sentence because of an unrelated
+   * mount elsewhere would be worse than staying one editor over the cap.
+   * This also guards against thrashing: forcing the SAME focused entry
+   * through repeated eviction pressure must never succeed in unmounting it,
+   * and the cap must still bind for every OTHER candidate each time.
+   */
+  it("eviction skips a focused entry under repeated pressure, evicting a different candidate each time", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 65; i++) {
+      addEntry(h, new Date(2026, 7, 12, 0, 0, 0 - i), `entry ${i}`);
+    }
+    h.service.load();
+    await h.view.onOpen();
+
+    const sentinel = internals(h.view).observer as FakeIntersectionObserver;
+    sentinel.trigger([{ target: internals(h.view).sentinelEl, isIntersecting: true }]);
+    await settle();
+
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const rows = [...internals(h.view).rendered.values()] as Array<{ el: HTMLElement }>;
+    mountObserver.trigger(rows.map((r) => ({ target: r.el, isIntersecting: true })));
+    await settle();
+    await settle();
+    await settle();
+
+    expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
+
+    // Focus the oldest-mounted survivor — precisely the entry
+    // `pickEvictionCandidate`'s fallback would pick first once every
+    // candidate intersects.
+    const mountOrder = internals(h.view).mountOrder as string[];
+    const focusPath = mountOrder[0];
+    const focusedRendered = internals(h.view).rendered.get(focusPath);
+    const focusedTextarea = focusedRendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    focusedTextarea.focus();
+    expect(focusedRendered.editor.hasFocus()).toBe(true);
+
+    // Apply eviction pressure three more times: cycle a different,
+    // currently-mounted, unfocused entry out of and back into the mount
+    // margin, which re-adds it to `mountOrder` and pushes the count back
+    // over the cap, forcing `enforceMountLimit` to run again.
+    for (let round = 0; round < 3; round++) {
+      const currentOrder = internals(h.view).mountOrder as string[];
+      const otherPath = currentOrder.find((p) => p !== focusPath);
+      if (!otherPath) break;
+      const otherRendered = internals(h.view).rendered.get(otherPath);
+
+      mountObserver.trigger([{ target: otherRendered.el, isIntersecting: false }]);
+      await settle();
+      mountObserver.trigger([{ target: otherRendered.el, isIntersecting: true }]);
+      await settle();
+      await settle();
+
+      expect(internals(h.view).mountOrder.length).toBeLessThanOrEqual(60);
+      // The focused entry is never the victim: still mounted, still focused,
+      // still tracked in mountOrder — no thrash.
+      expect(internals(h.view).rendered.get(focusPath).editor).not.toBeNull();
+      expect(internals(h.view).rendered.get(focusPath).editor.hasFocus()).toBe(true);
+      expect(internals(h.view).mountOrder).toContain(focusPath);
+    }
   });
 
   it("unmounting flushes a pending edit to disk before tearing the editor down", async () => {

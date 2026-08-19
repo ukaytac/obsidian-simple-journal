@@ -1895,7 +1895,7 @@ export class JournalView extends ItemView {
       (path) => this.mountStateOf(path),
       (path) => {
         const rendered = this.rendered.get(path);
-        if (rendered) void this.unmountEditor(rendered);
+        if (rendered) void this.unmountEditor(rendered, { evict: true });
       },
     );
   }
@@ -1920,8 +1920,22 @@ export class JournalView extends ItemView {
    * because they scrolled would be worse than leaving one editor mounted
    * past the margin. `wireEditor`'s `onBlur` callback gives that entry a
    * second chance to unmount once the user actually clicks away.
+   *
+   * `evict`, when true, marks this call as an `enforceMountLimit` eviction
+   * rather than the ordinary viewport-driven unmount `mountObserver` fires on
+   * every exit transition. The two mean different things by "still
+   * intersecting": for the ordinary path it means "re-entered
+   * `MOUNT_ROOT_MARGIN` while the flush was in flight, decline" (see below).
+   * For an eviction it means nothing of the sort — `pickEvictionCandidate`
+   * already chose this exact path as its fallback specifically *because*
+   * every candidate was intersecting (see `mountWindow.ts`), so declining on
+   * that same fact here would silently undo every eviction and leave the cap
+   * unenforced, which is the bug this parameter fixes. `evict` never
+   * bypasses the focused or dirty declines — those stay absolute regardless
+   * of why this was called, since losing focus or unsaved text is worse than
+   * one editor over the cap.
    */
-  private async unmountEditor(rendered: RenderedEntry): Promise<void> {
+  private async unmountEditor(rendered: RenderedEntry, opts: { evict?: boolean } = {}): Promise<void> {
     if (!rendered.editor) return;
 
     if (rendered.editor.hasFocus()) {
@@ -1957,7 +1971,7 @@ export class JournalView extends ItemView {
     }
     if (generation !== this.generation) return;
 
-    if (rendered.intersecting) {
+    if (rendered.intersecting && !opts.evict) {
       // Re-entered MOUNT_ROOT_MARGIN while the flush was in flight.
       // mountEditor's own guard (`if (rendered.editor) return`) already saw
       // this editor still set and no-opped, so no other code path will
