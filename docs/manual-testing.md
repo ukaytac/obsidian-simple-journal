@@ -11,6 +11,50 @@ and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
 Everything else — timeline, mount window, composer, entry actions, saving,
 and vault events — lives here.
 
+## Open bug: the composer does not appear when the journal is not already open
+
+Reported and reproduced by hand; **not** fixed. Two hypotheses have already been
+wrong, so the build carries temporary tracing rather than a third guess.
+
+Reproduction: with the Journal tab **closed**, from any other note, press the
+`New journal entry` hotkey. The journal opens and the timeline renders, but no
+composer appears and no caret is placed. From the Journal tab itself the same
+command works correctly.
+
+- [ ] **Collect the trace.** Reload the plugin, close the Journal tab, open a
+      note, open the developer console and clear it, then press the hotkey.
+      Paste every line beginning `[JE]`, plus anything beginning
+      `Journal Entries:`. The missing line, or the first unexpected value,
+      identifies the cause:
+
+      | Observation | Meaning |
+      | --- | --- |
+      | `gotView: false` | the view is never returned |
+      | `hasTimelineEl: false` | `onOpen` has not run yet |
+      | no `openComposer: entered` | the mutation queue never runs it |
+      | `composer built` but `inDom: false` | something detaches it |
+      | `focused: false` | it exists but never takes focus |
+      | no `[JE]` lines at all | the command does not reach this code |
+      | `discarded an open, empty composer` | a rebuild is sweeping it away |
+
+Already ruled out: the hotkey binding is correct
+(`journal-entries:new-journal-entry` → `Mod+Shift+N`), and the failure is not
+the blur-discard path (that fix shipped and changed nothing).
+
+## Not a bug: ribbon order
+
+The order of `Open journal` and `New journal entry` in the ribbon — and in the
+`...` menu on mobile — is not something this plugin can set. `addRibbonIcon` is
+the only ribbon API and it appends; there is no position argument and no
+reordering API, and reaching past it would mean rearranging other plugins'
+items too.
+
+It is a user setting instead: Obsidian's Appearance settings allow ribbon items
+to be dragged into any order, on both desktop and mobile. On mobile the same
+settings also assign a **quick action** fired by a short press, which reaches
+`New journal entry` in one tap without opening the menu at all — likely a
+better answer than reordering for the capture flow this plugin is built around.
+
 ## Run these first
 
 Five checks, in order. Each one closes an assumption that three rounds of code
