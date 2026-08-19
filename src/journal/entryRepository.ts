@@ -11,7 +11,12 @@ import {
   UnsafeFrontmatterError,
 } from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
-import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../utils/dates";
+import {
+  entryFolderPath,
+  formatCreatedProperty,
+  formatEntryFilename,
+  parseEntryFilename,
+} from "../utils/dates";
 
 const MAX_COLLISION_ATTEMPTS = 100;
 
@@ -200,14 +205,41 @@ export class EntryRepository {
     const frontmatter = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n`;
     const contents = frontmatter + restoreSeparator(frontmatter, body);
 
+    return this.withFreeName(folder, stem, (path) => this.app.vault.create(path, contents));
+  }
+
+  /**
+   * Tries path candidates `folder/stem.md`, `folder/stem-2.md`, ... up to
+   * `MAX_COLLISION_ATTEMPTS`, calling `write(path)` for the first one not
+   * already occupied. Shared by `createEntry` and `renameEntryToMatch` so
+   * their collision-suffix strategies cannot drift apart.
+   *
+   * A path occupied by `selfFile` itself is treated as free, not taken:
+   * relevant only to a rename, where a later-numbered candidate could
+   * coincidentally already be the very file being renamed (its own,
+   * possibly mismatched, current name) — that file is about to vacate
+   * whatever path it currently holds, so it can never be a real collision
+   * for `write` to lose a race against.
+   *
+   * If `write` itself throws (a lost race against another writer creating
+   * or occupying the same path), the next suffix is tried rather than
+   * risking an overwrite.
+   */
+  private async withFreeName(
+    folder: string,
+    stem: string,
+    write: (path: string) => Promise<TFile>,
+    selfFile: TFile | null = null,
+  ): Promise<TFile> {
     for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS; attempt++) {
       const name = attempt === 1 ? stem : `${stem}-${attempt}`;
       const path = `${folder}/${name}.md`;
 
-      if (this.app.vault.getAbstractFileByPath(path)) continue;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing && existing !== selfFile) continue;
 
       try {
-        return await this.app.vault.create(path, contents);
+        return await write(path);
       } catch (error) {
         // Lost a race against another writer. Try the next suffix rather than
         // risking an overwrite.
@@ -216,6 +248,53 @@ export class EntryRepository {
     }
 
     throw new Error(`Journal Entries: could not find a free filename for ${stem}`);
+  }
+
+  /**
+   * Moves (and/or renames) `file` so its filename matches `at`, the entry's
+   * corrected `created` timestamp — used by `JournalView.commitEntryTimeChange`
+   * after `setEntryCreated` has already written the new `created` value, so
+   * the filename convention (this plugin's filename IS the timestamp) stops
+   * contradicting the entry's own frontmatter.
+   *
+   * Only touches a file whose current name already follows the plugin's
+   * `YYYY-MM-DD-HH-mm-ss[-N].md` convention (`parseEntryFilename` returns
+   * non-null). A file the user deliberately named something else and placed
+   * in the journal folder keeps that name untouched — CLAUDE.md treats the
+   * filename as an internal identifier precisely so nothing (including this)
+   * ever re-derives it from content a user didn't choose it from.
+   *
+   * A no-op, returning `file` unchanged with no vault call at all, when the
+   * computed target path already equals the file's current path (e.g. the
+   * correction only changed a value that isn't part of the filename, like
+   * seconds-level precision the user can't actually enter, or simply didn't
+   * change the minute). Otherwise moves via `fileManager.renameFile` — which
+   * both relocates the file and updates any links to it, unlike `vault.rename`
+   * — reusing `createEntry`'s exact collision-suffix strategy through
+   * `withFreeName` so a target already held by another entry created in the
+   * same second gets the same deterministic `-2`, `-3`, ... suffix rather
+   * than ever overwriting it.
+   */
+  async renameEntryToMatch(file: TFile, at: Date): Promise<TFile> {
+    if (!parseEntryFilename(file.basename)) return file;
+
+    const folder = entryFolderPath(this.resolveFolder().resolved, at);
+    const stem = formatEntryFilename(at);
+    const targetPath = `${folder}/${stem}.md`;
+
+    if (targetPath === file.path) return file;
+
+    await this.ensureFolder(folder);
+
+    return this.withFreeName(
+      folder,
+      stem,
+      async (path) => {
+        await this.app.fileManager.renameFile(file, path);
+        return file;
+      },
+      file,
+    );
   }
 
   private async ensureFolder(path: string): Promise<void> {

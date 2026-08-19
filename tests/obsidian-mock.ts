@@ -239,8 +239,44 @@ export class FakeMetadataCache extends FakeEvents {
 export class FakeFileManager {
   trashed: TFile[] = [];
 
+  constructor(private readonly vault: FakeVault) {}
+
   async trashFile(file: TFile): Promise<void> {
     this.trashed.push(file);
+  }
+
+  /**
+   * Real Obsidian mutates the SAME `TFile` object in place on rename (never
+   * hands back a new one) and fires the vault's own "rename" event with
+   * `(file, oldPath)` — `EntryRepository.renameEntryToMatch` and
+   * `JournalService`'s rename handling both depend on that identity, so this
+   * models it rather than just moving map entries around. Throws if the
+   * destination is already occupied, mirroring the real method's "safely"
+   * contract (it never silently overwrites) — `renameEntryToMatch`'s own
+   * collision loop is what's expected to avoid ever calling this with a
+   * taken path in the first place.
+   */
+  async renameFile(file: TFile, newPath: string): Promise<void> {
+    if (this.vault.files.has(newPath)) throw new Error("Destination already exists.");
+
+    const oldPath = file.path;
+    const data = this.vault.contents.get(oldPath) ?? "";
+
+    this.vault.files.delete(oldPath);
+    this.vault.contents.delete(oldPath);
+
+    file.path = newPath;
+    file.name = newPath.split("/").pop() ?? newPath;
+    file.basename = file.name.replace(/\.md$/, "");
+
+    this.vault.files.set(newPath, file);
+    this.vault.contents.set(newPath, data);
+
+    for (let current = parentPath(newPath); current; current = parentPath(current)) {
+      this.vault.folders.add(current);
+    }
+
+    this.vault.trigger("rename", file, oldPath);
   }
 }
 
@@ -250,10 +286,11 @@ export function createFakeApp(): {
   metadataCache: FakeMetadataCache;
   fileManager: FakeFileManager;
 } {
+  const vault = new FakeVault();
   return {
-    vault: new FakeVault(),
+    vault,
     metadataCache: new FakeMetadataCache(),
-    fileManager: new FakeFileManager(),
+    fileManager: new FakeFileManager(vault),
   };
 }
 

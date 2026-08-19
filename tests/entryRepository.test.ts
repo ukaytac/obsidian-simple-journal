@@ -498,3 +498,77 @@ describe("setEntryCreated", () => {
     expect(fake.vault.contents.get(file.path)).toBe(original);
   });
 });
+
+describe("renameEntryToMatch", () => {
+  it("moves a conventionally-named entry within the same month", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+
+    const result = await repo.renameEntryToMatch(file, new Date(2026, 7, 15, 9, 0, 0));
+
+    expect(result).toBe(file);
+    expect(file.path).toBe("Journal/2026/08/2026-08-15-09-00-00.md");
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-15-09-00-00.md")).toBe("hello");
+    expect(fake.vault.contents.has("Journal/2026/08/2026-08-12-22-41-52.md")).toBe(false);
+  });
+
+  it("moves a conventionally-named entry across months, creating the new folder", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
+
+    expect(file.path).toBe("Journal/2026/09/2026-09-01-00-00-00.md");
+    expect([...fake.vault.folders]).toContain("Journal/2026/09");
+  });
+
+  it("moves a conventionally-named entry across years", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/12/2026-12-31-23-00-00.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2027, 0, 1, 0, 0, 0));
+
+    expect(file.path).toBe("Journal/2027/01/2027-01-01-00-00-00.md");
+    expect([...fake.vault.folders]).toContain("Journal/2027/01");
+  });
+
+  it("suffixes the target name when another entry already occupies it", async () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-15-09-00-00.md", "occupied");
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 7, 15, 9, 0, 0));
+
+    expect(file.path).toBe("Journal/2026/08/2026-08-15-09-00-00-2.md");
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-15-09-00-00.md")).toBe("occupied");
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-15-09-00-00-2.md")).toBe("hello");
+  });
+
+  it("leaves a non-conventionally-named file's name alone", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/My favorite entry.md", "hello");
+
+    const result = await repo.renameEntryToMatch(file, new Date(2026, 7, 15, 9, 0, 0));
+
+    expect(result).toBe(file);
+    expect(file.path).toBe("Journal/2026/08/My favorite entry.md");
+    expect(fake.vault.contents.get("Journal/2026/08/My favorite entry.md")).toBe("hello");
+  });
+
+  it("is a no-op when the computed target equals the current path", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+    const originalRename = fake.fileManager.renameFile.bind(fake.fileManager);
+    let called = false;
+    fake.fileManager.renameFile = async (...args: Parameters<typeof originalRename>) => {
+      called = true;
+      return originalRename(...args);
+    };
+
+    const result = await repo.renameEntryToMatch(file, new Date(2026, 7, 12, 22, 41, 52));
+
+    expect(result).toBe(file);
+    expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
+    expect(called).toBe(false);
+  });
+});

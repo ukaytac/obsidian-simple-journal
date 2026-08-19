@@ -1063,9 +1063,10 @@ export class JournalView extends ItemView {
   /**
    * Opens `ChangeEntryTimeModal` prefilled with this entry's currently
    * resolved timestamp, and on confirmation writes the new value to the
-   * entry's `created` property. The entry's filename is deliberately never
-   * touched — filenames are internal identifiers, never re-derived from
-   * content or timestamp (CLAUDE.md).
+   * entry's `created` property, then moves the file to match via
+   * `EntryRepository.renameEntryToMatch` — see `commitEntryTimeChange`'s doc
+   * for why the write and the move happen in that order, and for a
+   * conventionally-named file only.
    *
    * Any pending debounced body edit is flushed first, exactly like
    * `confirmDelete` flushes before deleting: without it, this write and a
@@ -1116,6 +1117,34 @@ export class JournalView extends ItemView {
    * doc) — reported with a distinct, actionable Notice rather than the
    * generic write-failure one, since the fix here is for the user to edit
    * `created` in the source note themselves, not to retry.
+   *
+   * The move — `EntryRepository.renameEntryToMatch`, which keeps this
+   * entry's filename honest with its (just-written) `created` value — only
+   * happens AFTER the reposition above, never before. `applyKnownEntry`/
+   * `applyChangesNow` look up this entry's existing rendering by its
+   * CURRENT path; renaming first would change `file.path` out from under
+   * that lookup (`this.rendered` is still keyed at the OLD path — nothing
+   * has re-keyed it yet) and read as nothing rendered there, inserting a
+   * second, duplicate row alongside the one already on screen. Renaming
+   * after leaves that lookup untouched, and the eventual real vault
+   * "rename" event this triggers (reconciled by `applyChangesNow`'s
+   * "removed" handling once `JournalService` debounces it through) finds
+   * the entry already correctly positioned, at worst tearing down and
+   * re-inserting the same row from disk — see that handling's own doc.
+   *
+   * `visiblePath` is captured before the move, and is what the fallback
+   * visibility check below reads — not `file.path` afterward. `file.path`
+   * mutates in place the instant the rename succeeds, but `this.rendered`
+   * only gets re-keyed to the new path once the debounced vault event
+   * above actually lands; checking `file.path` here would see the entry as
+   * "not yet rendered" under its new key and wrongly jump via `goToDate`
+   * even though the just-repositioned row is already on screen.
+   *
+   * A failed move is reported with its own Notice and left alone: the
+   * `created` write already succeeded and the entry is already correctly
+   * positioned, so this is a purely cosmetic (if self-contradicting)
+   * mismatch between the file's name and its content, not a data-loss risk
+   * worth rolling anything back over.
    */
   private async commitEntryTimeChange(rendered: RenderedEntry, file: TFile, value: Date): Promise<void> {
     await this.flushSave(rendered);
@@ -1138,7 +1167,19 @@ export class JournalView extends ItemView {
     const change = this.plugin.journal.applyKnownEntry({ file, created: value });
     await this.enqueueTimelineMutation(() => this.applyChangesNow([change]));
 
-    if (this.closed || this.rendered.has(file.path)) return;
+    if (this.closed) return;
+    const visiblePath = file.path;
+
+    try {
+      await this.plugin.repository.renameEntryToMatch(file, value);
+    } catch (error) {
+      console.error("Journal Entries: could not rename the entry to match its new time", file.path, error);
+      new Notice(
+        "Journal Entries: the entry's time was changed, but its file could not be renamed to match. See the developer console for details.",
+      );
+    }
+
+    if (this.closed || this.rendered.has(visiblePath)) return;
 
     await this.goToDate(value);
     new Notice(`Moved entry to ${formatDayHeader(value)}, ${formatTime(value)}`);
