@@ -214,16 +214,34 @@ export class EntryRepository {
    * already occupied. Shared by `createEntry` and `renameEntryToMatch` so
    * their collision-suffix strategies cannot drift apart.
    *
-   * A path occupied by `selfFile` itself is treated as free, not taken:
-   * relevant only to a rename, where a later-numbered candidate could
-   * coincidentally already be the very file being renamed (its own,
-   * possibly mismatched, current name) — that file is about to vacate
-   * whatever path it currently holds, so it can never be a real collision
-   * for `write` to lose a race against.
+   * A candidate occupied by `selfFile` itself — relevant only to a rename —
+   * is returned immediately as `selfFile`, WITHOUT calling `write` at all:
+   * landing on the file's own current path means its name already legally
+   * encodes this stem, with whatever collision suffix it currently carries
+   * (e.g. a second entry in the same second, correctly at `-2`), so there is
+   * nothing to do. This is not just an optimization. Treating that
+   * candidate as merely "free" and calling `write(path)` on it — a rename to
+   * the file's own current path — used to be able to fire a real,
+   * observable move: on any semantics where that self-rename either no-ops
+   * with no error (harmless) or throws (caught below and retried on the
+   * NEXT suffix, which — since this file just vacated the earlier slot the
+   * next confirm's search would try first — genuinely moves it there), a
+   * user re-opening "Change entry time" and confirming without touching the
+   * value could oscillate the file between `-2` and `-3` forever, each
+   * confirm firing a real vault "rename" event and a real link rewrite.
+   * Recognizing "self" up front instead of attempting the write closes that
+   * loop entirely: an unchanged confirmation is guaranteed to be a true
+   * no-op.
    *
-   * If `write` itself throws (a lost race against another writer creating
-   * or occupying the same path), the next suffix is tried rather than
-   * risking an overwrite.
+   * If `write` itself throws for a candidate that ISN'T `selfFile`, the next
+   * suffix is tried — a lost race against another writer creating or
+   * occupying the same path — UNLESS `selfFile.path` already equals this
+   * candidate by the time of the catch: some rename implementations move
+   * the file (mutating its `.path` in place) before a later step (e.g.
+   * updating links) can still fail and throw. Retrying a further suffix in
+   * that case would move a file that already landed correctly a SECOND
+   * time, compounding exactly the bug above rather than avoiding it — so
+   * this bails, returning `selfFile`, instead.
    */
   private async withFreeName(
     folder: string,
@@ -236,18 +254,37 @@ export class EntryRepository {
       const path = `${folder}/${name}.md`;
 
       const existing = this.app.vault.getAbstractFileByPath(path);
-      if (existing && existing !== selfFile) continue;
+      if (selfFile && existing === selfFile) return selfFile;
+      if (existing) continue;
 
       try {
         return await write(path);
       } catch (error) {
-        // Lost a race against another writer. Try the next suffix rather than
-        // risking an overwrite.
+        if (selfFile && selfFile.path === path) return selfFile;
         if (attempt === MAX_COLLISION_ATTEMPTS) throw error;
       }
     }
 
     throw new Error(`Journal Entries: could not find a free filename for ${stem}`);
+  }
+
+  /**
+   * True when `folder` is exactly `root/YYYY/MM` for some four-digit year and
+   * two-digit month — the shape `createEntry`/`renameEntryToMatch` compute
+   * via `entryFolderPath`, never a folder a user could plausibly have typed
+   * by hand. Used to gate `renameEntryToMatch`'s folder move: an entry
+   * living in such a folder is treated as machine-managed and safe to
+   * relocate when its month/year changes, but one living anywhere else
+   * (`Journal/inbox/...`, a flat `Journal/...`, or any other custom
+   * subfolder the user put it in on purpose) is left exactly where it is —
+   * the same "a location the user chose is not this plugin's to overwrite"
+   * principle as leaving a non-conventional FILENAME untouched, applied to
+   * the folder instead.
+   */
+  private isYearMonthFolder(root: string, folder: string): boolean {
+    if (!folder.startsWith(`${root}/`)) return false;
+    const rest = folder.slice(root.length + 1).split("/");
+    return rest.length === 2 && /^\d{4}$/.test(rest[0]) && /^\d{2}$/.test(rest[1]);
   }
 
   /**
@@ -264,21 +301,46 @@ export class EntryRepository {
    * filename as an internal identifier precisely so nothing (including this)
    * ever re-derives it from content a user didn't choose it from.
    *
+   * The FOLDER move is gated the same way, via `isYearMonthFolder`: only an
+   * entry already living directly under the machine-managed `root/YYYY/MM`
+   * shape is relocated to the new month/year. An entry in a folder the user
+   * chose on purpose (`Journal/inbox/...`, a flat `Journal/...`, or any
+   * other custom subfolder) stays exactly where it is — only its filename
+   * (still gated on the convention check above) is corrected in place.
+   *
    * A no-op, returning `file` unchanged with no vault call at all, when the
    * computed target path already equals the file's current path (e.g. the
    * correction only changed a value that isn't part of the filename, like
    * seconds-level precision the user can't actually enter, or simply didn't
-   * change the minute). Otherwise moves via `fileManager.renameFile` — which
-   * both relocates the file and updates any links to it, unlike `vault.rename`
-   * — reusing `createEntry`'s exact collision-suffix strategy through
-   * `withFreeName` so a target already held by another entry created in the
-   * same second gets the same deterministic `-2`, `-3`, ... suffix rather
-   * than ever overwriting it.
+   * change the minute). Otherwise moves via `fileManager.renameFile` — never
+   * `vault.rename`, which never touches links at all — reusing `createEntry`'s
+   * exact collision-suffix strategy through `withFreeName` so a target
+   * already held by another entry created in the same second gets the same
+   * deterministic `-2`, `-3`, ... suffix rather than ever overwriting it.
+   *
+   * `renameFile`'s own contract only updates links "depending on the user's
+   * preferences" — with Obsidian's "Automatically update internal links"
+   * setting off, links to this file break exactly as they would with
+   * `vault.rename`. A link already pasted somewhere outside the vault (e.g.
+   * a previous "Copy link to entry" output shared elsewhere) breaks
+   * regardless, since Obsidian can only ever rewrite links inside the vault
+   * it can see. In other words: this makes the filename load-bearing, in a
+   * codebase that otherwise treats every journal entry's filename as an
+   * internal identifier nothing depends on. This method is the one
+   * deliberate, narrowly-scoped exception to that — needed to keep the
+   * filename convention honest with `created` — not a precedent for
+   * depending on filenames anywhere else.
    */
   async renameEntryToMatch(file: TFile, at: Date): Promise<TFile> {
     if (!parseEntryFilename(file.basename)) return file;
 
-    const folder = entryFolderPath(this.resolveFolder().resolved, at);
+    const root = this.resolveFolder().resolved;
+    const lastSlash = file.path.lastIndexOf("/");
+    const currentFolder = lastSlash === -1 ? "" : file.path.slice(0, lastSlash);
+    const folder = this.isYearMonthFolder(root, currentFolder)
+      ? entryFolderPath(root, at)
+      : currentFolder;
+
     const stem = formatEntryFilename(at);
     const targetPath = `${folder}/${stem}.md`;
 

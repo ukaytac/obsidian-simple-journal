@@ -571,4 +571,72 @@ describe("renameEntryToMatch", () => {
     expect(file.path).toBe("Journal/2026/08/2026-08-12-22-41-52.md");
     expect(called).toBe(false);
   });
+
+  it("does not oscillate when confirming an already-collision-suffixed entry unchanged (Important 1)", async () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-15-09-00-00.md", "first");
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-15-09-00-00-2.md", "second");
+    const originalRename = fake.fileManager.renameFile.bind(fake.fileManager);
+    let calls = 0;
+    fake.fileManager.renameFile = async (...args: Parameters<typeof originalRename>) => {
+      calls += 1;
+      return originalRename(...args);
+    };
+    const at = new Date(2026, 7, 15, 9, 0, 0);
+
+    // Confirming the SAME (unchanged) value repeatedly, as a user re-opening
+    // "Change entry time" and confirming without editing anything would,
+    // must never actually move the file — landing on its own current path
+    // (the "-2" slot) at attempt 2 of the free-name search means it is
+    // already correctly named, not merely "free".
+    await repo.renameEntryToMatch(file, at);
+    await repo.renameEntryToMatch(file, at);
+    await repo.renameEntryToMatch(file, at);
+
+    expect(file.path).toBe("Journal/2026/08/2026-08-15-09-00-00-2.md");
+    expect(calls).toBe(0);
+  });
+
+  it("bails without a second real move when the write throws after the file already landed at the target", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+    const target = new Date(2026, 7, 15, 9, 0, 0);
+    const realRename = fake.fileManager.renameFile.bind(fake.fileManager);
+
+    // Simulates a rename whose file move genuinely lands, but which still
+    // throws afterward (e.g. a later, unrelated link-rewrite step failing).
+    fake.fileManager.renameFile = async (f: any, path: string) => {
+      await realRename(f, path);
+      throw new Error("link rewrite failed");
+    };
+
+    const result = await repo.renameEntryToMatch(file, target);
+
+    expect(result).toBe(file);
+    expect(file.path).toBe("Journal/2026/08/2026-08-15-09-00-00.md");
+    expect(fake.vault.contents.get("Journal/2026/08/2026-08-15-09-00-00.md")).toBe("hello");
+  });
+
+  it("keeps a conventionally-named entry in its own custom subfolder, renaming the file only (Minor 3)", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/inbox/2026-08-12-22-41-52.md", "hello");
+
+    const result = await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
+
+    expect(result).toBe(file);
+    expect(file.path).toBe("Journal/inbox/2026-09-01-00-00-00.md");
+    expect(fake.vault.contents.get("Journal/inbox/2026-09-01-00-00-00.md")).toBe("hello");
+    // No YYYY/MM folder was created for this move: the entry never left its
+    // user-chosen subfolder.
+    expect([...fake.vault.folders]).not.toContain("Journal/2026/09");
+  });
+
+  it("keeps a conventionally-named entry directly under a flat journal root, renaming the file only", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
+
+    expect(file.path).toBe("Journal/2026-09-01-00-00-00.md");
+  });
 });

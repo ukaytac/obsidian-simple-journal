@@ -502,6 +502,56 @@ describe("JournalService: EntryRepository.setEntryCreated must not be a self-wri
   });
 });
 
+describe("JournalService: a rename following a created write settles to exactly one row (Important 2)", () => {
+  it("index ends up with exactly one entry, at the new path, after applyKnownEntry's immediate reposition is followed by the real rename event", () => {
+    // Mirrors the full sequence JournalView.commitEntryTimeChange drives:
+    // EntryRepository.setEntryCreated's write (not exercised at this level;
+    // see the describe block above), then the immediate, synchronous
+    // reposition via applyKnownEntry, THEN the real vault "rename" event
+    // EntryRepository.renameEntryToMatch's file move eventually triggers,
+    // debounced through the service like any other vault event. Regardless
+    // of what JournalView itself does with the individual changes emitted
+    // along the way (its own re-keying, covered separately), the service's
+    // own index must never end up holding this entry twice.
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`);
+    fake.metadataCache.frontmatter.set(file.path, { created: "2026-08-12T22:41:52+03:00" });
+    service.load();
+    const changes = collectChanges(service);
+
+    const correctedAt = new Date(2026, 8, 1, 0, 0, 0);
+    service.applyKnownEntry({ file, created: correctedAt });
+    expect(service.getEntries()).toHaveLength(1);
+
+    // The rename itself: Obsidian mutates the same TFile in place rather
+    // than handing back a new object, moving it into the new YYYY/MM folder
+    // and filename EntryRepository.renameEntryToMatch computed.
+    const oldPath = file.path;
+    const newPath = "Journal/2026/09/2026-09-01-00-00-00.md";
+    fake.vault.files.delete(oldPath);
+    file.path = newPath;
+    file.name = "2026-09-01-00-00-00.md";
+    file.basename = "2026-09-01-00-00-00";
+    fake.vault.files.set(newPath, file);
+    fake.vault.contents.set(newPath, fake.vault.contents.get(oldPath) ?? "");
+    fake.metadataCache.frontmatter.set(newPath, { created: formatCreatedProperty(correctedAt) });
+
+    fake.vault.trigger("rename", file, oldPath);
+    vi.advanceTimersByTime(300);
+
+    expect(service.getEntries()).toHaveLength(1);
+    expect(service.getEntries()[0].file.path).toBe(newPath);
+    expect(service.getEntries()[0].created.getTime()).toBe(correctedAt.getTime());
+    // The debounced batch reports the stale old path removed and the new
+    // path re-confirmed — "content", not a second "moved", since
+    // applyKnownEntry already applied this exact created value.
+    expect(changes).toEqual([
+      { kind: "removed", path: oldPath },
+      { kind: "content", entry: expect.objectContaining({ file }) },
+    ]);
+  });
+});
+
 describe("JournalService: unload", () => {
   it("stops a pending flush from ever running", () => {
     const { fake, service } = setup();

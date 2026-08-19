@@ -1126,19 +1126,56 @@ export class JournalView extends ItemView {
    * that lookup (`this.rendered` is still keyed at the OLD path — nothing
    * has re-keyed it yet) and read as nothing rendered there, inserting a
    * second, duplicate row alongside the one already on screen. Renaming
-   * after leaves that lookup untouched, and the eventual real vault
-   * "rename" event this triggers (reconciled by `applyChangesNow`'s
-   * "removed" handling once `JournalService` debounces it through) finds
-   * the entry already correctly positioned, at worst tearing down and
-   * re-inserting the same row from disk — see that handling's own doc.
+   * after leaves that lookup untouched.
    *
-   * `visiblePath` is captured before the move, and is what the fallback
-   * visibility check below reads — not `file.path` afterward. `file.path`
-   * mutates in place the instant the rename succeeds, but `this.rendered`
-   * only gets re-keyed to the new path once the debounced vault event
-   * above actually lands; checking `file.path` here would see the entry as
-   * "not yet rendered" under its new key and wrongly jump via `goToDate`
-   * even though the just-repositioned row is already on screen.
+   * If the rename actually moved the file, `this.rendered` is re-keyed
+   * IMMEDIATELY via `reKeyRenderedEntry`, right here — not left for the
+   * real vault "rename" event this call triggers, which `JournalService`
+   * only gets to ~300ms later (its own debounce). Left to that path, the
+   * eventual "removed"(old path)/upsert(new path) pair would — whenever the
+   * row isn't dirty, the common case — tear the current rendering down and
+   * reinsert a fresh one from disk (`applyChangesNow`'s "removed"
+   * handling), destroying the very editor `repositionIsNoOp`'s fast path
+   * above just went out of its way to keep mounted: caret, focus, and (for
+   * the embedded editor) CM6 undo history would all be lost on every time
+   * change, including the smallest same-day correction. Re-keying here
+   * instead makes the eventual real event redundant before it ever fires —
+   * `applyChangesNow` finds the row already at the new path and, per
+   * `decideChangeAction`, either no-ops (focused/dirty) or does a harmless
+   * content refresh, never a teardown.
+   *
+   * Deliberately NOT done via `JournalService.markSelfWrite`: that
+   * suppresses a "modify"/"changed" event for a write whose value the
+   * editor already reflects (see `setEntryCreated`'s doc on why it does
+   * NOT use this for the same reason in reverse) — it has nothing to do
+   * with "rename" events, which `JournalService`'s rename handler doesn't
+   * consult it for at all. Extending that handler to special-case a
+   * self-caused rename would mean touching the exact machinery an EXTERNAL
+   * rename also relies on, for no benefit: this view already knows both
+   * paths and can fix its own bookkeeping directly, leaving
+   * `JournalService` — and every external-rename path through it —
+   * completely untouched.
+   *
+   * `reKeyRenderedEntry` can decline (destination already occupied by an
+   * unrelated entry racing in during the rename's own await) — `visiblePath`
+   * is then left pointing at wherever the row actually still lives, which
+   * `reKeyRenderedEntry`'s own doc covers. The exact interleaving of
+   * Obsidian's real "rename" event relative to this synchronous re-key
+   * cannot be fully confirmed without a live Obsidian instance; what's
+   * verified here is that `JournalService`'s own debounce (a real 300ms
+   * timer) guarantees the event's processing happens well after this
+   * function has already returned, so the ordering this relies on holds
+   * regardless of exactly when Obsidian dispatches "rename" relative to
+   * `renameFile`'s promise resolving.
+   *
+   * `visiblePath` tracks whichever path this entry's rendering ACTUALLY
+   * lives under, not `file.path`: after a successful re-key it's updated to
+   * the new path; if the rename was a no-op, failed, or the re-key declined,
+   * it stays as originally captured. The fallback visibility check below
+   * reads this, not `file.path` directly — `file.path` mutates in place the
+   * instant the rename succeeds, which would otherwise make an already-
+   * visible (just re-keyed) row look "not yet rendered" and wrongly trigger
+   * a `goToDate` jump.
    *
    * A failed move is reported with its own Notice and left alone: the
    * `created` write already succeeded and the entry is already correctly
@@ -1168,7 +1205,7 @@ export class JournalView extends ItemView {
     await this.enqueueTimelineMutation(() => this.applyChangesNow([change]));
 
     if (this.closed) return;
-    const visiblePath = file.path;
+    let visiblePath = file.path;
 
     try {
       await this.plugin.repository.renameEntryToMatch(file, value);
@@ -1179,7 +1216,13 @@ export class JournalView extends ItemView {
       );
     }
 
-    if (this.closed || this.rendered.has(visiblePath)) return;
+    if (this.closed) return;
+
+    if (file.path !== visiblePath && this.reKeyRenderedEntry(visiblePath, file.path)) {
+      visiblePath = file.path;
+    }
+
+    if (this.rendered.has(visiblePath)) return;
 
     await this.goToDate(value);
     new Notice(`Moved entry to ${formatDayHeader(value)}, ${formatTime(value)}`);
@@ -1974,15 +2017,10 @@ export class JournalView extends ItemView {
             // it still logs this entry's text before it's dropped, rather
             // than silently destroying the other row.
             const newPath = rendered.entry.file.path;
-            if (!this.rendered.has(newPath)) {
-              this.rendered.delete(change.path);
-              this.rendered.set(newPath, rendered);
-              const mountIndex = this.mountOrder.indexOf(change.path);
-              if (mountIndex >= 0) this.mountOrder[mountIndex] = newPath;
-              rendered.el.dataset.path = newPath;
+            if (this.reKeyRenderedEntry(change.path, newPath)) {
               // `dayGroups` is untouched: a rename/move changes neither
               // `entry.created` nor which day group this element already
-              // sits in, only the path bookkeeping above.
+              // sits in, only the path bookkeeping `reKeyRenderedEntry` did.
               //
               // With `this.rendered` now correctly keyed at `newPath`, the
               // paired upsert due later in this SAME batch finds
@@ -2154,6 +2192,44 @@ export class JournalView extends ItemView {
       fileStillExists:
         this.app.vault.getAbstractFileByPath(rendered.entry.file.path) === rendered.entry.file,
     };
+  }
+
+  /**
+   * Re-keys `this.rendered` (and `mountOrder`/`el.dataset.path`) from
+   * `oldPath` to `newPath` in place, without touching the editor, DOM node,
+   * or day-group placement at all — the whole point being to make a rename
+   * a pure bookkeeping update, preserving whatever is currently mounted
+   * (focus, caret, CM6 undo history) exactly as `repositionIsNoOp`'s fast
+   * path already does for a same-position `created` correction.
+   *
+   * Shared by two callers: `applyChangesNow`'s "removed" handling (an
+   * external rename, re-keying a still-dirty entry so the batch's paired
+   * upsert doesn't insert a duplicate), and `commitEntryTimeChange` (this
+   * view's OWN `renameEntryToMatch` call, re-keyed immediately rather than
+   * waiting for that same external-rename machinery to rediscover it ~300ms
+   * later — see that method's doc for why waiting would cost the very
+   * focus/undo-history preservation this exists to protect).
+   *
+   * Guarded on the destination being free: `this.rendered.set` would
+   * otherwise silently overwrite whatever is ALREADY rendered at `newPath` —
+   * reachable within one debounce window if a different entry at that exact
+   * path is deleted while this rename lands first. That victim's DOM node
+   * and (if mounted) its still-polling editor would then be orphaned —
+   * unreachable from `this.rendered`, so nothing could ever tear it down; it
+   * would keep running for the rest of the session. Returns `false` in that
+   * case so the caller falls through to its own (safe) fallback instead.
+   */
+  private reKeyRenderedEntry(oldPath: string, newPath: string): boolean {
+    const rendered = this.rendered.get(oldPath);
+    if (!rendered) return false;
+    if (this.rendered.has(newPath)) return false;
+
+    this.rendered.delete(oldPath);
+    this.rendered.set(newPath, rendered);
+    const mountIndex = this.mountOrder.indexOf(oldPath);
+    if (mountIndex >= 0) this.mountOrder[mountIndex] = newPath;
+    rendered.el.dataset.path = newPath;
+    return true;
   }
 
   /**
