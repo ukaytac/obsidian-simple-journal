@@ -443,6 +443,78 @@
   background: transparent;
 }
 
+/* Day cells are real <button>s now (see CalendarView.renderGrid), so this
+   clashes with Obsidian's own button styling: `button:not(.clickable-icon)`
+   (background-color/box-shadow) and the bare `button` rule
+   (height/border-radius/font-weight) each carry one type-selector's worth of
+   specificity that the single class above doesn't clear — same problem
+   `.journal-entry-time` documents at the top of this file, same fix. The
+   `button` type requirement (rather than just piling on more classes) also
+   keeps this from matching the blank padding divs, which share the
+   `.journal-calendar-day` class but must stay non-interactive.
+   Grid-specific properties beyond that list — display, width, min-width,
+   aspect-ratio, align-items — are redeclared too: the plain rule above is
+   only a single class, so under this same button reset it would itself lose
+   any of those Obsidian happens to touch. Redeclaring them here rather than
+   trusting the plain rule keeps this block correct on its own. */
+.journal-calendar-days button.journal-calendar-day,
+.journal-calendar-days button.journal-calendar-day:hover,
+.journal-calendar-days button.journal-calendar-day.mobile-tap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--size-2-1);
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: 1;
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  height: auto;
+  border-radius: var(--radius-s);
+  font-weight: inherit;
+  font-size: inherit;
+  text-align: center;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  /* Unlike `.journal-entry-time`, nothing here is text the user is meant to
+     select (day number and dot are layout, not content) — the button
+     base's own `user-select: none` is already what we want, so this is
+     just making that explicit rather than overriding it. */
+  user-select: none;
+}
+
+/* The reset above sets `background-color: transparent` even for `:hover` —
+   this is the actual hover highlight, kept as its own rule (same
+   specificity, later in source) rather than folded into the block above, so
+   it reads the same way the plain-div hover rule near the top of this
+   section does. */
+.journal-calendar-days button.journal-calendar-day:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* The `box-shadow: none` above also erases Obsidian's own
+   `button:focus-visible` ring — without this, keyboard focus on a day cell
+   would have no visible indicator at all. Same variable Obsidian's own focus
+   rings use. */
+.journal-calendar-days button.journal-calendar-day:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+/* An empty day should read as a quiet, non-interactive date (see `is-empty`
+   above), not as a greyed-out disabled control — this overrides the UA
+   stylesheet's own disabled treatment (dimmed opacity, `not-allowed`
+   cursor) so disabling it doesn't pile a second kind of "disabled" look on
+   top of `is-empty`'s own dimming. */
+.journal-calendar-days button.journal-calendar-day:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
 .journal-calendar-day-number {
   font-size: var(--font-ui-small);
   font-variant-numeric: tabular-nums;

@@ -136,9 +136,24 @@ export class CalendarView extends ItemView {
       const hasEntries = entryDays.has(key);
       const isToday = key === todayKey;
 
-      const dayEl = daysEl.createDiv({ cls: "journal-calendar-day" });
+      // A real <button>, not a div+click: it needs no extra wiring to be
+      // reachable by keyboard and to activate on Enter/Space, and `disabled`
+      // below both blocks the click and removes it from the tab order for
+      // free — the same reasoning as `.journal-entry-time` in JournalView's
+      // `createEntryEl`. The dot marks which days hold something; landing on
+      // a dotless day two months into the past (see goToDateInJournal) broke
+      // that affordance, so a day with no entries is disabled rather than
+      // merely styled as empty. `type="button"` only to keep it inert if
+      // this element ever ends up inside a <form>.
+      const dayEl = daysEl.createEl("button", {
+        cls: "journal-calendar-day",
+        attr: { type: "button" },
+      });
       if (isToday) dayEl.addClass("is-today");
-      if (!hasEntries) dayEl.addClass("is-empty");
+      if (!hasEntries) {
+        dayEl.addClass("is-empty");
+        dayEl.disabled = true;
+      }
 
       dayEl.createDiv({ cls: "journal-calendar-day-number", text: String(cell.getDate()) });
       // Always present, not conditionally created — an entryless day's dot
