@@ -216,15 +216,16 @@ created: 2026-08-12T17:23:41+03:00
 ---
 ```
 
-Then immediately the journal content:
+Then immediately the journal content, with no blank line in between:
 
 ```markdown
 ---
 created: 2026-08-12T17:23:41+03:00
 ---
-
 Today I realized...
 ```
+
+An entry created before this convention (or by an older build of the plugin) may have a blank line between the closing `---` and its text. That entry keeps whatever it already has — the plugin never rewrites an existing entry's separator, only refrains from adding one to a new entry.
 
 No heading is required.
 

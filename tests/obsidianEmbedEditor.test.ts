@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 import type { App, TFile } from "obsidian";
 import { ObsidianEmbedEditor } from "../src/views/ObsidianEmbedEditor";
-import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
+import { preserveSeparator, replaceBody, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
 
 /**
  * Same rationale as tests/textareaEditor.test.ts: plain jsdom has neither
@@ -208,7 +208,8 @@ const SEEDED_DOC =
 // file's top-of-file doc comment), so a hand-typed constant here would
 // silently drift from what the translation layer actually produces.
 const SEEDED_FRONTMATTER = splitFrontmatter(SEEDED_DOC).frontmatter;
-const SEEDED_BODY = stripSeparator(SEEDED_FRONTMATTER, splitFrontmatter(SEEDED_DOC).body);
+const SEEDED_RAW_BODY = splitFrontmatter(SEEDED_DOC).body;
+const SEEDED_BODY = stripSeparator(SEEDED_FRONTMATTER, SEEDED_RAW_BODY);
 
 function fakeFile(): TFile {
   return { path: "Journal/2026/01/entry.md" } as unknown as TFile;
@@ -370,10 +371,13 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
     const newBody = "DIFFERENT SEED.\n";
     editor.mount(container, fakeFile(), newBody);
 
-    // Frontmatter survives the correction; only the body changed. The
-    // separator restoreSeparator adds back is what makes this the canonical
-    // "blank line then text" shape, not just frontmatter-then-text.
-    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, restoreSeparator(SEEDED_FRONTMATTER, newBody)));
+    // Frontmatter survives the correction; only the body changed. SEEDED_DOC
+    // already has a blank-line separator, so preserveSeparator keeps it —
+    // the canonical "blank line then text" shape, not just
+    // frontmatter-then-text.
+    expect(getDoc()).toBe(
+      replaceBody(SEEDED_DOC, preserveSeparator(SEEDED_FRONTMATTER, SEEDED_RAW_BODY, newBody)),
+    );
     expect(editor.getValue()).toBe(newBody);
   });
 
@@ -386,7 +390,9 @@ describe("ObsidianEmbedEditor: the body/document translation", () => {
     const newBody = "REPLACED BODY.\n";
     editor.setValue(newBody);
 
-    expect(getDoc()).toBe(replaceBody(SEEDED_DOC, restoreSeparator(SEEDED_FRONTMATTER, newBody)));
+    expect(getDoc()).toBe(
+      replaceBody(SEEDED_DOC, preserveSeparator(SEEDED_FRONTMATTER, SEEDED_RAW_BODY, newBody)),
+    );
     expect(editor.getValue()).toBe(newBody);
   });
 

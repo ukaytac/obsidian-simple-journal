@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  preserveSeparator,
   replaceBody,
-  restoreSeparator,
   setCreatedProperty,
   splitFrontmatter,
   stripSeparator,
@@ -105,6 +105,12 @@ const invariantTable: Array<[string, string]> = [
     "YAML block scalar containing an indented line equal to ---",
     "---\ndescription: |\n  ---\nreal: value\n---\nBody\n",
   ],
+  // New-entry shape (no blank-line separator at all) and an existing entry
+  // whose body genuinely starts with a blank line the user typed — both must
+  // keep round-tripping byte-for-byte through the byte-exact layer,
+  // regardless of what the convention layer above it does with separators.
+  ["frontmatter immediately followed by body, no separator (the new-entry shape)", "---\ncreated: x\n---\nBody, no separator.\n"],
+  ["frontmatter, one separator line, then a body that itself starts with a blank line", "---\ncreated: x\n---\n\n\nBody after two blank lines.\n"],
 ];
 
 describe("splitFrontmatter invariant", () => {
@@ -157,45 +163,51 @@ describe("stripSeparator", () => {
   });
 });
 
-describe("restoreSeparator", () => {
-  it("restores an LF separator when frontmatter ends in LF", () => {
-    expect(restoreSeparator("---\ncreated: x\n---\n", "Body.\n")).toBe("\nBody.\n");
+describe("preserveSeparator", () => {
+  it("preserves an existing LF separator", () => {
+    expect(preserveSeparator("---\ncreated: x\n---\n", "\nOld body.\n", "New body.\n")).toBe(
+      "\nNew body.\n",
+    );
   });
 
-  it("restores a CRLF separator when frontmatter ends in CRLF", () => {
-    expect(restoreSeparator("---\r\ncreated: x\r\n---\r\n", "Body.\r\n")).toBe("\r\nBody.\r\n");
+  it("preserves an existing CRLF separator", () => {
+    expect(
+      preserveSeparator("---\r\ncreated: x\r\n---\r\n", "\r\nOld body.\r\n", "New body.\n"),
+    ).toBe("\r\nNew body.\n");
   });
 
-  it("restores a CRLF separator when the closing delimiter is at EOF with no trailing newline of its own", () => {
-    // Regression case: `endsWith("\r\n")` would be false here (the block ends
-    // in bare "---", not a newline), wrongly falling back to LF and
-    // introducing a bare LF into an otherwise all-CRLF file. `includes`
-    // finds the CRLF earlier in the block instead.
-    const frontmatter = "---\r\ncreated: x\r\n---";
-    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\r\nBody.\n");
+  it("adds no separator when the existing body has none — the new-entry shape", () => {
+    // This is the core of the fix: EntryRepository.createEntry no longer
+    // writes a blank line for a brand-new entry, and this function must not
+    // reintroduce one just because frontmatter is present.
+    expect(preserveSeparator("---\ncreated: x\n---\n", "Old body, no separator.\n", "New body.\n")).toBe(
+      "New body.\n",
+    );
   });
 
-  it("restores an LF separator when the closing delimiter is at EOF with no CRLF anywhere in the block", () => {
-    const frontmatter = "---\ncreated: x\n---";
-    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\nBody.\n");
+  it("treats a completely empty existing body as having no separator", () => {
+    // A freshly created entry with no seeded body at all (createEntry(at)):
+    // its first real write must not gain a separator it never had.
+    expect(preserveSeparator("---\ncreated: x\n---\n", "", "New body.\n")).toBe("New body.\n");
   });
 
-  it("restores a CRLF separator for a block with mixed line endings, even though it ends in a bare LF", () => {
-    // A property line uses CRLF but the closing delimiter's own trailing
-    // newline is bare LF: `endsWith("\r\n")` would be false and wrongly pick
-    // LF; `includes` finds the CRLF used earlier in the block instead.
-    const frontmatter = "---\ncreated: x\r\n---\n";
-    expect(restoreSeparator(frontmatter, "Body.\n")).toBe("\r\nBody.\n");
+  it("still preserves the separator ahead of an empty new body, when the existing body had one", () => {
+    expect(preserveSeparator("---\ncreated: x\n---\n", "\nOld body.\n", "")).toBe("\n");
   });
 
-  it("returns the body untouched when there is no frontmatter at all", () => {
-    expect(restoreSeparator("", "Body.\n")).toBe("Body.\n");
+  it("returns newBody untouched when there is no frontmatter at all", () => {
+    expect(preserveSeparator("", "Old body.\n", "New body.\n")).toBe("New body.\n");
   });
 
-  it("still adds the separator ahead of an empty body when frontmatter is present", () => {
-    // Unlike stripSeparator, an empty body is not "nothing to restore": a
-    // brand-new entry's empty body still gets the conventional blank line.
-    expect(restoreSeparator("---\ncreated: x\n---\n", "")).toBe("\n");
+  it("preserves only one of two existing leading blank lines, treating the second as part of the preserved separator flavour check, not double-adding it", () => {
+    // The existing body has a separator AND the user's own extra blank line
+    // ("\n\nBody"): preserveSeparator only ever adds back ONE separator
+    // newline (matching whatever the existing body starts with), regardless
+    // of how many blank lines followed it — it is not stripSeparator's job
+    // to re-derive here.
+    expect(preserveSeparator("---\ncreated: x\n---\n", "\n\nOld body.\n", "\nNew body.\n")).toBe(
+      "\n\nNew body.\n",
+    );
   });
 });
 

@@ -1,5 +1,5 @@
 import type { App, TFile } from "obsidian";
-import { replaceBody, restoreSeparator, splitFrontmatter, stripSeparator } from "../journal/markdownDoc";
+import { preserveSeparator, replaceBody, splitFrontmatter, stripSeparator } from "../journal/markdownDoc";
 import type { EntryEditor } from "./EntryEditor";
 
 /**
@@ -40,18 +40,22 @@ import type { EntryEditor } from "./EntryEditor";
  * itself, and every `EntryEditor` method translates at the boundary:
  *
  *   - `getValue()`      -> `stripSeparator(frontmatter, splitFrontmatter(editMode.get()).body)`
- *   - `setValue(body)`  -> `editMode.set(replaceBody(editMode.get(), restoreSeparator(frontmatter, body)), false)`
+ *   - `setValue(body)`  -> `editMode.set(replaceBody(editMode.get(), preserveSeparator(frontmatter, existingBody, body)), false)`
  *
  * This keeps the embed's buffer in the shape it expects (nothing fights it),
  * and keeps every `EntryEditor` consumer body-only, separator-free. The
  * delicate frontmatter-guard bookkeeping below (`mountedFrontmatter`,
  * `lastRawBody`) stays entirely in the raw, byte-exact convention throughout —
  * only `readBody()`'s return value and `writeBody()`'s parameter cross the
- * translation, at the very edge. `replaceBody` round-trips correctly even
- * when there is no frontmatter block at all (a user-stripped file):
- * `splitFrontmatter` reports an empty frontmatter string, `stripSeparator`/
- * `restoreSeparator` are no-ops for an empty frontmatter, and `replaceBody`
- * then returns the body unchanged.
+ * translation, at the very edge. `preserveSeparator` doesn't invent a
+ * separator: it preserves whatever the embed's OWN current buffer already
+ * has (no blank line for a newly created entry, one for an existing entry
+ * that already had it), matching `EntryRepository.writeBody`'s contract
+ * exactly. `replaceBody` round-trips correctly even when there is no
+ * frontmatter block at all (a user-stripped file): `splitFrontmatter`
+ * reports an empty frontmatter string, `stripSeparator`/`preserveSeparator`
+ * are no-ops for an empty frontmatter, and `replaceBody` then returns the
+ * body unchanged.
  *
  * ## Self-reload: why onFileChanged is neutralised too
  *
@@ -462,9 +466,11 @@ export class ObsidianEmbedEditor implements EntryEditor {
 
   /**
    * Translates a public, separator-stripped body into a full-document
-   * `set()`, per the boundary contract above: the separator is restored (in
-   * whichever newline flavour the buffer's own frontmatter already ends in)
-   * before handing the result to `replaceBody`.
+   * `set()`, per the boundary contract above: whatever separator the
+   * buffer's OWN current content already has (read fresh off `raw` — none
+   * for a newly created entry, one for an existing entry that already had
+   * it) is preserved ahead of `body`, never imposed, before handing the
+   * result to `replaceBody`.
    *
    * Also refreshes `lastRawBody` to match, here rather than at each call
    * site (`mount()`, `setValue()`): this is the one place that already
@@ -479,8 +485,8 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private writeBody(body: string): void {
     try {
       const raw = this.embed?.editMode?.get?.() ?? "";
-      const { frontmatter } = splitFrontmatter(raw);
-      const rawBody = restoreSeparator(frontmatter, body);
+      const { frontmatter, body: existingBody } = splitFrontmatter(raw);
+      const rawBody = preserveSeparator(frontmatter, existingBody, body);
       this.embed?.editMode?.set?.(replaceBody(raw, rawBody), false);
       this.lastRawBody = rawBody;
     } catch (error) {

@@ -181,10 +181,20 @@ describe("createEntry", () => {
 
     const data = fake.vault.contents.get(file.path) ?? "";
     expect(data.startsWith('---\ncreated: "2026-08-12T22:41:52')).toBe(true);
-    // Exactly one blank-line separator between the frontmatter and the body
-    // — not two (the naive `\n${body}` bug the plan corrections call out).
-    expect(data.endsWith("---\n\nHello there.")).toBe(true);
+    // No blank line between the closing delimiter and the body: CLAUDE.md's
+    // storage format for a NEW entry has none. Only pre-existing entries
+    // written before this fix carry one.
+    expect(data.endsWith("---\nHello there.")).toBe(true);
     expect(await repo.readBody(file)).toBe("Hello there.");
+  });
+
+  it("writes a new entry with no blank line between the frontmatter and the body", async () => {
+    const { fake, repo } = setup();
+    const file = await repo.createEntry(new Date(2026, 7, 12, 22, 41, 52), "Test 123");
+
+    const data = fake.vault.contents.get(file.path) ?? "";
+    expect(data).not.toContain("---\n\n");
+    expect(data.endsWith("---\nTest 123")).toBe(true);
   });
 
   it("an empty (default) body round-trips as the same empty document createEntry() always wrote", async () => {
@@ -315,22 +325,48 @@ describe("readBody and writeBody", () => {
     expect(fake.vault.contents.get(file.path)).toBe(original);
   });
 
-  it("adds the conventional blank line back on save when the file has none (intended normalization, not a bug)", async () => {
+  it("a body whose first line is genuinely blank survives an edit-then-read round trip", async () => {
+    const { fake, repo } = setup();
+    const original = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nOriginal.\n`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    const withGenuineBlankFirstLine = "\nStarts with a blank line the user actually typed.\n";
+    await repo.writeBody(file, withGenuineBlankFirstLine);
+
+    expect(await repo.readBody(file)).toBe(withGenuineBlankFirstLine);
+  });
+
+  it("preserves a file with no blank line as having none (never imposes the separator)", async () => {
     const { fake, repo } = setup();
     // No blank line between the closing delimiter and the text — the shape
-    // this plugin wrote before this fix.
+    // a NEW entry is now written in (and also the shape a file written by an
+    // older build of this plugin, before this fix, might have).
     const noBlankLine = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\nToday I realized something.\n`;
     const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", noBlankLine);
 
     const readBack = await repo.readBody(file);
     expect(readBack).toBe("Today I realized something.\n");
 
-    await repo.writeBody(file, readBack);
+    await repo.writeBody(file, "Rewritten, still no separator.\n");
 
-    // The next save restores the Obsidian convention rather than
-    // perpetuating the deviation from it.
+    // writeBody must never impose a separator the file didn't already have —
+    // CLAUDE.md's "never rewrite or normalize frontmatter this plugin does
+    // not own" applies to this blank line exactly as it does to any other
+    // byte outside the body.
     expect(fake.vault.contents.get(file.path)).toBe(
-      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nToday I realized something.\n`,
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\nRewritten, still no separator.\n`,
+    );
+  });
+
+  it("keeps an existing entry's blank line when its body is edited to different text", async () => {
+    const { fake, repo } = setup();
+    const original = `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nOriginal text.\n`;
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", original);
+
+    await repo.writeBody(file, "Edited text.\n");
+
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n\nEdited text.\n`,
     );
   });
 
@@ -361,11 +397,15 @@ describe("readBody and writeBody", () => {
 
   it("round-trips unicode and Turkish characters", async () => {
     const { fake, repo } = setup();
+    // No blank line in the fixture: this is the new-entry shape
+    // (`createEntry`'s empty-body template), so `text` must not start with
+    // one either — see the dedicated "genuinely blank first line" test above
+    // for that separate case, which uses a file that already has a separator.
     const file = fake.vault.addFile(
       "Journal/2026/08/2026-08-12-22-41-52.md",
       `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
     );
-    const text = "\nİstanbul'da yağmur yağıyordu — ışıklar süzülüyordu. 🌧️\n";
+    const text = "İstanbul'da yağmur yağıyordu — ışıklar süzülüyordu. 🌧️\n";
 
     await repo.writeBody(file, text);
     expect(await repo.readBody(file)).toBe(text);
@@ -377,7 +417,7 @@ describe("readBody and writeBody", () => {
       "Journal/2026/08/2026-08-12-22-41-52.md",
       `---\ncreated: 2026-08-12T22:41:52+03:00\n---\n`,
     );
-    const text = "\nSee [[Some Note|alias]] and **bold** and `code`.\n\n- item\n";
+    const text = "See [[Some Note|alias]] and **bold** and `code`.\n\n- item\n";
 
     await repo.writeBody(file, text);
     expect(await repo.readBody(file)).toBe(text);

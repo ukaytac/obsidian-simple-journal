@@ -3,8 +3,8 @@ import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
 import {
   hasCreatedLine,
+  preserveSeparator,
   replaceBody,
-  restoreSeparator,
   setCreatedProperty,
   splitFrontmatter,
   stripSeparator,
@@ -196,6 +196,13 @@ export class EntryRepository {
    * matters for the composer's lazy-creation flow (the first meaningful
    * keystroke commits the file). Never overwrites: a name taken by an entry
    * written in the same second gets a numeric suffix.
+   *
+   * Deliberately writes NO blank line between the closing `---` and `body`:
+   * CLAUDE.md's storage format for a new entry is frontmatter immediately
+   * followed by text, with nothing in between. Only pre-existing entries
+   * (written before this, or by an older build) carry that blank line — this
+   * plugin never adds one to a file that didn't already have it; see
+   * `writeBody` and `preserveSeparator`.
    */
   async createEntry(at: Date, body = ""): Promise<TFile> {
     const folder = entryFolderPath(this.resolveFolder().resolved, at);
@@ -203,7 +210,7 @@ export class EntryRepository {
 
     const stem = formatEntryFilename(at);
     const frontmatter = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n`;
-    const contents = frontmatter + restoreSeparator(frontmatter, body);
+    const contents = frontmatter + body;
 
     return this.withFreeName(folder, stem, (path) => this.app.vault.create(path, contents));
   }
@@ -405,18 +412,20 @@ export class EntryRepository {
 
   /**
    * Replaces the entry text. Frontmatter is preserved exactly, and the
-   * blank-line separator `readBody` stripped is restored before the write —
-   * in whichever newline flavour (`\n`/`\r\n`) the file's frontmatter already
-   * uses, so a CRLF file is never converted. If the file being written to
-   * currently lacks that blank line (in particular, one written by an
-   * older build of this plugin before this fix, or a file the last save left
-   * in that shape), this *adds* it: that's intended, not a bug — it restores
-   * the Obsidian convention rather than perpetuating a deviation from it.
+   * blank-line separator `readBody` stripped is preserved across the write —
+   * in whichever newline flavour (`\n`/`\r\n`) the file already used — rather
+   * than imposed. If the file being written to currently has no such blank
+   * line (in particular, a newly created entry, which `createEntry` writes
+   * without one), none is added: CLAUDE.md's "never rewrite or normalize
+   * frontmatter this plugin does not own" applies to the separator too, not
+   * only to the properties inside the block. An existing entry that already
+   * has its blank line keeps it, byte for byte, no matter how many times its
+   * body is rewritten.
    */
   async writeBody(file: TFile, body: string): Promise<void> {
     await this.app.vault.process(file, (data) => {
-      const { frontmatter } = splitFrontmatter(data);
-      return replaceBody(data, restoreSeparator(frontmatter, body));
+      const { frontmatter, body: existingBody } = splitFrontmatter(data);
+      return replaceBody(data, preserveSeparator(frontmatter, existingBody, body));
     });
   }
 

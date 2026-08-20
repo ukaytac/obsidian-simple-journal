@@ -6,14 +6,17 @@
 //     protects a user's arbitrary frontmatter — it must never be changed to
 //     "help" a caller, and its round-trip guarantee holds regardless of
 //     anything below.
-//   - The convention layer: `stripSeparator`/`restoreSeparator`. These know
-//     one extra fact the byte-exact layer deliberately doesn't: a
-//     conventional entry has exactly one blank line between the closing
-//     `---` and its text, and that line is a separator, not content. They
+//   - The convention layer: `stripSeparator`/`preserveSeparator`. These know
+//     one extra fact the byte-exact layer deliberately doesn't: an entry MAY
+//     have exactly one blank line between the closing `---` and its text,
+//     and when it does, that line is a separator, not content. A newly
+//     created entry (`EntryRepository.createEntry`) is written WITHOUT that
+//     blank line; an existing entry keeps whatever it already has — this
+//     layer's job is to preserve that choice, never to impose one. They
 //     exist so callers (EntryRepository, ObsidianEmbedEditor) can work in a
 //     body-without-separator convention without each reimplementing the same
 //     one-newline-wide rule. Nothing here changes what `splitFrontmatter`/
-//     `replaceBody` themselves consider "the body" — the stripping/restoring
+//     `replaceBody` themselves consider "the body" — the stripping/preserving
 //     happens entirely on the caller's side of the byte-exact boundary.
 
 export interface SplitDocument {
@@ -74,7 +77,7 @@ export function replaceBody(data: string, body: string): string {
  * returned untouched — the document's first newline is then part of the
  * content, not a separator, since there is no separator to speak of.
  *
- * This and `restoreSeparator` are the only functions that know the separator
+ * This and `preserveSeparator` are the only functions that know the separator
  * is exactly one newline wide. `splitFrontmatter`/`replaceBody` themselves
  * stay byte-exact and are never called with anything but the whole document.
  */
@@ -86,24 +89,37 @@ export function stripSeparator(frontmatter: string, body: string): string {
 }
 
 /**
- * The inverse of `stripSeparator`: restores exactly one newline of separator
- * ahead of `body`, in whichever newline flavour `frontmatter` uses — `\r\n`
- * if the block contains one anywhere, `\n` otherwise. Checked with
- * `includes`, not `endsWith`: the closing delimiter can sit at EOF with no
- * trailing newline of its own (`---\r\ncreated: x\r\n---`, the rare case a
- * user's last edit left with no final newline at all), and `endsWith` would
- * then miss the `\r\n` earlier in the block and wrongly fall back to `\n`,
- * introducing a bare LF into an otherwise all-CRLF file. Returns `body`
- * unchanged when `frontmatter` is empty, so a file with no frontmatter block
- * is never given one.
+ * Preserves whatever separator `existingBody` already has ahead of `newBody`,
+ * rather than imposing one. `existingBody` is the body half of
+ * `splitFrontmatter` on the document exactly as it stood on disk BEFORE this
+ * write. If it already starts with a blank-line separator — `\r\n` or `\n` —
+ * that same separator is kept ahead of `newBody`; if it doesn't (in
+ * particular, a brand-new entry, which `EntryRepository.createEntry` now
+ * writes with no separator at all), none is added.
+ *
+ * This function used to be `restoreSeparator` and unconditionally invented a
+ * separator from `frontmatter`'s own newline flavour — appropriate when
+ * every entry this plugin wrote was guaranteed to have one. That guarantee
+ * no longer holds: CLAUDE.md's storage format for a NEW entry has no blank
+ * line, and an existing entry's separator (or lack of one) is exactly the
+ * kind of byte this plugin must never normalize out from under a user. So
+ * this now preserves what is already there instead of choosing for the
+ * caller — the separator itself is read directly off `existingBody`, which
+ * makes sniffing `frontmatter` for a newline flavour unnecessary: whatever
+ * separator bytes exist are already sitting in `existingBody` to copy.
+ *
+ * Returns `newBody` unchanged when `frontmatter` is empty — there is no
+ * separator concept to preserve when there's no frontmatter block at all.
  *
  * Pass the result to `replaceBody`, not straight to disk: `replaceBody` still
  * owns inserting the newline that keeps the delimiter from fusing with the
  * body when frontmatter itself has no trailing newline.
  */
-export function restoreSeparator(frontmatter: string, body: string): string {
-  if (!frontmatter) return body;
-  return (frontmatter.includes("\r\n") ? "\r\n" : "\n") + body;
+export function preserveSeparator(frontmatter: string, existingBody: string, newBody: string): string {
+  if (!frontmatter) return newBody;
+  if (existingBody.startsWith("\r\n")) return `\r\n${newBody}`;
+  if (existingBody.startsWith("\n")) return `\n${newBody}`;
+  return newBody;
 }
 
 // Matches a top-level `created` property line: anchored to the start of a
