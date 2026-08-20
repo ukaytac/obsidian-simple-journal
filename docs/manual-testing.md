@@ -5,6 +5,11 @@ UI, focus, timing, or rendering behaviour that the unit tests' mocks and
 pure-logic extraction can't observe. Run this list against a scratch vault
 before every release, on desktop and on mobile.
 
+**Checks still open are collected in `docs/manual-testing-open.md`**, grouped
+into sessions by what each needs — a desktop, a phone, a theme, a screen
+reader. This file and the editor one keep the reasoning and the record of what
+has already been verified; that one is the working list.
+
 See also `docs/manual-testing-editor.md` for checks scoped to the two
 `EntryEditor` implementations themselves (`TextareaEditor` resize behaviour,
 and `ObsidianEmbedEditor`'s external-write and editing-fidelity questions).
@@ -268,7 +273,7 @@ behaviour (search/backlinks/graph, live preview, the actual save/trash APIs).
 - [ ] **Same-second entries.** Run **New journal entry** twice within one
       second and type in both. Two files exist, the second suffixed `-2`, and
       neither overwrote the other.
-- [ ] **New entry appears at the top.** Run **New journal entry** and type.
+- [x] **New entry appears at the top.** — verified 19–20 Aug 2026, Obsidian 1.8.9 desktop. The composer opens under today's header above every existing entry, and a committed entry (`Journal/2026/08/2026-08-18-18-12-21.md`) was written with the right filename, a single quoted `created`, and no heading. Run **New journal entry** and type.
       The entry appears above every other entry from today.
 - [ ] **Loading older entries does not disturb scroll position.** Scroll down
       until a page of older entries loads. The content under the cursor does

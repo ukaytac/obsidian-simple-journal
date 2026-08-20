@@ -100,7 +100,7 @@ checklist exists to answer, not a mechanism to verify:
 
 ## ObsidianEmbedEditor: editing fidelity
 
-- [ ] **`[[` autocomplete.** Type `[[` inside an entry. The real Obsidian
+- [x] **`[[` autocomplete.** — verified 17 Aug 2026 during the embed-API spike: typing `[[` opened Obsidian's real link suggester, listing actual vault files with the "Type # to link to a heading" hint (screenshot on file). Scope note: exercised against a probe embed built by the same `embedRegistry` mechanism, not against an entry mounted in the timeline. Worth one confirming look in a timeline entry. Type `[[` inside an entry. The real Obsidian
       link suggester appears and lists actual vault files (not a plain-text
       fallback), including the "Type # to link to a heading" hint.
 - [ ] **Live preview.** Markdown syntax (headings, bold/italic, lists, code
@@ -109,7 +109,7 @@ checklist exists to answer, not a mechanism to verify:
 
 ## ObsidianEmbedEditor: no titles, no renaming (CLAUDE.md "no titles" rule)
 
-- [ ] **No title or properties panel visible.** Open an entry with several
+- [x] **No title or properties panel visible.** — verified 19–20 Aug 2026 from timeline screenshots: entries render as timestamp plus body only, with no inline title and no properties panel, on the default light theme. Open an entry with several
       frontmatter properties (e.g. `created` plus a couple of extra keys).
       Neither the note's inline title nor a properties/metadata panel is
       visible anywhere in the timeline entry — only the body text and its
