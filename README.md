@@ -49,16 +49,38 @@ added. Two entries created in the same second get a numeric suffix
 | `Open journal` | Opens the timeline (also available from the ribbon icon) |
 | `New journal entry` | Returns to today and focuses a fresh entry |
 | `Go to today` | Scrolls the timeline back to the top |
+| `Open calendar` | Reveals the calendar in the sidebar |
+
+`obsidian://simple-journal-new` starts a new entry too, so a phone
+home-screen shortcut can capture a thought in one tap.
 
 An entry is not written to disk until you actually type something in a fresh
 composer — an empty composer that never receives text leaves no file behind.
 
+## Calendar
+
+A compact month calendar sits in the right sidebar, placed there automatically.
+Days that hold entries are marked with a dot; today is emphasised. Only marked
+days are clickable — an empty square does nothing, because being thrown months
+back by an accidental tap is worse than nothing happening.
+
+Clicking a day **anchors** the timeline to it: that day and everything older.
+It anchors rather than filters, so the journal stays one continuous timeline
+that you can keep scrolling into the past.
+
 ## Entry actions
 
 Hover an entry (or long-press it on mobile) to reveal its actions menu:
-open the source note, copy a link to the entry, or delete it. Deletion goes
-through Obsidian's own trash/delete-confirmation flow, so it respects your
-vault's configured trash behaviour.
+open the source note, copy a link to the entry, change its time, or delete it.
+Deletion goes through Obsidian's own trash/delete-confirmation flow, so it
+respects your vault's configured trash behaviour.
+
+**Change entry time** exists because the timestamp is what places an entry in
+the timeline, and the timeline deliberately hides the properties panel — so a
+wrong timestamp would otherwise have no remedy from where you are reading. It
+rewrites only the `created` property, leaving every other property you have
+added exactly as it was, and renames the file to match when the file still
+follows the plugin's own naming convention.
 
 ## Settings
 

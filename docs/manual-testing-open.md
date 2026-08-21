@@ -16,6 +16,23 @@ what is still open.
 
 ---
 
+## Status before the 1.0.0 release
+
+The author reported running these sessions and finding them all passing on
+2026-08-21, mobile included, ahead of tagging 1.0.0. Per-item evidence was not
+recorded, so the individual boxes below are left unticked on purpose: they mark
+what a future regression hunt should **re-run** rather than trust. `manual-testing.md`
+and `manual-testing-editor.md` are the files where a check is ticked only
+alongside the evidence for it.
+
+Session C stays worth re-reading in particular. Nothing in the mobile code had
+run on a device when it was written, and its two timings — 300 ms for the
+keyboard, 500 ms for the long press — were guesses. A device pass that says
+"fine" is weaker evidence than one that says "the long press feels slow", so if
+anything felt off, it is worth writing down here rather than remembering.
+
+---
+
 ## Session A — desktop, the ones that matter most (~15 min)
 
 Failure in any of these is a real defect, not a rough edge.
