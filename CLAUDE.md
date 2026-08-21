@@ -468,7 +468,7 @@ product. A single-day filter was considered and rejected for that reason.
 
 ## Reaching capture from outside Obsidian
 
-`obsidian://journal-new` opens a new entry, so a phone home-screen shortcut or
+`obsidian://simple-journal-new` opens a new entry, so a phone home-screen shortcut or
 any other launcher can capture a thought in one tap. It runs the same path as
 the command and the ribbon icon; nothing about capture is duplicated for it.
 

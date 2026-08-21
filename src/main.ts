@@ -77,7 +77,7 @@ export default class JournalEntriesPlugin extends Plugin {
     });
 
     // Lets a phone home-screen shortcut (or any other launcher) capture a
-    // thought in one tap: `obsidian://journal-new` reuses the exact same
+    // thought in one tap: `obsidian://simple-journal-new` reuses the exact same
     // path as the command/ribbon icon below, just triggered externally.
     //
     // `onLayoutReady` covers the URI arriving before the workspace has
@@ -95,11 +95,11 @@ export default class JournalEntriesPlugin extends Plugin {
     // that vault doesn't have this plugin enabled, nothing here ever runs —
     // there is no hook available to detect or redirect that case from
     // inside a single vault's plugin instance.
-    this.registerObsidianProtocolHandler("journal-new", () => {
+    this.registerObsidianProtocolHandler("simple-journal-new", () => {
       this.app.workspace.onLayoutReady(() => {
         this.newEntry().catch((error) => {
           console.error(
-            "Simple Journal: could not create a new entry from the obsidian://journal-new link",
+            "Simple Journal: could not create a new entry from the obsidian://simple-journal-new link",
             error,
           );
           new Notice(
