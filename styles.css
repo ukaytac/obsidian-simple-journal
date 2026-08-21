@@ -599,27 +599,37 @@
    text sat right of its own timestamp on desktop and a huge blank band appeared
    above it on mobile.
    ---
-   `!important` is deliberate here, and it is the one place in this stylesheet
-   that uses it. The usual advice — raise specificity instead — cannot work,
-   for three measured reasons:
-   1. Obsidian 1.8.9's app.css carries 28 rules that set the box of these very
-      elements, reaching (0,8,0), and some of them are themselves `!important`.
-      Nothing outranks `!important` by specificity.
-   2. CodeMirror injects its own base styles into the document at runtime.
-      They are not in app.css, so they cannot be enumerated ahead of time.
-   3. The remaining opponents are third-party and unbounded. Minimal alone adds
-      11 more rules against these same elements, with selectors like
-      `body :not(.canvas-node) .markdown-source-view.mod-cm6 .cm-gutters`. Any
-      theme a user installs can add more. A specificity race against CSS this
-      plugin neither controls nor can count is unwinnable by construction.
+   `!important` is deliberate here, and these seven are the only ones in this
+   stylesheet. The usual advice — raise specificity instead — was measured
+   against Obsidian 1.8.9's app.css and four installed themes, per declaration,
+   for exactly the elements and properties reset below:
+
+     to outrank every opposing rule, ours must exceed  (0,10,0)
+       (app.css, `.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(…)
+        :has(>br:only-child) + .cm-line.HyperMD-header { padding-top }`)
+     the deepest real ancestor chain available to us:  (0,4,0)
+       (`.journal-timeline .journal-entry-body .journal-entry-embed .cm-sizer`)
+     opposing rules using !important:                  none
+
+   So specificity *can* win in principle — nothing opposing is `!important` —
+   but not at any specificity this plugin can reach honestly. Closing a
+   six-class gap means padding selectors with repeated `:is(.journal-entry-embed)`
+   purely to inflate the count. That defeats the lint rule rather than its
+   purpose, reads far worse, and is strictly less robust than what is here: it
+   still loses to the first theme that reaches for `!important`, and themes are
+   third-party and unbounded. CodeMirror's own base styles are injected at
+   runtime and are not in app.css either, so they cannot be enumerated at all.
+
    What is bounded instead is the blast radius: every declaration below is
    scoped inside `.journal-entry-embed`, so none of it can reach a real note's
    editor anywhere else in the app. That is the trade — give up on knowing the
    opponent, guarantee the damage cannot spread.
-   A CSS-variable route was checked too (`--file-margins`, `--file-line-width`,
-   `--file-folding-offset` do drive some of these). It was rejected as pure
-   redundancy: while these `!important`s stand they already cover those cases,
-   so setting the variables as well would add lines that change nothing. */
+
+   The CSS-variable route covers part of this and not the part that matters:
+   `--file-margins`, `--file-line-width` and `--file-folding-offset` do drive
+   some opposing rules, but the ones that would still beat us are literal —
+   `min-height: unset` on `.cm-sizer` at (0,5,0), `max-width: 100%` on
+   `.cm-line` at (0,5,0) — and no variable reaches them. */
 .journal-entry-embed .cm-editor,
 .journal-entry-embed .cm-scroller,
 .journal-entry-embed .cm-sizer,
