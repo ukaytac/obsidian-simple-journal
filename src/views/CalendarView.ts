@@ -3,7 +3,7 @@ import type JournalEntriesPlugin from "../main";
 import { buildMonthGrid, entryDaysInMonth, WEEKDAY_HEADER } from "./calendarGrid";
 import { dayKey } from "../utils/dates";
 
-export const VIEW_TYPE_CALENDAR = "journal-entries-calendar";
+export const VIEW_TYPE_CALENDAR = "simple-journal-calendar";
 
 /**
  * Month calendar sidebar. A thin DOM/Obsidian shell around the pure grid math

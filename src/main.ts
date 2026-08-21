@@ -99,11 +99,11 @@ export default class JournalEntriesPlugin extends Plugin {
       this.app.workspace.onLayoutReady(() => {
         this.newEntry().catch((error) => {
           console.error(
-            "Journal Entries: could not create a new entry from the obsidian://journal-new link",
+            "Simple Journal: could not create a new entry from the obsidian://journal-new link",
             error,
           );
           new Notice(
-            "Journal Entries: could not open a new entry from the link. See the developer console for details.",
+            "Simple Journal: could not open a new entry from the link. See the developer console for details.",
           );
         });
       });
@@ -163,7 +163,7 @@ export default class JournalEntriesPlugin extends Plugin {
 
       await rightLeaf.setViewState({ type: VIEW_TYPE_CALENDAR, active: false });
     } catch (error) {
-      console.error("Journal Entries: could not place the calendar in the sidebar", error);
+      console.error("Simple Journal: could not place the calendar in the sidebar", error);
     }
   }
 
@@ -204,15 +204,15 @@ export default class JournalEntriesPlugin extends Plugin {
       const view = await this.openJournal();
 
       if (!view) {
-        console.error("Journal Entries: the journal view was not available after opening it");
-        new Notice("Journal Entries: could not open the journal.");
+        console.error("Simple Journal: the journal view was not available after opening it");
+        new Notice("Simple Journal: could not open the journal.");
         return;
       }
 
       await view.startNewEntry();
     } catch (error) {
-      console.error("Journal Entries: could not start a new entry", error);
-      new Notice("Journal Entries: could not start a new entry. See the developer console.");
+      console.error("Simple Journal: could not start a new entry", error);
+      new Notice("Simple Journal: could not start a new entry. See the developer console.");
     }
   }
 

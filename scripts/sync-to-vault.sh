@@ -28,7 +28,7 @@ if [[ ! -f main.js ]]; then
   exit 1
 fi
 
-target="$OBSIDIAN_VAULT/.obsidian/plugins/journal-entries"
+target="$OBSIDIAN_VAULT/.obsidian/plugins/simple-journal"
 mkdir -p "$target"
 cp main.js manifest.json styles.css "$target/"
 

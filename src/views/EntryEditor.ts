@@ -128,7 +128,7 @@ export function createEntryEditorFactory(app: App): EntryEditorFactory {
 
   if (!available) {
     new Notice(
-      "Journal Entries: this Obsidian version does not expose its embedded editor. " +
+      "Simple Journal: this Obsidian version does not expose its embedded editor. " +
         "Falling back to plain text editing.",
       10000,
     );

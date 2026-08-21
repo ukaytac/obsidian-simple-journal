@@ -222,7 +222,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
 
     if (editor.isUsable?.() === false) {
       console.error(
-        "Journal Entries: embedded editor was unusable; falling back to plain text for",
+        "Simple Journal: embedded editor was unusable; falling back to plain text for",
         target.entry.file.path,
       );
       editor.destroy();
@@ -255,7 +255,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     fallback.mount(target.bodyEl, target.entry.file, text);
     target.editor = fallback;
 
-    new Notice("Journal Entries: switched this entry to plain text editing.");
+    new Notice("Simple Journal: switched this entry to plain text editing.");
   }
 
   /**
@@ -395,7 +395,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
       // an editor left mounted because of a failed flush would keep polling
       // (ObsidianEmbedEditor) or holding DOM (either editor) forever, on top
       // of whatever the failed flush already lost.
-      console.error("Journal Entries: failed to flush a pending save before unmounting", error);
+      console.error("Simple Journal: failed to flush a pending save before unmounting", error);
     }
     if (generation !== deps.getGeneration()) return;
 

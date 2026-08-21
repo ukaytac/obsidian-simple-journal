@@ -272,7 +272,7 @@ export class EntryRepository {
       }
     }
 
-    throw new Error(`Journal Entries: could not find a free filename for ${stem}`);
+    throw new Error(`Simple Journal: could not find a free filename for ${stem}`);
   }
 
   /**
@@ -376,7 +376,7 @@ export class EntryRepository {
       const existing = this.app.vault.getAbstractFileByPath(current);
       if (existing instanceof TFolder) continue;
       if (existing) {
-        throw new Error(`Journal Entries: ${current} exists but is not a folder`);
+        throw new Error(`Simple Journal: ${current} exists but is not a folder`);
       }
 
       try {

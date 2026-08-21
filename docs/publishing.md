@@ -10,8 +10,8 @@ assets disagree with the tag installs the wrong thing.
 # 1. bump manifest.json and package.json, and add the version to versions.json
 #    mapped to the minimum Obsidian version it needs
 # 2. commit that bump on main
-git tag 0.1.0
-git push origin 0.1.0
+git tag 1.0.0
+git push origin 1.0.0
 ```
 
 Pushing the tag runs `.github/workflows/release.yml`, which type-checks, runs
@@ -35,8 +35,8 @@ GitHub releases directly.
 
    ```json
    {
-     "id": "journal-entries",
-     "name": "Journal Entries",
+     "id": "simple-journal",
+     "name": "Simple Journal",
      "author": "Utku Aytaç",
      "description": "A continuous, reverse-chronological journal where every entry is its own Markdown note.",
      "repo": "ukaytac/obsidian-journal-plugin"
@@ -44,7 +44,7 @@ GitHub releases directly.
    ```
 
    `id`, `name`, `author` and `description` must match `manifest.json` exactly.
-   The id `journal-entries` was free as of the last check against the directory.
+   The id `simple-journal` was free as of the last check against the directory.
 
 4. Open a pull request and fill in the checklist template honestly.
 

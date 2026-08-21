@@ -31,7 +31,7 @@ import { createMountLifecycle, type MountLifecycle } from "./mountLifecycle";
 import { createTimelineDom, type TimelineDom } from "./timelineDom";
 import { TextareaEditor } from "./TextareaEditor";
 
-export const VIEW_TYPE_JOURNAL = "journal-entries-timeline";
+export const VIEW_TYPE_JOURNAL = "simple-journal-timeline";
 
 /** Entries rendered per page. */
 const PAGE_SIZE = 40;
@@ -682,7 +682,7 @@ export class JournalView extends ItemView {
   private logLostComposerDraft(value: string): void {
     if (!isMeaningful(value)) return;
     console.error(
-      "Journal Entries: discarding unsaved text for (uncommitted composer) — recover it from this line before it is lost:",
+      "Simple Journal: discarding unsaved text for (uncommitted composer) — recover it from this line before it is lost:",
       value,
     );
   }
@@ -1405,8 +1405,8 @@ export class JournalView extends ItemView {
           navigator.clipboard.writeText(link).then(
             () => new Notice("Link copied"),
             (error) => {
-              console.error("Journal Entries: could not copy the entry link", error);
-              new Notice("Journal Entries: could not copy the link. See the developer console for details.");
+              console.error("Simple Journal: could not copy the entry link", error);
+              new Notice("Simple Journal: could not copy the link. See the developer console for details.");
             },
           );
         }),
@@ -1580,11 +1580,11 @@ export class JournalView extends ItemView {
     try {
       await this.plugin.repository.setEntryCreated(file, value);
     } catch (error) {
-      console.error("Journal Entries: could not change the entry's time", file.path, error);
+      console.error("Simple Journal: could not change the entry's time", file.path, error);
       new Notice(
         error instanceof UnsafeFrontmatterError
-          ? "Journal Entries: this entry's frontmatter is too complex to edit safely here. Change \"created\" in the source note instead."
-          : "Journal Entries: could not change the entry's time. See the developer console for details.",
+          ? "Simple Journal: this entry's frontmatter is too complex to edit safely here. Change \"created\" in the source note instead."
+          : "Simple Journal: could not change the entry's time. See the developer console for details.",
       );
       return;
     }
@@ -1600,9 +1600,9 @@ export class JournalView extends ItemView {
     try {
       await this.plugin.repository.renameEntryToMatch(file, value);
     } catch (error) {
-      console.error("Journal Entries: could not rename the entry to match its new time", file.path, error);
+      console.error("Simple Journal: could not rename the entry to match its new time", file.path, error);
       new Notice(
-        "Journal Entries: the entry's time was changed, but its file could not be renamed to match. See the developer console for details.",
+        "Simple Journal: the entry's time was changed, but its file could not be renamed to match. See the developer console for details.",
       );
     }
 
@@ -1701,8 +1701,8 @@ export class JournalView extends ItemView {
     try {
       confirmed = await this.app.fileManager.promptForDeletion(file);
     } catch (error) {
-      console.error("Journal Entries: could not delete entry", error);
-      new Notice("Journal Entries: could not delete the entry.");
+      console.error("Simple Journal: could not delete entry", error);
+      new Notice("Simple Journal: could not delete the entry.");
       return;
     }
     if (!confirmed) return;
@@ -1763,7 +1763,7 @@ export class JournalView extends ItemView {
 
     if (this.app.vault.getAbstractFileByPath(file.path) === file) {
       rendered.el.removeClass("is-deleting");
-      new Notice("Journal Entries: could not delete the entry.");
+      new Notice("Simple Journal: could not delete the entry.");
       void this.mountEditor(rendered);
       return;
     }
@@ -1893,7 +1893,7 @@ export class JournalView extends ItemView {
     if (!this.isDirty(rendered)) return;
 
     console.error(
-      "Journal Entries: discarding unsaved text for",
+      "Simple Journal: discarding unsaved text for",
       rendered.entry.file?.path ?? "(uncommitted composer)",
       "— recover it from this line before it is lost:",
       rendered.editor?.getValue(),
@@ -2466,8 +2466,8 @@ export class JournalView extends ItemView {
     try {
       file = await this.plugin.repository.createEntry(created, valueAtCreate);
     } catch (error) {
-      console.error("Journal Entries: could not create entry", error);
-      new Notice("Journal Entries: could not create the entry file. Your text is still here.");
+      console.error("Simple Journal: could not create entry", error);
+      new Notice("Simple Journal: could not create the entry file. Your text is still here.");
       // Let the user retry on the next keystroke — the composer (and
       // whatever it holds) is untouched. Only reclaim it if nothing else
       // has since torn the timeline down or opened a different one.

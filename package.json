@@ -1,6 +1,6 @@
 {
-  "name": "journal-entries",
-  "version": "0.1.0",
+  "name": "simple-journal",
+  "version": "1.0.0",
   "description": "Entry-based journaling for Obsidian",
   "main": "main.js",
   "scripts": {

@@ -355,7 +355,7 @@ export class JournalService extends Component {
       try {
         listener(changes);
       } catch (error) {
-        console.error("Journal Entries: change listener failed", error);
+        console.error("Simple Journal: change listener failed", error);
       }
     }
   }

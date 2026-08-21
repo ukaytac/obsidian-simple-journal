@@ -60,7 +60,7 @@ export class ChangeEntryTimeModal extends Modal {
   private confirm(): void {
     const parsed = parseDateTimeLocalValue(this.inputEl.value);
     if (!parsed) {
-      new Notice("Journal Entries: enter a valid date and time.");
+      new Notice("Simple Journal: enter a valid date and time.");
       return;
     }
 

@@ -167,9 +167,9 @@ export async function save(target: SaveEntry, value: string, deps: SaveDeps): Pr
       return deps.writeBody(target.entry.file, v);
     },
     (error) => {
-      console.error("Journal Entries: failed to save an entry", target.entry.file.path, error);
+      console.error("Simple Journal: failed to save an entry", target.entry.file.path, error);
       new Notice(
-        `Journal Entries: failed to save "${target.entry.file.path}". See the developer console for details.`,
+        `Simple Journal: failed to save "${target.entry.file.path}". See the developer console for details.`,
       );
       // REQUIRED: an older, failing write must not raise a marker after a
       // newer write for this same entry has already been issued (and

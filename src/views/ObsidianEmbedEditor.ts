@@ -348,7 +348,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
         this.blurCallback?.();
       });
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to mount", error);
+      console.error("Simple Journal: embedded editor failed to mount", error);
       this.usable = false;
       if (embed) this.teardownEmbed(embed);
       this.embed = null;
@@ -393,7 +393,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       }
       return raw;
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to read", error);
+      console.error("Simple Journal: embedded editor failed to read", error);
       this.markUnusable();
       return null;
     }
@@ -490,7 +490,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       this.embed?.editMode?.set?.(replaceBody(raw, rawBody), false);
       this.lastRawBody = rawBody;
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to write", error);
+      console.error("Simple Journal: embedded editor failed to write", error);
       // Consistent with readRaw(): a set() that starts throwing leaves this
       // editor unable to reliably accept further edits (every setValue()
       // would fail silently, and the next poll-reported body would
@@ -575,7 +575,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
         }
       }
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to focus", error);
+      console.error("Simple Journal: embedded editor failed to focus", error);
     }
   }
 
@@ -630,7 +630,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
     try {
       this.embed?.editMode?.cm?.requestMeasure?.();
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to remeasure", error);
+      console.error("Simple Journal: embedded editor failed to remeasure", error);
     }
   }
 
@@ -669,7 +669,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       embed.unload?.();
       embed.onunload?.();
     } catch (error) {
-      console.error("Journal Entries: embedded editor failed to unload", error);
+      console.error("Simple Journal: embedded editor failed to unload", error);
     }
   }
 

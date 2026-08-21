@@ -1,4 +1,4 @@
-# Journal Entries
+# Simple Journal
 
 An Obsidian plugin for entry-based journaling.
 

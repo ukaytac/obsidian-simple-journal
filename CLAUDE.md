@@ -4,7 +4,11 @@
 
 We are building an Obsidian community plugin for **entry-based journaling**.
 
-The working name is **Journal Entries**. The final product name may change later.
+The product name is **Simple Journal**, and the plugin id is `simple-journal`.
+The id is fixed: it is the folder name in every user's vault and cannot change
+after publication. The two view types (`simple-journal-timeline`,
+`simple-journal-calendar`) are equally fixed, because they are what a saved
+workspace layout refers to.
 
 The plugin is inspired by the interaction model of Journal View: a continuous, scrollable journal inside Obsidian where the user can read and edit entries without constantly opening individual Markdown files.
 
