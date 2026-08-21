@@ -1,6 +1,6 @@
 {
   "name": "simple-journal",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A continuous journal. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
   "main": "main.js",
   "scripts": {

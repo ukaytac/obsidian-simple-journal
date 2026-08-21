@@ -1,7 +1,7 @@
 {
   "id": "simple-journal",
   "name": "Simple Journal",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "minAppVersion": "1.7.2",
   "description": "A continuous journal. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
   "author": "Utku Aytaç",
