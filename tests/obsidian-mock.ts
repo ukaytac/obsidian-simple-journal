@@ -89,8 +89,63 @@ export class Component {
   }
 }
 
-export function debounce<T extends unknown[]>(fn: (...args: T) => void): (...args: T) => void {
-  return fn;
+export interface Debouncer<T extends unknown[], V> {
+  (...args: T): Debouncer<T, V>;
+  cancel(): Debouncer<T, V>;
+  run(): V | void;
+}
+
+/**
+ * Faithful to Obsidian's own `debounce`, which matters here: this used to
+ * return `fn` unchanged, so a debounced call fired immediately and the
+ * returned value had no `run()`. Anything relying on the delay — the settings
+ * tab's guarantee that a half-typed folder name never reaches
+ * `plugin.settings` — was therefore untestable, and a `hide()` flush would
+ * have thrown.
+ *
+ * Uses the ambient timer functions, so `vi.useFakeTimers()` drives it.
+ */
+export function debounce<T extends unknown[], V>(
+  fn: (...args: T) => V,
+  timeout = 0,
+  resetTimer = false,
+): Debouncer<T, V> {
+  let handle: ReturnType<typeof setTimeout> | null = null;
+  let pending: T | null = null;
+
+  const fire = (): V | void => {
+    if (handle !== null) {
+      clearTimeout(handle);
+      handle = null;
+    }
+    if (pending === null) return;
+    const args = pending;
+    pending = null;
+    return fn(...args);
+  };
+
+  const debounced = ((...args: T) => {
+    pending = args;
+    // `resetTimer` false keeps the deadline set by the first call in a burst;
+    // true restarts it on every call.
+    if (handle !== null && !resetTimer) return debounced;
+    if (handle !== null) clearTimeout(handle);
+    handle = setTimeout(fire, timeout);
+    return debounced;
+  }) as Debouncer<T, V>;
+
+  debounced.cancel = () => {
+    if (handle !== null) {
+      clearTimeout(handle);
+      handle = null;
+    }
+    pending = null;
+    return debounced;
+  };
+
+  debounced.run = fire;
+
+  return debounced;
 }
 
 function parentPath(path: string): string {
