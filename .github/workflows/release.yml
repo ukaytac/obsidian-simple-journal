@@ -1,0 +1,43 @@
+# Pushing a tag that matches the manifest version builds the plugin and opens a
+# draft release with the three files Obsidian installs. The release is a draft on
+# purpose: the assets are worth looking at before anyone can download them.
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - run: npm ci
+
+      # Type check and unit tests gate the release. A tag that does not build
+      # should not become a downloadable release.
+      - run: npm test
+      - run: npm run build
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          if [[ "$tag" != "$manifest_version" ]]; then
+            echo "Tag $tag does not match manifest version $manifest_version." >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            main.js manifest.json styles.css
