@@ -1493,9 +1493,13 @@ export class JournalView extends ItemView {
    * minutes, still the same day) never pays for a teardown at all. Only if
    * that still leaves the entry unrendered — outside the loaded window, or
    * excluded by an active anchor (`insertEntryInPlace`'s bounds checks) —
-   * does this fall back to `goToDate(value)`, which is guaranteed to make
-   * it visible, with a Notice explaining the jump. A jump is only
-   * announced when it actually happens; an in-place move needs no
+   * does this try a plain, unanchored `reload()` (unless already anchored),
+   * and only after THAT still fails to reach it does it fall back to
+   * `goToDate(value)`, which is guaranteed to make it visible but does so by
+   * hiding every entry newer than `value` — see this method's closing
+   * comment for why an anchored jump is a last resort, not the first
+   * attempt. A jump is only announced when it actually happens; an in-place
+   * move or a plain reload that already reached the entry needs no
    * explanation.
    *
    * `EntryRepository.setEntryCreated` can throw `UnsafeFrontmatterError`
@@ -1617,6 +1621,35 @@ export class JournalView extends ItemView {
     // one key jumps the view and announces a move for an entry already on
     // screen. Checking both makes this independent of the dispatch order.
     if (this.rendered.has(visiblePath) || this.rendered.has(file.path)) return;
+
+    // Still unrendered so far only means `insertEntryInPlace`'s loaded-window
+    // bounds check declined — typically because this correction pushed the
+    // entry to (or past) the edge of what happens to be rendered right now,
+    // while a paging sentinel is still mounted (it stays mounted until the
+    // user has actually scrolled to genuine exhaustion, not merely until the
+    // first page happens to already hold everything — see `reloadNow`'s
+    // unconditional `installSentinel()` call). That decline says nothing
+    // about whether the entry would fit on an ordinary, UNANCHORED reload —
+    // jumping straight to `goToDate` treats every decline as "this is deep
+    // history," when most are really "the first page just hadn't been
+    // re-measured yet."
+    //
+    // `goToDate` anchors the timeline to `value` (see its own doc), which
+    // HIDES every entry newer than it — for a correction that only moved
+    // this entry a month or two, that discards the user's entire recent
+    // timeline just to surface the one row that moved, and reads exactly
+    // like "the entry jumped above everything" rather than "the entry
+    // settled into its correct, later position." A plain `reload()` — same
+    // newest-first first page, no anchor — often already reaches the
+    // correction without hiding anything at all, so it is tried first.
+    // Skipped when an anchor is already active: that is a deliberate user
+    // choice (a prior "Go to date") this correction should not silently
+    // clear.
+    if (this.anchorDate === null) {
+      await this.reload();
+      if (this.closed) return;
+      if (this.rendered.has(file.path)) return;
+    }
 
     await this.goToDate(value);
     new Notice(`Moved entry to ${formatDayHeader(value)}, ${formatTime(value)}`);

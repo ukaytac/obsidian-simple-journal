@@ -553,3 +553,128 @@ describe("JournalView change-application: pinned edge cases", () => {
     expect(view.rendered.get(file.path)).toBe(rendered);
   });
 });
+
+/**
+ * Regression suite for `commitEntryTimeChange`'s "Change entry time"
+ * fallback. Every test here drives the exact same private method the
+ * timestamp button's modal calls after the user confirms a new value —
+ * `internals(view).commitEntryTimeChange(rendered, file, newDate)` — so the
+ * full real sequence (`EntryRepository.setEntryCreated`'s write,
+ * `JournalService.applyKnownEntry`'s immediate reposition,
+ * `JournalView.applyChangesNow`'s real DOM reconciliation, and the rename)
+ * runs exactly as it would from the modal, never touching `timelineDom.ts`
+ * directly.
+ *
+ * The bug this suite pins: `insertEntryInPlace`'s loaded-window bounds check
+ * (`position - offset >= loadedCount && hasSentinel()`) declines whenever a
+ * correction pushes the entry to (or past) the edge of what happens to be
+ * rendered at that instant — and the paging sentinel stays mounted after
+ * every ordinary load until the user has scrolled to genuine exhaustion
+ * (`reloadNow` always calls `installSentinel()`, regardless of whether
+ * anything is actually left to page). So the decline fires far more often
+ * than "this really is deep, unloaded history" — including for a journal
+ * that holds only a handful of entries, never scrolled at all. Before the
+ * fix, `commitEntryTimeChange` treated every such decline as deep history
+ * and jumped straight to an ANCHORED `goToDate(value)`, which hides every
+ * entry newer than the corrected date (see `goToDate`'s own doc) — so
+ * moving an entry back a month didn't just reorder the timeline, it made
+ * every newer entry vanish from the view entirely, with the moved entry
+ * left looking like the only (and therefore topmost) thing in the journal.
+ * `setEntryCreated` requires a metadata-cache entry with a "created" key
+ * already present for `file.path` (see its own doc's frontmatter
+ * cross-check) — seeded with a placeholder value here, since only its
+ * presence, not its content, is what that check requires.
+ */
+describe("JournalView commitEntryTimeChange: cross-month reordering, not an anchor jump", () => {
+  function dayEls(h: ReturnType<typeof createHarness>): (string | undefined)[] {
+    return Array.from(timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-day")).map(
+      (el) => el.dataset.day,
+    );
+  }
+
+  function headerTexts(h: ReturnType<typeof createHarness>): string[] {
+    return Array.from(
+      timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-month-header"),
+    ).map((el) => el.textContent ?? "");
+  }
+
+  async function changeTime(
+    h: ReturnType<typeof createHarness>,
+    file: ReturnType<typeof addEntry>,
+    to: Date,
+  ): Promise<void> {
+    h.app.metadataCache.frontmatter.set(file.path, { created: "placeholder" });
+    const rendered = internals(h.view).rendered.get(file.path);
+    await internals(h.view).commitEntryTimeChange(rendered, file, to);
+    await settle();
+  }
+
+  it("moving the only other-day entry to an earlier month sinks it below the newer day, not above it", async () => {
+    const h = createHarness();
+    const aug10 = addEntry(h, new Date(2026, 7, 10, 9, 0, 0), "aug10");
+    const aug5 = addEntry(h, new Date(2026, 7, 5, 9, 0, 0), "aug5, will move to july");
+    h.service.load();
+    await h.view.onOpen();
+
+    await changeTime(h, aug5, new Date(2026, 6, 15, 9, 0, 0));
+
+    expect(dayEls(h)).toEqual(["2026-08-10", "2026-07-15"]);
+    expect(headerTexts(h)).toEqual([
+      formatMonthHeader(new Date(2026, 7, 10)),
+      formatMonthHeader(new Date(2026, 6, 15)),
+    ]);
+    // Not hidden by an anchor jump: still reachable exactly as before.
+    expect(internals(h.view).rendered.has(aug10.path)).toBe(true);
+  });
+
+  it("moving one of two same-day entries to an earlier month sinks it below every remaining day", async () => {
+    const h = createHarness();
+    const aug12a = addEntry(h, new Date(2026, 7, 12, 20, 0, 0), "aug12 first");
+    const aug12b = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "aug12 second, will move to july");
+    const aug10 = addEntry(h, new Date(2026, 7, 10, 9, 0, 0), "aug10");
+    h.service.load();
+    await h.view.onOpen();
+
+    await changeTime(h, aug12b, new Date(2026, 6, 20, 9, 0, 0));
+
+    expect(dayEls(h)).toEqual(["2026-08-12", "2026-08-10", "2026-07-20"]);
+    expect(headerTexts(h)).toEqual([
+      formatMonthHeader(new Date(2026, 7, 12)),
+      formatMonthHeader(new Date(2026, 6, 20)),
+    ]);
+  });
+
+  it("mirror case: moving an entry to a LATER month lands above every older day", async () => {
+    const h = createHarness();
+    const aug10 = addEntry(h, new Date(2026, 7, 10, 9, 0, 0), "aug10");
+    const aug5 = addEntry(h, new Date(2026, 7, 5, 9, 0, 0), "aug5, will move to september");
+    h.service.load();
+    await h.view.onOpen();
+
+    await changeTime(h, aug5, new Date(2026, 8, 3, 9, 0, 0));
+
+    expect(dayEls(h)).toEqual(["2026-09-03", "2026-08-10"]);
+    expect(headerTexts(h)).toEqual([
+      formatMonthHeader(new Date(2026, 8, 3)),
+      formatMonthHeader(new Date(2026, 7, 10)),
+    ]);
+  });
+
+  it("crosses a year boundary: a december entry moved into next january still sorts above december", async () => {
+    const h = createHarness();
+    const dec20 = addEntry(h, new Date(2026, 11, 20, 9, 0, 0), "dec20");
+    const dec15 = addEntry(h, new Date(2026, 11, 15, 9, 0, 0), "dec15, will move to next january");
+    h.service.load();
+    await h.view.onOpen();
+
+    await changeTime(h, dec15, new Date(2027, 0, 5, 9, 0, 0));
+
+    expect(dayEls(h)).toEqual(["2027-01-05", "2026-12-20"]);
+    expect(headerTexts(h)).toEqual([
+      formatMonthHeader(new Date(2027, 0, 5)),
+      formatMonthHeader(new Date(2026, 11, 20)),
+    ]);
+    // Exactly one header per month, nothing duplicated by the reload.
+    expect(timelineEl(h.view).querySelectorAll(".journal-month-header")).toHaveLength(2);
+  });
+});
