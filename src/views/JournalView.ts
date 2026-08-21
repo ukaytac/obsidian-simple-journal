@@ -1398,6 +1398,13 @@ export class JournalView extends ItemView {
           // (timestamp filenames); under "Relative path to file" the same
           // link would break if pasted into a note outside the journal root.
           const link = this.app.fileManager.generateMarkdownLink(file, "");
+          // The plugin's only clipboard use, and it is write-only: it never
+          // calls readText, so it cannot see what the user copied from
+          // anywhere else. What it writes is a link this plugin just
+          // generated — never the entry's text, and nothing the user did not
+          // ask for by choosing "Copy link to entry". Obsidian exposes no
+          // clipboard API of its own, so the web platform's is the only route.
+          //
           // `writeText` rejects when the document isn't focused or clipboard
           // permission is denied — reported honestly rather than assuming
           // success, since the alternative is telling the user their link
