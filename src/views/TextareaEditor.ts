@@ -68,7 +68,7 @@ export class TextareaEditor implements EntryEditor {
     textarea.addEventListener("input", (event) => {
       const previousValue = this.lastValue;
       this.lastValue = textarea.value;
-      this.resize(event as InputEvent, previousValue);
+      this.resize(inputTypeOf(event), previousValue);
       this.changeCallback?.(textarea.value);
     });
     // A resize skipped while merely scrolled out of view is recovered here:
@@ -168,7 +168,7 @@ export class TextareaEditor implements EntryEditor {
    * shrink cannot (see below). Called with neither from setValue() and the
    * focus handler, which always take the slow, accurate path.
    */
-  private resize(event?: InputEvent, previousValue?: string): void {
+  private resize(inputType?: string, previousValue?: string): void {
     const textarea = this.textarea;
     if (!textarea) return;
 
@@ -189,8 +189,9 @@ export class TextareaEditor implements EntryEditor {
     // than its content just reports its own height back, with no overflow
     // to reveal that the content now needs less room. So the fast path is
     // only for an edit whose value provably cannot have shrunk — a real
-    // input event (an absent event, or one with no inputType, defaults to
-    // the slow path) whose length and newline count are both non-decreasing
+    // input event (an absent inputType, whether because there was no event
+    // or because it carried none, defaults to the slow path) whose length
+    // and newline count are both non-decreasing
     // from the value just before it. That covers growth-only insertions,
     // plain deletions (excluded: length drops), a multi-line paste into
     // short content, and IME composition, while still forcing the slow
@@ -199,8 +200,7 @@ export class TextareaEditor implements EntryEditor {
     // multi-line selection (both can net-decrease length even though the
     // inputType itself is "insert*").
     const canSkipIfUnchanged =
-      event !== undefined &&
-      event.inputType !== undefined &&
+      inputType !== undefined &&
       previousValue !== undefined &&
       textarea.value.length >= previousValue.length &&
       countNewlines(textarea.value) >= countNewlines(previousValue);
@@ -227,6 +227,24 @@ export class TextareaEditor implements EntryEditor {
     this.lastWidth = textarea.clientWidth;
     textarea.setCssStyles({ height: `${scrollHeight}px` });
   }
+}
+
+/**
+ * The `inputType` of an `input` event, when it has one.
+ *
+ * lib.dom types the `input` event as a plain `Event`, even though the spec says
+ * what an editable element dispatches is an `InputEvent`. Different TypeScript
+ * releases disagree about this, so an `as InputEvent` assertion here is
+ * simultaneously required by one toolchain and reported as redundant by
+ * another. Asking the object what it carries sidesteps the disagreement, and is
+ * the truthful description anyway: an `input` event can be dispatched
+ * synthetically with no `inputType` at all, and the caller already treats that
+ * as "unknown edit, take the slow path".
+ */
+function inputTypeOf(event: Event): string | undefined {
+  if (!("inputType" in event)) return undefined;
+  const inputType: unknown = event.inputType;
+  return typeof inputType === "string" ? inputType : undefined;
 }
 
 function countNewlines(value: string): number {

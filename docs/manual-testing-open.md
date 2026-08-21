@@ -220,6 +220,14 @@ Each is about the plain-text fallback editor, which is what runs if the internal
 embed API is ever unavailable — so it is worth knowing it behaves, even though
 the embedded editor is the normal path.
 
+Some of this is now automated. `textareaEditor.resize.test.ts` fakes just
+enough layout — whether the element is laid out, and what height it reports — to
+drive the real resize decision, including the asymmetry it is built around:
+scrollHeight can prove content grew but never that it shrank. The shrink cases
+below are still worth doing by hand, because the stub models that asymmetry from
+reasoning rather than measurement; but they are no longer the only thing
+standing between a regression and a user.
+
 - [ ] **An external edit that shrinks content shrinks the box**, with no
       leftover blank gap.
 - [ ] **Undo after typing several lines** shrinks the box as lines go.
