@@ -37,7 +37,21 @@ jobs:
             echo "Tag $tag does not match manifest version $manifest_version." >&2
             exit 1
           fi
-          gh release create "$tag" \
-            --title="$tag" \
-            --draft \
-            main.js manifest.json styles.css
+          # Re-tagging is normal before a release goes out. Replace a draft's
+          # assets, but never a published release's: someone may already have
+          # installed from it, and swapping the files under them would ship two
+          # different builds under one version number.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$tag" --json isDraft -q .isDraft)" != "true" ]]; then
+              echo "Release $tag is already published. Refusing to overwrite it." >&2
+              echo "Cut a new version instead." >&2
+              exit 1
+            fi
+            echo "Draft $tag already exists; replacing its assets."
+            gh release upload "$tag" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$tag" \
+              --title="$tag" \
+              --draft \
+              main.js manifest.json styles.css
+          fi
