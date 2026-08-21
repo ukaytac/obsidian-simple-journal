@@ -3,7 +3,7 @@
   "name": "Simple Journal",
   "version": "1.0.0",
   "minAppVersion": "1.7.2",
-  "description": "A continuous journal for Obsidian. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
+  "description": "A continuous journal. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
   "author": "Utku Aytaç",
   "authorUrl": "https://uka.dev",
   "isDesktopOnly": false
