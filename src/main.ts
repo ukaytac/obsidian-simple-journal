@@ -109,7 +109,7 @@ export default class JournalEntriesPlugin extends Plugin {
       });
     });
 
-    this.app.workspace.onLayoutReady(() => void this.autoOpenCalendarOnce());
+    this.app.workspace.onLayoutReady(() => void this.ensureCalendarLeaf());
   }
 
   onunload(): void {
@@ -122,17 +122,21 @@ export default class JournalEntriesPlugin extends Plugin {
     if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
       this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
     }
-
-    // A non-boolean here would make the once-only guard below either nag on
-    // every load or never run at all, depending on which way it coerced.
-    if (typeof this.settings.hasAutoOpenedCalendar !== "boolean") {
-      this.settings.hasAutoOpenedCalendar = DEFAULT_SETTINGS.hasAutoOpenedCalendar;
-    }
   }
 
   /**
-   * Places the calendar in the sidebar the first time the plugin loads, then
-   * records that it has done so and never forces it again.
+   * Ensures a calendar leaf exists somewhere in the workspace on every load,
+   * placing one in the right sidebar if none is found anywhere (either
+   * sidebar or the main area). This used to run once, on first install,
+   * guarded by a `hasAutoOpenedCalendar` flag — the reasoning being that
+   * Obsidian persists the workspace layout, so re-placing it on every load
+   * would put it back for a user who deliberately closed it. In practice
+   * that policy backfired: once a saved layout lost its calendar leaf for any
+   * reason, the flag being `true` meant the plugin would never place it
+   * again, and the only way back was a command few people had found in the
+   * first place. Ensuring presence on every load trades "might reappear for
+   * someone who closed it on purpose" for "never permanently locks anyone
+   * out," which is the safer failure mode.
    *
    * Deferred to `onLayoutReady` because the right split does not necessarily
    * exist yet during `onload`, and `getRightLeaf` can return null when it
@@ -140,21 +144,24 @@ export default class JournalEntriesPlugin extends Plugin {
    * initialized, which is the case when a user enables the plugin by hand
    * rather than at startup.
    *
-   * The flag is written whether or not the open succeeds: a failure that
-   * repeats every load is worse than a calendar the user opens themselves.
+   * This must never steal focus or change what the user is looking at, so it
+   * deliberately does not reuse `openCalendar`'s "open and show" path: it
+   * calls `setViewState` with `active: false` (the new leaf is not made the
+   * focused leaf) and never calls `revealLeaf` (the sidebar is not
+   * uncollapsed and the tab is not switched to). `Open calendar` the command
+   * is unaffected and keeps activating/revealing, since the user asked for
+   * it explicitly there.
    */
-  private async autoOpenCalendarOnce(): Promise<void> {
-    if (this.settings.hasAutoOpenedCalendar) return;
-
-    this.settings.hasAutoOpenedCalendar = true;
-
+  private async ensureCalendarLeaf(): Promise<void> {
     try {
-      await this.saveSettings();
-
-      // Respect a layout that already has one — nothing to place.
+      // A calendar leaf anywhere — either sidebar or the main area — counts;
+      // do not create a second one and do not move an existing one.
       if (this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).length > 0) return;
 
-      await this.openCalendar();
+      const rightLeaf = this.app.workspace.getRightLeaf(false);
+      if (!rightLeaf) return;
+
+      await rightLeaf.setViewState({ type: VIEW_TYPE_CALENDAR, active: false });
     } catch (error) {
       console.error("Journal Entries: could not place the calendar in the sidebar", error);
     }

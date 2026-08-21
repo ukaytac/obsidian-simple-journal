@@ -440,9 +440,16 @@ The view should open at or near the top of the timeline.
 
 ## The calendar
 
-A companion view in the sidebar, opened by `Open calendar` and placed there once
-automatically on the plugin's first load — never forced again afterwards, since
-Obsidian persists the workspace layout and a user who closes it means it.
+A companion view in the sidebar, reachable by the `Open calendar` command and
+also ensured present on every plugin load: if no calendar leaf exists anywhere
+in the workspace, one is placed in the right sidebar automatically, without
+stealing focus or revealing the sidebar. An earlier version placed it only once,
+on first install, and never forced it again afterwards — the idea being that
+Obsidian persists the workspace layout, so re-placing it on every load would put
+it back for a user who deliberately closed it. That once-only policy was
+abandoned because it permanently locked users out: once a saved layout lost its
+calendar leaf for any reason, the plugin would never place it again, and the
+only way back was a command few people had found in the first place.
 
 It marks days holding entries with a dot, and today with emphasis. Those are two
 different signals and must stay distinguishable: **the dot means "there is
