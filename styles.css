@@ -605,13 +605,13 @@
    do: `HyperMD-*` is undocumented internals, and CLAUDE.md confines those to
    the editor-embed exception. Splitting the axes needs no such knowledge.
 
-   The block axis still needs `!important`; see the measurement below. */
+   The block axis still needs `!important`; see the measurement below. `.cm-line`
+   takes part in the shared box reset further down — the rules there are grouped
+   by property rather than by element precisely so it can, without inheriting a
+   `padding` shorthand that would undo this. */
 .journal-entry-embed .cm-line {
   padding-inline: 0;
   padding-block: 0 !important;
-  margin: 0 !important;
-  min-height: 0 !important;
-  max-width: none !important;
 }
 
 /* Obsidian's editor chrome is sized for a full note pane. Inside a timeline
@@ -619,12 +619,16 @@
    text sat right of its own timestamp on desktop and a huge blank band appeared
    above it on mobile.
    ---
-   `!important` is deliberate here, and these eleven — four below, four on
-   `.cm-line` above, three on the gutter — are the only ones in this stylesheet.
-   The count was seven until `.cm-line` moved out of this block: it needs the
-   same box resets, but its inline padding has to stay negotiable so live-preview
-   list markers survive, which the `padding` shorthand cannot express. Splitting
-   it cost three duplicated declarations and one axis-specific `padding-block`.
+   `!important` is deliberate here, and these eight — three below, one on the
+   padding rule after it, one on `.cm-line` above, three on the gutter — are the
+   only ones in this stylesheet. Obsidian's own review scorecard flags every one
+   of them; this comment is the answer to that flag, and the count is kept honest
+   because it is the whole argument.
+
+   It was seven before the list-marker fix. `.cm-line` needs these box resets but
+   cannot take a `padding` shorthand, so the reset is grouped by property, which
+   costs exactly one declaration — the axis-specific `padding-block` above. The
+   element-shaped alternative costs four.
 
    The usual advice — raise specificity instead — was measured against Obsidian
    1.8.9's app.css and four installed themes, per declaration, for exactly the
@@ -661,12 +665,28 @@
 .journal-entry-embed .cm-sizer,
 .journal-entry-embed .cm-contentContainer,
 .journal-entry-embed .cm-content,
+.journal-entry-embed .cm-line,
 .journal-entry-embed .markdown-source-view,
 .journal-entry-embed .markdown-embed-content {
-  padding: 0 !important;
   margin: 0 !important;
   min-height: 0 !important;
   max-width: none !important;
+}
+
+/* Padding is the one property of the four that `.cm-line` cannot take from a
+   shorthand — see the axis split above — so it gets the same selector list
+   minus that one element. Grouping the reset by property rather than by element
+   is what keeps the `!important` count at eight instead of eleven: the
+   alternative is a second element-shaped block repeating `margin`, `min-height`
+   and `max-width` for `.cm-line` alone. */
+.journal-entry-embed .cm-editor,
+.journal-entry-embed .cm-scroller,
+.journal-entry-embed .cm-sizer,
+.journal-entry-embed .cm-contentContainer,
+.journal-entry-embed .cm-content,
+.journal-entry-embed .markdown-source-view,
+.journal-entry-embed .markdown-embed-content {
+  padding: 0 !important;
 }
 
 /* Same unwinnable cascade as the block above, and the same answer. This one is

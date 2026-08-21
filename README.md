@@ -7,9 +7,14 @@ wrote that day. The plugin shows them all in a single continuous timeline,
 newest first, directly editable — so you think about writing, not about
 files.
 
+<!-- Absolute raw URLs, not repository-relative paths: the community directory
+     renders this file on its own page without rewriting relative links, so
+     `docs/images/...` resolves against obsidian.md there and the image breaks.
+     The <img> fallback is the dark capture because that page is dark and any
+     renderer ignoring <source> lands on it. -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/simple-journal-screenshot-dark.png">
-  <img src="docs/images/simple-journal-screenshot-light.png" alt="The journal timeline: entries grouped under day headings, newest first, each showing only its time, with the calendar in the sidebar marking the days that hold entries.">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/simple-journal-screenshot-light.png">
+  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/simple-journal-screenshot-dark.png" alt="The journal timeline: entries grouped under day headings, newest first, each showing only its time, with the calendar in the sidebar marking the days that hold entries.">
 </picture>
 
 ## What it does
@@ -99,8 +104,9 @@ with larger touch targets, an earlier incremental-loading threshold, and a
 lower cap on simultaneously mounted editors on mobile.
 
 The timeline is built from Obsidian's own CSS variables, so it follows whatever
-theme you use — the screenshot at the top of this page is showing you the light
-or the dark capture depending on your own.
+theme you use. The screenshot at the top is the same frame captured in light and
+in dark; where this file is rendered with theme support, you are being shown
+whichever matches your own.
 
 ## A note on the editor
 
