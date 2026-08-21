@@ -944,8 +944,8 @@ export class JournalView extends ItemView {
     // IntersectionObserver realm. In the main window `sentinelEl.win ===
     // window`, so this is behaviour-identical there. `win` is typed as a
     // bare `Window`, which doesn't carry constructor globals like
-    // IntersectionObserver — hence the cast.
-    const win = sentinelEl.win as Window & typeof globalThis;
+    // IntersectionObserver — hence the cast naming it.
+    const win = sentinelEl.win as Window & { IntersectionObserver: typeof IntersectionObserver };
 
     this.observer = new win.IntersectionObserver(
       (entries) => {
@@ -1052,7 +1052,7 @@ export class JournalView extends ItemView {
 
     // Constructed from the timeline's own window, same reasoning as
     // installSentinel: this must keep working if the leaf is in a popout.
-    const win = this.timelineEl.win as Window & typeof globalThis;
+    const win = this.timelineEl.win as Window & { IntersectionObserver: typeof IntersectionObserver };
 
     this.mountObserver = new win.IntersectionObserver(
       (entries) => {
@@ -1294,7 +1294,7 @@ export class JournalView extends ItemView {
       // outside `bodyEl` counts as a real blur, not CM6 shifting focus
       // between its own internal nodes.
       rendered.bodyEl.addEventListener("focusout", (event) => {
-        const related = (event as FocusEvent).relatedTarget as Node | null;
+        const related = event.relatedTarget as Node | null;
         if (related && rendered.bodyEl.contains(related)) return;
         if (rendered.keyboardScrollHandle !== null) {
           window.clearTimeout(rendered.keyboardScrollHandle);

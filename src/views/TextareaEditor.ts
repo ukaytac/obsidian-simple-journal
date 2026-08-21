@@ -214,7 +214,7 @@ export class TextareaEditor implements EntryEditor {
     // scrollHeight read reflect the content's true height. Skipping this
     // step would let a box taller than its content just report its own
     // height back, masking a shrink (e.g. after deleting a paragraph).
-    textarea.style.height = "auto";
+    textarea.setCssStyles({ height: "auto" });
     const scrollHeight = textarea.scrollHeight;
     if (scrollHeight <= 0) {
       // Not laid out despite offsetParent (e.g. mid-layout); flag for retry.
@@ -225,7 +225,7 @@ export class TextareaEditor implements EntryEditor {
     this.needsResize = false;
     this.lastHeight = scrollHeight;
     this.lastWidth = textarea.clientWidth;
-    textarea.style.height = `${scrollHeight}px`;
+    textarea.setCssStyles({ height: `${scrollHeight}px` });
   }
 }
 

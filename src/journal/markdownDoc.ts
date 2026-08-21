@@ -33,7 +33,7 @@ export interface SplitDocument {
 // always consumes a full trailing newline before matching the closer, so a
 // `---` line is only ever recognized as a delimiter at the very start of a
 // line — never as a horizontal rule embedded in a YAML block scalar.
-const FRONTMATTER = /^﻿?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/;
+const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/;
 
 /**
  * Splits a Markdown document into its frontmatter block and its body.
@@ -144,7 +144,7 @@ const CREATED_LINE_GLOBAL = /^created:[ \t]*[^\r\n]*/gm;
 // `---`, optional trailing spaces/tabs, its newline), so a missing `created`
 // key can be inserted immediately after it — as the new first property —
 // without disturbing anything else in the block.
-const OPENING_DELIMITER = /^﻿?---[ \t]*\r?\n/;
+const OPENING_DELIMITER = /^\uFEFF?---[ \t]*\r?\n/;
 
 /**
  * Thrown by `setCreatedProperty` when it refuses to touch a `created`

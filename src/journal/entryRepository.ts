@@ -20,7 +20,7 @@ import {
 
 const MAX_COLLISION_ATTEMPTS = 100;
 
-const ASCII_ONLY = /^[\x00-\x7F]*$/;
+const ASCII_ONLY = /^\p{ASCII}*$/u;
 
 /**
  * NFC-normalizes `value`, skipping the call entirely for plain-ASCII input

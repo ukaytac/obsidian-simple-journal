@@ -117,7 +117,17 @@ export default class JournalEntriesPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // `loadData` is typed `any`: it returns whatever JSON is on disk, which a
+    // user or an older build may have written, so nothing about its shape is
+    // guaranteed. Naming that as `unknown` rather than spreading `any` keeps
+    // the validation below the only thing that decides what is usable — and
+    // that check is why a hand-edited data.json cannot poison the folder path.
+    const stored: unknown = await this.loadData();
+    this.settings = Object.assign(
+      {},
+      DEFAULT_SETTINGS,
+      typeof stored === "object" && stored !== null ? (stored as Partial<JournalSettings>) : {},
+    );
 
     if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
       this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;

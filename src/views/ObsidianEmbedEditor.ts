@@ -343,7 +343,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
         // of an empty composer fire while the user is still there. Only the
         // case where the new target is outside the container entirely
         // counts as a real blur.
-        const related = (event as FocusEvent).relatedTarget as Node | null;
+        const related = event.relatedTarget as Node | null;
         if (related && this.containerEl?.contains(related)) return;
         this.blurCallback?.();
       });

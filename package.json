@@ -9,7 +9,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:tz": "TZ=America/New_York vitest run",
-    "sync": "bash scripts/sync-to-vault.sh"
+    "sync": "bash scripts/sync-to-vault.sh",
+    "lint": "eslint ."
   },
   "keywords": [
     "obsidian",
@@ -17,14 +18,18 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@eslint/json": "^0.14.0",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^20.11.0",
-    "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "jsdom": "^29.1.1",
     "obsidian": "latest",
     "tslib": "^2.6.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^1.4.0"
   }
 }
