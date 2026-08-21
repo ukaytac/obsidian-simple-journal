@@ -1,4 +1,4 @@
-import { App, TFile, TFolder } from "obsidian";
+import { App, TFile, TFolder, Vault } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
 import {
@@ -171,14 +171,35 @@ export class EntryRepository {
     return { file, created };
   }
 
-  /** Every entry in the vault, newest first. */
+  /**
+   * Every entry, newest first.
+   *
+   * Walks the journal folder's own subtree rather than asking the vault for
+   * every Markdown file and filtering. Both produce the same list, but this
+   * one never looks at a path outside the journal folder — the plugin has no
+   * business knowing what else is in someone's vault, and a journal is the
+   * kind of thing people keep alongside notes they would not want enumerated.
+   * It is also proportional to the number of entries instead of the size of
+   * the vault, which is the difference between a fast timeline and a slow one
+   * for anyone whose journal is a small corner of a large vault.
+   *
+   * A missing folder yields no entries rather than an error: that is simply a
+   * journal nobody has written in yet, and `createEntry` makes the folder on
+   * the first write. `resolveFolder` returns the on-disk casing, so the lookup
+   * finds the folder whatever case or Unicode form it is stored in.
+   */
   listEntries(): JournalEntry[] {
     const entries: JournalEntry[] = [];
+    const root = this.app.vault.getFolderByPath(this.resolveFolder().resolved);
+    if (!root) return entries;
 
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      const entry = this.entryFor(file);
+    Vault.recurseChildren(root, (child) => {
+      // Folders and non-Markdown files are skipped here; `entryFor` decides
+      // what counts as an entry, so this stays the only place that walks.
+      if (!(child instanceof TFile)) return;
+      const entry = this.entryFor(child);
       if (entry) entries.push(entry);
-    }
+    });
 
     return sortEntries(entries);
   }

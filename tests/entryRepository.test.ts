@@ -150,6 +150,103 @@ describe("listEntries", () => {
     fake.vault.addFile("Inbox/idea.md", "");
     expect(repo.listEntries()).toHaveLength(1);
   });
+
+  /**
+   * The test above passes whether the repository filters the whole vault or
+   * walks only the journal folder — the visible answer is the same either way.
+   * These pin the walk itself, which is the part that matters for anyone whose
+   * journal sits beside notes they would rather no plugin enumerated.
+   */
+  it("never asks the vault for every file", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-11-21-10-00.md", "");
+    fake.vault.addFile("Private/therapy notes.md", "");
+
+    // Not a spy: enumeration is not merely counted, it is made impossible.
+    // If the repository needs this, the test fails rather than passing quietly.
+    fake.vault.getMarkdownFiles = () => {
+      throw new Error("listEntries must not enumerate the vault");
+    };
+
+    expect(repo.listEntries().map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-08-11-21-10-00",
+    ]);
+  });
+
+  /**
+   * The strongest form of the claim, and the one the test above cannot make:
+   * not "outside files are filtered out" but "outside files are never
+   * examined". Walking from the vault root and filtering afterwards produces
+   * an identical return value, so only watching what the walk touches can
+   * tell the two apart.
+   */
+  it("never even looks at a file outside the journal folder", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.vault.addFile("Private/therapy notes.md", "");
+    fake.vault.addFile("Inbox/idea.md", "");
+    fake.vault.addFile("Work/salaries.md", "");
+
+    const seen: string[] = [];
+    const real = repo.entryFor.bind(repo);
+    repo.entryFor = (file) => {
+      seen.push(file.path);
+      return real(file);
+    };
+
+    repo.listEntries();
+
+    // Exactly the one entry — no outside file, and no folder either.
+    expect(seen).toEqual(["Journal/2026/08/2026-08-12-22-41-52.md"]);
+  });
+
+  it("finds entries nested in year and month subfolders", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2025/12/2025-12-31-23-59-00.md", "");
+    fake.vault.addFile("Journal/2026/01/2026-01-01-00-01-00.md", "");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+
+    expect(repo.listEntries().map((e) => e.file.basename)).toEqual([
+      "2026-08-12-22-41-52",
+      "2026-01-01-00-01-00",
+      "2025-12-31-23-59-00",
+    ]);
+  });
+
+  it("ignores a non-Markdown file sitting among the entries", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    // Previously unreachable: the vault pre-filtered to Markdown. Walking the
+    // folder means attachments turn up, and must not become entries.
+    fake.vault.addFile("Journal/2026/08/photo.png", "");
+    fake.vault.addFile("Journal/2026/08/notes.txt", "");
+
+    expect(repo.listEntries().map((e) => e.file.basename)).toEqual(["2026-08-12-22-41-52"]);
+  });
+
+  it("returns nothing for a journal folder that does not exist yet", () => {
+    const { fake, repo } = setup();
+    fake.vault.addFile("Inbox/idea.md", "");
+    fake.vault.getMarkdownFiles = () => {
+      throw new Error("a missing folder must not fall back to enumerating");
+    };
+
+    expect(repo.listEntries()).toEqual([]);
+  });
+
+  it("walks the folder as it is spelled on disk, not as it is configured", () => {
+    const fake = createFakeApp();
+    // Configured lower-case; the vault has it capitalised.
+    const repo = new EntryRepository(fake as unknown as App, () => "journal");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.vault.getMarkdownFiles = () => {
+      throw new Error("casing resolution must not fall back to enumerating");
+    };
+
+    expect(repo.listEntries()).toHaveLength(1);
+  });
 });
 
 describe("createEntry", () => {

@@ -27,8 +27,13 @@ export class TFile extends TAbstractFile {
     super();
     this.path = path;
     this.name = path.split("/").pop() ?? path;
-    this.basename = this.name.replace(/\.md$/, "");
-    this.extension = "md";
+    // Derived from the path, not hardcoded to "md". `listEntries` walks the
+    // journal folder's whole subtree now rather than asking the vault for
+    // Markdown files only, so an attachment sitting next to the entries is a
+    // case the tests have to be able to express.
+    const dot = this.name.lastIndexOf(".");
+    this.extension = dot > 0 ? this.name.slice(dot + 1) : "";
+    this.basename = dot > 0 ? this.name.slice(0, dot) : this.name;
     this.stat = { ctime, mtime: ctime, size: 0 };
   }
 }
@@ -245,6 +250,18 @@ export class FakeVault extends FakeEvents {
     return root;
   }
 
+  /**
+   * Real Obsidian returns null for a path that is missing or is a file, which
+   * is what `listEntries` relies on to mean "no journal folder yet".
+   */
+  getFolderByPath(path: string): TFolder | null {
+    if (path === "") return this.getRoot();
+    if (!this.folders.has(path)) return null;
+    const folder = this.folderNode(path);
+    folder.children = this.childrenOf(path);
+    return folder;
+  }
+
   private childrenOf(parent: string): TAbstractFile[] {
     const children: TAbstractFile[] = [];
 
@@ -294,6 +311,22 @@ export class FakeVault extends FakeEvents {
     const next = fn(this.contents.get(file.path) ?? "");
     this.contents.set(file.path, next);
     return next;
+  }
+}
+
+/**
+ * Only the static walker is needed from `Vault`; the instance surface the code
+ * uses is `FakeVault`, handed over as `app.vault`. Obsidian's own
+ * implementation visits the root as well as its descendants, so this does too
+ * — callers must filter by type rather than assume only files arrive.
+ */
+export class Vault {
+  static recurseChildren(root: TFolder, cb: (file: TAbstractFile) => unknown): void {
+    cb(root);
+    for (const child of root.children ?? []) {
+      if (child instanceof TFolder) Vault.recurseChildren(child, cb);
+      else cb(child);
+    }
   }
 }
 
