@@ -39,7 +39,7 @@ GitHub releases directly.
      "name": "Simple Journal",
      "author": "Utku Aytaç",
      "description": "A continuous, reverse-chronological journal where every entry is its own Markdown note.",
-     "repo": "ukaytac/obsidian-journal-plugin"
+     "repo": "ukaytac/obsidian-simple-journal"
    }
    ```
 
