@@ -589,9 +589,29 @@
   display: none;
 }
 
+/* The inline axis here is deliberately NOT `!important`, and that is load
+   bearing. CodeMirror's base `.cm-line { padding: 0 2px 0 6px }` is injected at
+   runtime at (0,1,0), so a plain two-class rule already outranks it — beating
+   the 6px needs nothing stronger. Reaching for `!important` on this axis is
+   what broke list rendering: Obsidian positions a live-preview bullet with an
+   *inline* `padding-inline-start` on the list line, an `!important` author
+   declaration outranks a normal inline one, and with the indent gone the line's
+   own negative `text-indent` carried the marker out of view. A bullet list
+   rendered as three bare lines, indistinguishable from paragraphs.
+
+   So whatever inline-axis indent Obsidian gives a line — list, task, nested
+   level, quote — has to be able to win here. Naming those cases instead
+   (`:not(.HyperMD-list-line)`) would work today and is what this file must not
+   do: `HyperMD-*` is undocumented internals, and CLAUDE.md confines those to
+   the editor-embed exception. Splitting the axes needs no such knowledge.
+
+   The block axis still needs `!important`; see the measurement below. */
 .journal-entry-embed .cm-line {
-  padding-left: 0;
-  padding-right: 0;
+  padding-inline: 0;
+  padding-block: 0 !important;
+  margin: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
 }
 
 /* Obsidian's editor chrome is sized for a full note pane. Inside a timeline
@@ -599,10 +619,16 @@
    text sat right of its own timestamp on desktop and a huge blank band appeared
    above it on mobile.
    ---
-   `!important` is deliberate here, and these seven are the only ones in this
-   stylesheet. The usual advice — raise specificity instead — was measured
-   against Obsidian 1.8.9's app.css and four installed themes, per declaration,
-   for exactly the elements and properties reset below:
+   `!important` is deliberate here, and these eleven — four below, four on
+   `.cm-line` above, three on the gutter — are the only ones in this stylesheet.
+   The count was seven until `.cm-line` moved out of this block: it needs the
+   same box resets, but its inline padding has to stay negotiable so live-preview
+   list markers survive, which the `padding` shorthand cannot express. Splitting
+   it cost three duplicated declarations and one axis-specific `padding-block`.
+
+   The usual advice — raise specificity instead — was measured against Obsidian
+   1.8.9's app.css and four installed themes, per declaration, for exactly the
+   elements and properties reset in both blocks:
 
      to outrank every opposing rule, ours must exceed  (0,10,0)
        (app.css, `.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(…)
@@ -620,8 +646,8 @@
    third-party and unbounded. CodeMirror's own base styles are injected at
    runtime and are not in app.css either, so they cannot be enumerated at all.
 
-   What is bounded instead is the blast radius: every declaration below is
-   scoped inside `.journal-entry-embed`, so none of it can reach a real note's
+   What is bounded instead is the blast radius: every declaration in both blocks
+   is scoped inside `.journal-entry-embed`, so none of it can reach a real note's
    editor anywhere else in the app. That is the trade — give up on knowing the
    opponent, guarantee the damage cannot spread.
 
@@ -635,7 +661,6 @@
 .journal-entry-embed .cm-sizer,
 .journal-entry-embed .cm-contentContainer,
 .journal-entry-embed .cm-content,
-.journal-entry-embed .cm-line,
 .journal-entry-embed .markdown-source-view,
 .journal-entry-embed .markdown-embed-content {
   padding: 0 !important;

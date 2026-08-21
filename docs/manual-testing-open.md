@@ -37,6 +37,15 @@ anything felt off, it is worth writing down here rather than remembering.
 
 Failure in any of these is a real defect, not a rough edge.
 
+- [ ] **A task line shows its checkbox.** Type `- [ ] something` in an entry.
+      The checkbox renders and toggles on click. *(The rest of this check —
+      bullet markers, nested indent, quote border — passed on desktop in both
+      themes via the README capture; only the task line is left, and all four
+      are still unverified on mobile. Regression check for the `.cm-line`
+      padding split: the previous reset erased every bullet in the timeline and
+      the old wording, "type a list", passed anyway. See `manual-testing.md`,
+      "Fixed: list markers were missing from every entry".)*
+
 - [ ] **Continuous typing loses no characters.** Type a long sentence steadily,
       without pausing, for long enough that the save reaches disk twice while
       you are still typing. Read it back: every character present, in order.

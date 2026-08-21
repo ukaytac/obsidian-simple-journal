@@ -82,6 +82,46 @@ caret* below. It is there for its process lessons, not its narrative.
       focused afterwards, on both the fallback and (if available) the
       embedded editor.
 
+## Fixed: list markers were missing from every entry
+
+A bullet list in an entry rendered as bare lines — no marker, no indent, flush
+with the surrounding paragraphs. Found while shooting the README screenshot, not
+by this checklist, which is the part worth noting: **"Markdown formatting remains
+intact — type a list"** under *3. Content fidelity* was already here and had been
+ticked. Bold, italics and headings look identical whether or not the reset below
+is in play, so a pass on those read as a pass on the list too. That item now says
+what to look at instead of what to type.
+
+Root cause: `.cm-line` was inside the `padding: 0 !important` reset in
+`styles.css`. Obsidian positions a live-preview bullet with an **inline**
+`padding-inline-start` on the list line; an `!important` author declaration
+outranks a normal inline one, so the indent went to zero, and the line's own
+negative `text-indent` — untouched, because the reset never covered it — then
+carried the marker out of view.
+
+Fix: split the axes. `.cm-line` keeps `!important` on `padding-block` (the
+measured opponent there is a `padding-top` on `HyperMD-header` at (0,10,0)) and
+drops to a plain `padding-inline: 0`, which still outranks CodeMirror's injected
+base at (0,1,0) but loses to anything Obsidian sets inline — which is what it
+must do. Naming the cases instead (`:not(.HyperMD-list-line)`) was rejected:
+`HyperMD-*` is undocumented internals, and CLAUDE.md confines those to the
+editor-embed exception.
+
+Verified on desktop in both themes, from the README capture itself
+(`docs/images/simple-journal-screenshot-{light,dark}.png` — the light one is the
+same frame that first showed the bug):
+
+- [x] the marker is visible and the text is indented past it
+- [x] a nested level indents further than its parent, not to the same column
+- [x] blockquote text sits clear of its left border
+
+One case is still open, because the demo entries the capture was shot from carry
+no task line — a checklist inside a journal entry read as filler, so it came out:
+
+- [ ] task lines show their checkbox, and it is clickable
+
+Mobile is unverified for all four.
+
 ## Not a bug: ribbon order
 
 The order of `Open journal` and `New journal entry` in the ribbon — and in the
@@ -313,9 +353,15 @@ behaviour (search/backlinks/graph, live preview, the actual save/trash APIs).
 - [ ] **Wikilinks remain valid.** Type `[[Some Note]]` in an entry. It renders
       as a link, resolves on click, and appears in the target note's
       backlinks pane.
-- [ ] **Markdown formatting remains intact.** Type a list, a code block, a
-      heading, bold, and italics. All render correctly and the raw file
-      contains ordinary Markdown.
+- [ ] **Markdown formatting remains intact.** Type a bullet list, a nested
+      bullet under it, a task line, a blockquote, a code block, a heading, bold,
+      and italics. Check the parts that only lists have: the **marker is
+      visible**, the text is **indented past it**, the nested level indents
+      further, the checkbox renders and toggles, and the quote's text clears its
+      border. Bold and headings render the same whether or not the `.cm-line`
+      reset is misconfigured, so they prove nothing on their own — see *Fixed:
+      list markers were missing from every entry*. The raw file contains
+      ordinary Markdown.
 - [ ] **The entry is an ordinary note.** The entry appears in Search, in the
       graph, and in Properties. A Dataview or Bases query over the journal
       folder finds it.
