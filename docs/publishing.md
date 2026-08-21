@@ -38,7 +38,7 @@ GitHub releases directly.
      "id": "simple-journal",
      "name": "Simple Journal",
      "author": "Utku Aytaç",
-     "description": "A continuous, reverse-chronological journal where every entry is its own Markdown note.",
+     "description": "A continuous journal for Obsidian. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
      "repo": "ukaytac/obsidian-simple-journal"
    }
    ```
