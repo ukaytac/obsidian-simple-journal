@@ -7,6 +7,11 @@ wrote that day. The plugin shows them all in a single continuous timeline,
 newest first, directly editable — so you think about writing, not about
 files.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/simple-journal-screenshot-dark.png">
+  <img src="docs/images/simple-journal-screenshot-light.png" alt="The journal timeline: entries grouped under day headings, newest first, each showing only its time, with the calendar in the sidebar marking the days that hold entries.">
+</picture>
+
 ## What it does
 
 - **No titles.** Entries are identified by their timestamp. Nothing asks you
@@ -92,6 +97,10 @@ follows the plugin's own naming convention.
 Works on both desktop and mobile — the same timeline and the same code paths,
 with larger touch targets, an earlier incremental-loading threshold, and a
 lower cap on simultaneously mounted editors on mobile.
+
+The timeline is built from Obsidian's own CSS variables, so it follows whatever
+theme you use — the screenshot at the top of this page is showing you the light
+or the dark capture depending on your own.
 
 ## A note on the editor
 
