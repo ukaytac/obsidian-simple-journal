@@ -103,7 +103,7 @@ export default class JournalEntriesPlugin extends Plugin {
             error,
           );
           new Notice(
-            "Simple Journal: could not open a new entry from the link. See the developer console for details.",
+            "Could not open a new entry from the link. See the developer console for details.",
           );
         });
       });
@@ -215,14 +215,14 @@ export default class JournalEntriesPlugin extends Plugin {
 
       if (!view) {
         console.error("Simple Journal: the journal view was not available after opening it");
-        new Notice("Simple Journal: could not open the journal.");
+        new Notice("Could not open the journal.");
         return;
       }
 
       await view.startNewEntry();
     } catch (error) {
       console.error("Simple Journal: could not start a new entry", error);
-      new Notice("Simple Journal: could not start a new entry. See the developer console.");
+      new Notice("Could not start a new entry. See the developer console.");
     }
   }
 

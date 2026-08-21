@@ -1406,7 +1406,7 @@ export class JournalView extends ItemView {
             () => new Notice("Link copied"),
             (error) => {
               console.error("Simple Journal: could not copy the entry link", error);
-              new Notice("Simple Journal: could not copy the link. See the developer console for details.");
+              new Notice("Could not copy the link. See the developer console for details.");
             },
           );
         }),
@@ -1583,8 +1583,8 @@ export class JournalView extends ItemView {
       console.error("Simple Journal: could not change the entry's time", file.path, error);
       new Notice(
         error instanceof UnsafeFrontmatterError
-          ? "Simple Journal: this entry's frontmatter is too complex to edit safely here. Change \"created\" in the source note instead."
-          : "Simple Journal: could not change the entry's time. See the developer console for details.",
+          ? "This entry's frontmatter is too complex to edit safely here. Change \"created\" in the source note instead."
+          : "Could not change the entry's time. See the developer console for details.",
       );
       return;
     }
@@ -1602,7 +1602,7 @@ export class JournalView extends ItemView {
     } catch (error) {
       console.error("Simple Journal: could not rename the entry to match its new time", file.path, error);
       new Notice(
-        "Simple Journal: the entry's time was changed, but its file could not be renamed to match. See the developer console for details.",
+        "The entry's time was changed, but its file could not be renamed to match. See the developer console for details.",
       );
     }
 
@@ -1702,7 +1702,7 @@ export class JournalView extends ItemView {
       confirmed = await this.app.fileManager.promptForDeletion(file);
     } catch (error) {
       console.error("Simple Journal: could not delete entry", error);
-      new Notice("Simple Journal: could not delete the entry.");
+      new Notice("Could not delete the entry.");
       return;
     }
     if (!confirmed) return;
@@ -1763,7 +1763,7 @@ export class JournalView extends ItemView {
 
     if (this.app.vault.getAbstractFileByPath(file.path) === file) {
       rendered.el.removeClass("is-deleting");
-      new Notice("Simple Journal: could not delete the entry.");
+      new Notice("Could not delete the entry.");
       void this.mountEditor(rendered);
       return;
     }
@@ -2467,7 +2467,7 @@ export class JournalView extends ItemView {
       file = await this.plugin.repository.createEntry(created, valueAtCreate);
     } catch (error) {
       console.error("Simple Journal: could not create entry", error);
-      new Notice("Simple Journal: could not create the entry file. Your text is still here.");
+      new Notice("Could not create the entry file. Your text is still here.");
       // Let the user retry on the next keystroke — the composer (and
       // whatever it holds) is untouched. Only reclaim it if nothing else
       // has since torn the timeline down or opened a different one.

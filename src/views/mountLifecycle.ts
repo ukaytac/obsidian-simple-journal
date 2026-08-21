@@ -255,7 +255,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     fallback.mount(target.bodyEl, target.entry.file, text);
     target.editor = fallback;
 
-    new Notice("Simple Journal: switched this entry to plain text editing.");
+    new Notice("Switched this entry to plain text editing.");
   }
 
   /**

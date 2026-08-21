@@ -169,7 +169,7 @@ export async function save(target: SaveEntry, value: string, deps: SaveDeps): Pr
     (error) => {
       console.error("Simple Journal: failed to save an entry", target.entry.file.path, error);
       new Notice(
-        `Simple Journal: failed to save "${target.entry.file.path}". See the developer console for details.`,
+        `Failed to save "${target.entry.file.path}". See the developer console for details.`,
       );
       // REQUIRED: an older, failing write must not raise a marker after a
       // newer write for this same entry has already been issued (and
