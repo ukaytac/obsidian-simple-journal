@@ -24,29 +24,37 @@ gitignored and built in CI, so the release is the only place it exists.
 
 ## First submission to the directory
 
-Only the first version is submitted; after that, users get new versions from the
-GitHub releases directly.
+Submission is **not** a pull request against `obsidian-releases`. That was the
+old flow, and following it wastes an afternoon: `community-plugins.json` is 1.9 MB,
+past the size at which GitHub refuses to open its web editor, which is a good
+early hint that hand-editing it is no longer the intended path.
 
-1. A published (not draft) release must exist, tagged with the manifest version.
-2. The repository must be public, with `README.md`, `LICENSE` and
-   `manifest.json` at the root.
-3. Fork `obsidianmd/obsidian-releases` and append this object to the end of
-   `community-plugins.json`:
+The current flow: sign in to the Obsidian Community directory with an Obsidian
+account, link the GitHub account that owns the repository to prove ownership,
+and submit from there. `community-plugins.json` is then written by Obsidian's
+own automation, not by the author.
 
-   ```json
-   {
-     "id": "simple-journal",
-     "name": "Simple Journal",
-     "author": "Utku Aytaç",
-     "description": "A continuous journal for Obsidian. One entry is one Markdown note, a day holds as many as you wrote, and you edit them all inline in a single timeline.",
-     "repo": "ukaytac/obsidian-simple-journal"
-   }
-   ```
+What it validates, and where it looks:
 
-   `id`, `name`, `author` and `description` must match `manifest.json` exactly.
-   The id `simple-journal` was free as of the last check against the directory.
+- **`manifest.json` at the HEAD of the default branch** — not the release. Both
+  have to be right, for different reasons: the directory reads the branch, and
+  Obsidian installs the release assets.
+- **A published release** whose tag equals the manifest version, carrying
+  `main.js`, `manifest.json` and `styles.css` as individual assets.
+- **An `id` that does not contain the word "obsidian"**, and is unique across the
+  directory. `simple-journal` satisfies both. The repository name may contain it
+  — only the id is constrained.
+- **`README.md` and `LICENSE` at the repository root**, in a public repository.
 
-4. Open a pull request and fill in the checklist template honestly.
+Submission status lives on the author's community profile. A pending submission
+does not appear in `community-plugins.json`: that file is the published output,
+so absence there means "not listed yet", not "rejected".
+
+Newly listed plugins carry `- This plugin has not been manually reviewed by
+Obsidian staff.` appended to their description, so listing is self-service and
+manual review is a later, separate thing. Do not write that sentence into the
+manifest — the automation appends it, and the manifest must stay under the
+description length limit without it.
 
 ## What review will ask about
 
