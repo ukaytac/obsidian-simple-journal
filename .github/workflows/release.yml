@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Both are required to sign an attestation: id-token to get the OIDC token
+      # proving which workflow is running, attestations to record the result.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +30,20 @@ jobs:
       # should not become a downloadable release.
       - run: npm test
       - run: npm run build
+
+      # Signs a provenance statement tying these exact bytes to this repository,
+      # this workflow and this commit, so anyone can verify a downloaded asset
+      # was built from the source here rather than assembled by hand:
+      #   gh attestation verify main.js --repo ukaytac/obsidian-simple-journal
+      # Attested before the release is created, so no asset is ever downloadable
+      # without one.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       - name: Create draft release
         env:
