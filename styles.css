@@ -594,15 +594,32 @@
   padding-right: 0;
 }
 
-/* Obsidian's own editor rules are written as `.markdown-source-view.mod-cm6
-   .cm-sizer { … }` and friends — three class selectors, which outrank the
-   two-selector neutralisers above. That is why the entry text still sat right
-   of its own timestamp on desktop and why a huge blank band appeared above it
-   on mobile: our padding resets were losing the cascade to the app's, and the
-   app's are sized for a full note pane.
-   Rather than guess at every one of Obsidian's selectors, these declarations
-   win outright. `!important` is scoped inside `.journal-entry-embed`, so it
-   cannot reach a real note's editor anywhere else in the app. */
+/* Obsidian's editor chrome is sized for a full note pane. Inside a timeline
+   entry none of it is wanted: while these resets were losing the cascade, entry
+   text sat right of its own timestamp on desktop and a huge blank band appeared
+   above it on mobile.
+   ---
+   `!important` is deliberate here, and it is the one place in this stylesheet
+   that uses it. The usual advice — raise specificity instead — cannot work,
+   for three measured reasons:
+   1. Obsidian 1.8.9's app.css carries 28 rules that set the box of these very
+      elements, reaching (0,8,0), and some of them are themselves `!important`.
+      Nothing outranks `!important` by specificity.
+   2. CodeMirror injects its own base styles into the document at runtime.
+      They are not in app.css, so they cannot be enumerated ahead of time.
+   3. The remaining opponents are third-party and unbounded. Minimal alone adds
+      11 more rules against these same elements, with selectors like
+      `body :not(.canvas-node) .markdown-source-view.mod-cm6 .cm-gutters`. Any
+      theme a user installs can add more. A specificity race against CSS this
+      plugin neither controls nor can count is unwinnable by construction.
+   What is bounded instead is the blast radius: every declaration below is
+   scoped inside `.journal-entry-embed`, so none of it can reach a real note's
+   editor anywhere else in the app. That is the trade — give up on knowing the
+   opponent, guarantee the damage cannot spread.
+   A CSS-variable route was checked too (`--file-margins`, `--file-line-width`,
+   `--file-folding-offset` do drive some of these). It was rejected as pure
+   redundancy: while these `!important`s stand they already cover those cases,
+   so setting the variables as well would add lines that change nothing. */
 .journal-entry-embed .cm-editor,
 .journal-entry-embed .cm-scroller,
 .journal-entry-embed .cm-sizer,
@@ -617,11 +634,12 @@
   max-width: none !important;
 }
 
-/* Same cascade problem as the padding block above, one rule short: the
-   `display: none` on the gutter was a two-selector rule and lost to
-   Obsidian's own. CodeMirror lays the gutter out as a flex sibling of the
-   content, so while it is still displayed it reserves its full width and
-   pushes every entry's first character right of its own timestamp. */
+/* Same unwinnable cascade as the block above, and the same answer. This one is
+   separate because it was found one round later: the gutter's `display: none`
+   was still a two-selector rule and lost. CodeMirror lays the gutter out as a
+   flex sibling of the content, so while it is still displayed it reserves its
+   full width and pushes every entry's first character right of its own
+   timestamp — the gutter being visually empty does not make it free. */
 .journal-entry-embed .cm-gutters,
 .journal-entry-embed .cm-gutter {
   display: none !important;
