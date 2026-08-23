@@ -295,6 +295,20 @@ describe("JournalView tag scope", () => {
     expect(chips(h, file.path)).toEqual([]);
   });
 
+  it("chips only the frontmatter tag on an entry carrying both kinds", async () => {
+    // "does not chip an inline tag" above would pass just as well if chip
+    // rendering were broken outright (both give []). Tagging one entry with
+    // both kinds and asserting exactly one chip proves the frontmatter-only
+    // rule on its own, not merely in combination with its sibling test.
+    const file = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    tagEntry(h, file, ["therapy"]);
+    tagEntryInFrontmatter(h, file, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    expect(chips(h, file.path)).toEqual(["#work"]);
+  });
+
   it("scopes the timeline when a chip is clicked", async () => {
     const chipped = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
     const plain = addEntry(h, new Date(2026, 7, 12, 17, 23, 41));

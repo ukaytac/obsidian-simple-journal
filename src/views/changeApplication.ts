@@ -151,8 +151,15 @@ export interface ChangeApplicationDeps {
    * protects the editor's text, and the header's chips are not the editor.
    * Without this a chip would keep advertising a frontmatter tag the user
    * had already removed, until the next full reload.
+   *
+   * Narrowed to `entry`/`el` ONLY, deliberately — not the full `ChangeEntry`.
+   * The chips live in header DOM, a sibling of wherever the editor mounts,
+   * and must never reach into it; previously that was enforced only by this
+   * comment. Dropping `editor`/`saveHandle`/`savedBody` from the parameter
+   * makes it a compile error for a future implementation to reach for
+   * `rendered.editor` here, rather than a rule someone has to remember.
    */
-  refreshEntryTags(rendered: ChangeEntry): void;
+  refreshEntryTags(rendered: Pick<ChangeEntry, "entry" | "el">): void;
   /** Passed straight through to `entrySave.ts`'s `flushSave`. */
   save: SaveDeps;
 }

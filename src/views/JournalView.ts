@@ -465,7 +465,7 @@ export class JournalView extends ItemView {
     logUnsavedTextIfLost: (rendered) => this.logUnsavedTextIfLost(rendered as RenderedEntry),
     clearMobileTimers: (rendered) => this.clearMobileTimers(rendered as RenderedEntry),
     matchesScope: (entry) => this.matchesScope(entry),
-    refreshEntryTags: (rendered) => this.refreshEntryTags(rendered as RenderedEntry),
+    refreshEntryTags: (rendered) => this.refreshEntryTags(rendered),
     save: this.saveDeps,
   });
 
@@ -2813,6 +2813,11 @@ export class JournalView extends ItemView {
       chip.addEventListener("click", () => {
         void this.setTagScope(tag);
       });
+      // Same convention as the time button's tooltip above: the visible text
+      // is only the bare tag ("#work"), which a screen reader would announce
+      // with no indication that activating it does anything. The tooltip
+      // doubles as the accessible name and names the action instead.
+      setTooltip(chip, `Filter by #${tag}`);
     }
   }
 
@@ -2827,10 +2832,13 @@ export class JournalView extends ItemView {
    * Confined strictly to `.journal-entry-tags`, a child of `headerEl`: that
    * element is a SIBLING of `bodyEl`, where the editor is mounted, so
    * touching it cannot disturb the editor's focus, selection, or CM6 state.
-   * `RenderedEntry` also hands out `bodyEl`/`editor` — do not widen this to
-   * touch either.
+   * Enforced by the type now, not just this comment: the parameter is
+   * narrowed to `entry`/`el` (see `ChangeApplicationDeps.refreshEntryTags`'s
+   * doc in `changeApplication.ts`), so `rendered.editor`/`.bodyEl` are not
+   * even reachable here — reaching for either is a compile error, not a
+   * convention to remember.
    */
-  private refreshEntryTags(rendered: RenderedEntry): void {
+  private refreshEntryTags(rendered: Pick<RenderedEntry, "entry" | "el">): void {
     const tagsEl = rendered.el.querySelector<HTMLElement>(".journal-entry-tags");
     if (tagsEl) this.renderEntryTagsInto(tagsEl, rendered.entry);
   }

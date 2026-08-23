@@ -791,6 +791,26 @@
   cursor: pointer;
 }
 
-.journal-entry-header .journal-entry-tag:hover {
+/* The focus ring below is a box-shadow, which forced-colors mode discards
+   along with all author colours, and Obsidian's button base sets
+   `outline: none`. Without this, a high-contrast user gets no focus
+   indicator at all — same fix as `.journal-entry-time` above. */
+@media (forced-colors: active) {
+  .journal-entry-header .journal-entry-tag:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
+.journal-entry-header .journal-entry-tag:hover,
+.journal-entry-header .journal-entry-tag:focus-visible {
   color: var(--text-accent);
+}
+
+/* The `box-shadow: none` above also erases Obsidian's own
+   `button:focus-visible` ring — without this, tabbing to a chip would leave
+   no visible focus indicator at all. Reinstated explicitly, using the same
+   variable Obsidian's own focus rings use — same fix as `.journal-entry-time`
+   above. */
+.journal-entry-header .journal-entry-tag:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }
