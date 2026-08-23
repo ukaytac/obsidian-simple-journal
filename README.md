@@ -31,6 +31,10 @@ files.
 - **Ordinary Markdown.** Every entry is a normal note in your vault. Links,
   tags, properties, search, backlinks, graph, Bases, Dataview, and other
   plugins all work.
+- **Filterable by tag.** Narrow the timeline to one tag when you want to read
+  a single thread back — still newest first, still continuous. Nothing is
+  hidden permanently: the filter names itself at the top of the timeline and
+  is gone the moment you clear it or restart.
 - **Reacts to changes made elsewhere.** Edit an entry from another pane,
   rename it, delete it, or change its `created` property — the timeline
   updates to match.
@@ -60,6 +64,7 @@ added. Two entries created in the same second get a numeric suffix
 | `New journal entry` | Returns to today and focuses a fresh entry |
 | `Go to today` | Scrolls the timeline back to the top |
 | `Open calendar` | Reveals the calendar in the sidebar |
+| `Filter journal by tag` | Narrows the timeline to one tag |
 
 `obsidian://simple-journal-new` starts a new entry too, so a phone
 home-screen shortcut can capture a thought in one tap.
@@ -77,6 +82,32 @@ back by an accidental tap is worse than nothing happening.
 Clicking a day **anchors** the timeline to it: that day and everything older.
 It anchors rather than filters, so the journal stays one continuous timeline
 that you can keep scrolling into the past.
+
+## Tags
+
+Tag an entry the way you tag anything else in Obsidian — type `#something` as
+you write, or put `tags:` in its properties. The plugin never writes a tag for
+you and never rewrites one you wrote.
+
+A tag written in the properties would otherwise be invisible here, because the
+timeline deliberately hides the properties panel, so those appear as a small
+chip beside the entry's time. A tag typed into the text does not get a chip:
+it already shows as Obsidian's own clickable pill, and showing it twice would
+just be noise.
+
+`Filter journal by tag` narrows the timeline to a single tag — from the command,
+or by clicking one of those chips. The filtered tag is named at the top of the
+timeline with a `✕` beside it; `Esc` clears it too. It filters rather than
+anchors, because a tag is not a point in time: "this tag and older" would mean
+nothing. It does compose with the calendar, though, so you can read one tag
+from a given day backwards.
+
+Matching is exact and case-insensitive: filtering by `#work` does not pull in
+`#work/project`, which is listed separately when you pick a tag.
+
+The filter is never saved. Restart Obsidian and the journal comes back whole —
+a filter restored at startup would hide most of your journal with no visible
+reason.
 
 ## Entry actions
 
