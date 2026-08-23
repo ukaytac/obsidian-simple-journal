@@ -11,7 +11,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
-import { resolveTags } from "../journal/entryTags";
+import { entryHasTag, resolveTags } from "../journal/entryTags";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
@@ -236,6 +236,22 @@ export class JournalView extends ItemView {
    * `goToDate` ever assigns this.
    */
   private anchorDate: Date | null = null;
+  /**
+   * When set, the timeline shows only entries carrying this tag (`#`
+   * stripped, cased as the user chose it; matching is case-insensitive).
+   *
+   * A SCOPE, not an anchor: a tag is not a point on the chronological axis,
+   * so "this tag and older" has no meaning — see the spec at
+   * `docs/superpowers/specs/2026-08-23-journal-tags-design.md`. Composes with
+   * `anchorDate`: the two are orthogonal, one deciding WHICH entries and the
+   * other WHERE to start.
+   *
+   * NEVER persisted — not to view state, not to settings. A saved workspace
+   * layout that restored a filter would hide most of a user's journal at
+   * startup with no visible cause, the same "permanently locked out" failure
+   * the calendar's placement policy exists to avoid.
+   */
+  private tagScope: string | null = null;
   private loading = false;
   /**
    * True while `onSentinelVisible` is processing a callback that it itself
@@ -441,6 +457,8 @@ export class JournalView extends ItemView {
     fileIdentityStillValid: (file) => this.app.vault.getAbstractFileByPath(file.path) === file,
     logUnsavedTextIfLost: (rendered) => this.logUnsavedTextIfLost(rendered as RenderedEntry),
     clearMobileTimers: (rendered) => this.clearMobileTimers(rendered as RenderedEntry),
+    matchesScope: (entry) => this.matchesScope(entry),
+    refreshEntryTags: (rendered) => this.refreshEntryTags(rendered as RenderedEntry),
     save: this.saveDeps,
   });
 
@@ -564,7 +582,7 @@ export class JournalView extends ItemView {
 
     const composerSnapshot = await this.clearTimeline();
 
-    this.index = this.plugin.journal.getEntries();
+    this.index = this.scopedIndex();
     // With no anchor this is `null` — page one, exactly as before. With an
     // anchor, seed the cursor with the entry immediately before where the
     // anchored day starts, so the very first `loadNextPage()` yields the
@@ -573,7 +591,7 @@ export class JournalView extends ItemView {
     this.installMountObserver();
 
     if (this.index.length === 0) {
-      this.renderEmptyState();
+      this.renderEmptyState(false, this.tagScope);
       // Still installed even though there's nothing to page yet: the
       // sentinel's own initial IntersectionObserver callback finds the
       // first page empty and tears itself back down immediately (see
@@ -592,7 +610,7 @@ export class JournalView extends ItemView {
     // then loads nothing. Distinct from the `index.length === 0` branch
     // above: that one never calls `loadNextPage` at all, this one already
     // did and it legitimately came back with nothing to show.
-    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null);
+    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.tagScope);
 
     this.installSentinel();
     await this.reestablishComposer(composerSnapshot);
@@ -1103,8 +1121,8 @@ export class JournalView extends ItemView {
    * and why; this wrapper exists only so calls go through `this.` — same
    * reasoning as `mountEditor`'s doc in `mountLifecycle.ts`.
    */
-  private renderEmptyState(anchored = false): void {
-    this.timelineDom.renderEmptyState(anchored);
+  private renderEmptyState(anchored = false, scopeTag: string | null = null): void {
+    this.timelineDom.renderEmptyState(anchored, scopeTag);
   }
 
   /**
@@ -2035,6 +2053,23 @@ export class JournalView extends ItemView {
    * doc in `mountLifecycle.ts` for the general reasoning).
    */
   private async applyChangesNow(changes: JournalChange[]): Promise<void> {
+    // Re-derived here, once per batch, rather than kept in sync change by
+    // change: `JournalService` has already applied this batch to its live
+    // index by the time listeners run (see its class doc), so one O(n) pass
+    // over a metadata-only array — per debounce flush, not per keystroke —
+    // buys exact correctness with no incremental-sync state to get wrong.
+    // Skipped entirely when unscoped, so `this.index` stays the live alias.
+    if (this.tagScope !== null) this.index = this.scopedIndex();
+
+    // A folder-level rebuild ("reload") means the journal root itself moved,
+    // so the tag set the scope was chosen from no longer describes what is
+    // being shown. Cleared before `changeApplication` fires the reload, so
+    // the rebuild it triggers already sees no scope.
+    if (changes.some((change) => change.kind === "reload") && this.tagScope !== null) {
+      this.tagScope = null;
+      this.renderScopeBar();
+    }
+
     await this.changeApplication.applyChangesNow(changes);
   }
 
@@ -2647,6 +2682,71 @@ export class JournalView extends ItemView {
     // would leave a blank pane with no way back to the message short of a
     // manual reload.
     if (this.rendered.size === 0) this.renderEmptyState();
+  }
+
+  /**
+   * The entries the current scope admits.
+   *
+   * Unscoped this returns the service's LIVE array, exactly as before —
+   * `JournalService`'s class doc explains why that alias matters. Scoped it
+   * returns a fresh filtered array, re-derived rather than incrementally
+   * maintained (see `reloadNow`/`applyChangesNow`): `filter` preserves the
+   * same entry objects, so `pageAfter`'s path cursor and
+   * `insertEntryInPlace`'s `indexOf`-by-reference both keep working against
+   * it unchanged, and two lists can never drift apart.
+   */
+  private scopedIndex(): JournalEntry[] {
+    const all = this.plugin.journal.getEntries();
+    const scope = this.tagScope;
+    if (scope === null) return all;
+    return all.filter((entry) => entryHasTag(entry, scope));
+  }
+
+  /** Whether `entry` belongs in the timeline as currently filtered. */
+  private matchesScope(entry: JournalEntry): boolean {
+    return this.tagScope === null || entryHasTag(entry, this.tagScope);
+  }
+
+  /** Task 9 renders the scope bar here. */
+  private renderScopeBar(): void {}
+
+  /** Task 10 re-renders one row's frontmatter chips here. */
+  private refreshEntryTags(_rendered: RenderedEntry): void {}
+
+  /** The active tag scope, or null. Read by `main.ts` to build the suggester. */
+  activeTagScope(): string | null {
+    return this.tagScope;
+  }
+
+  /**
+   * Scopes the timeline to `tag`, or clears the scope when `tag` is null.
+   *
+   * Keeps any active anchor: the two compose (see `tagScope`'s doc). Goes
+   * through the same serialized `reload()` chain as every other timeline
+   * rebuild, and scrolls to the top afterwards so the newest matching entry
+   * is actually visible rather than leaving the viewport where the previous,
+   * differently-populated timeline had it.
+   */
+  async setTagScope(tag: string | null): Promise<void> {
+    const next = tag === null ? null : tag.trim().replace(/^#+/, "").trim();
+    this.tagScope = next === "" ? null : next;
+    this.renderScopeBar();
+    await this.reload();
+    this.scrollToTop();
+  }
+
+  /**
+   * Clears BOTH the scope and the anchor and reloads — what `startNewEntry`
+   * needs. Clearing only one would leave the other still able to exclude the
+   * entry about to be written: it would be safe on disk but invisible in the
+   * timeline, with no explanation.
+   */
+  private async resetToNewest(): Promise<void> {
+    this.tagScope = null;
+    this.anchorDate = null;
+    this.renderScopeBar();
+    await this.reload();
+    this.scrollToTop();
   }
 
   scrollToTop(): void {
