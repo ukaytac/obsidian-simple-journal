@@ -3,21 +3,33 @@
 
 .journal-view {
   overflow-y: auto;
-  /* `.journal-view` IS `ItemView.contentEl`, i.e. Obsidian's own
-     `.view-content` — the scrollport itself, not a wrapper around it. A
-     `position: sticky` child resolves `top: 0` against this box's PADDING
-     edge, not its visible edge (CSS Positioned Layout §sticky-pos: the
-     inset is relative to the nearest scroll container's padding box). So
-     whatever padding-top Obsidian's own stylesheet happens to put on
-     `.view-content` becomes a permanent gap above the sticky scope bar —
-     transparent, with scrolled entries visible through it — no matter what
-     that padding-top is. Rather than guess at Obsidian's value (which can
-     differ by version or theme) and try to cancel it with a matching
-     negative offset, this rule just zeroes the padding on the exact box we
-     already own the class of. `.journal-timeline` and
-     `.journal-scope-bar-inner` supply their own padding below, so nothing
-     is lost — this only removes an outer padding that would otherwise
-     double up with theirs and, worse, break the sticky bar's offset. */
+}
+
+/* `.journal-view` IS `ItemView.contentEl`, i.e. Obsidian's own
+   `.view-content`, and it is the scrollport itself — not a wrapper around
+   one (verified in a live vault: the nearest ancestor with a scrolling
+   `overflow-y` is this very element).
+
+   A `position: sticky` child resolves `top: 0` against its scrollport's
+   PADDING box, not its visible edge. So any padding-top on `.view-content`
+   becomes a permanent transparent strip above the sticky scope bar, with
+   scrolled entries showing through it, and any horizontal padding keeps the
+   bar's background from reaching the sides. A live vault measured exactly
+   that: `12px 12px 32px`, a 12px gap above the bar and 24px of uncovered
+   width.
+
+   Both class names are chained deliberately. A single `.journal-view`
+   selector ties on specificity with a `.view-content` rule and therefore
+   loses to any stylesheet that loads later than this one — which THEMES do
+   (the measured `12px 12px 32px` came from one, not from core, and an
+   earlier attempt using the single class was silently overridden while the
+   `overflow-y` in the same block applied fine). Chaining makes this two
+   classes, so it wins on specificity rather than on load order.
+
+   `.journal-timeline` and `.journal-scope-bar-inner` carry their own
+   padding, so nothing is lost visually — this only removes an outer
+   padding that doubled up with theirs and broke the sticky offset. */
+.view-content.journal-view {
   padding: 0;
 }
 
