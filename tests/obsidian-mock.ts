@@ -330,14 +330,77 @@ export class Vault {
   }
 }
 
-/** In-memory metadata cache. Frontmatter is supplied per path by the test. */
+/**
+ * In-memory metadata cache. Frontmatter is supplied per path by the test;
+ * inline `#tag` occurrences are supplied separately via `inlineTags` (bare
+ * tag text, no `#`), because a real cache reports the two through different
+ * fields and `resolveTags` must be provable against both.
+ */
 export class FakeMetadataCache extends FakeEvents {
   frontmatter = new Map<string, Record<string, unknown>>();
+  /** Inline tags per path, WITHOUT the leading `#`. */
+  inlineTags = new Map<string, string[]>();
 
-  getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {
+  getFileCache(
+    file: TFile,
+  ): { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } | null {
     const fm = this.frontmatter.get(file.path);
-    return fm ? { frontmatter: fm } : null;
+    const inline = this.inlineTags.get(file.path);
+    // Null for a file the test said nothing about, matching a real cache that
+    // has not indexed (or found anything in) the file — `entryFor` relies on
+    // that to fall back to the filename convention.
+    if (!fm && !inline) return null;
+
+    const cache: { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } = {};
+    if (fm) cache.frontmatter = fm;
+    // Real Obsidian reports inline tags WITH the `#`, and with a `position`
+    // nothing under test reads — only `.tag` is modeled.
+    if (inline) cache.tags = inline.map((tag) => ({ tag: `#${tag}` }));
+    return cache;
   }
+}
+
+/**
+ * Stand-in for Obsidian's `parseFrontMatterTags`. Returns tags WITH a leading
+ * `#`, like the real function, and accepts both of the shapes a user's
+ * frontmatter can legitimately hold — a YAML list, or one comma/space
+ * separated string.
+ */
+export function parseFrontMatterTags(
+  frontmatter: Record<string, unknown> | null | undefined,
+): string[] | null {
+  if (!frontmatter) return null;
+
+  const raw = frontmatter.tags ?? frontmatter.tag;
+  if (raw === undefined || raw === null) return null;
+
+  const list = Array.isArray(raw) ? raw : String(raw).split(/[,\s]+/);
+  const tags = list
+    .filter((value) => typeof value === "string" || typeof value === "number")
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0)
+    .map((value) => (value.startsWith("#") ? value : `#${value}`));
+
+  return tags.length > 0 ? tags : null;
+}
+
+/**
+ * Stand-in for Obsidian's `getAllTags`: inline tags and frontmatter tags
+ * merged into one array, each with its `#`. Deliberately does NOT dedupe —
+ * `resolveTags` dedupes for itself, and leaving duplicates in makes a test
+ * that relies on that dedupe prove something real.
+ */
+export function getAllTags(
+  cache: { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } | null,
+): string[] | null {
+  if (!cache) return null;
+
+  const tags = [
+    ...(cache.tags ?? []).map((entry) => entry.tag),
+    ...(parseFrontMatterTags(cache.frontmatter) ?? []),
+  ];
+
+  return tags.length > 0 ? tags : null;
 }
 
 export class FakeFileManager {
@@ -430,6 +493,37 @@ export class Modal {
   }
   onOpen(): void {}
   onClose(): void {}
+}
+
+/**
+ * Minimal stand-in for Obsidian's `SuggestModal`. Real Obsidian renders a
+ * floating prompt with a filtered list; jsdom has no layout for that, so this
+ * exposes the three abstract members a subclass implements and a test-only
+ * `choose` to pick a suggestion by hand — which is the whole surface
+ * `TagScopeModal` has.
+ */
+export abstract class SuggestModal<T> extends Modal {
+  limit = 50;
+  emptyStateText = "";
+  inputEl: HTMLInputElement;
+
+  constructor(app?: unknown) {
+    super(app);
+    this.inputEl = document.createElement("input");
+  }
+
+  setPlaceholder(text: string): void {
+    this.inputEl.placeholder = text;
+  }
+
+  abstract getSuggestions(query: string): T[];
+  abstract renderSuggestion(value: T, el: HTMLElement): void;
+  abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
+
+  /** Test-only: chooses `item` exactly as a click in the real prompt would. */
+  choose(item: T): void {
+    this.onChooseSuggestion(item, new MouseEvent("click"));
+  }
 }
 
 /**

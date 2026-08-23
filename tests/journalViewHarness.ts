@@ -90,6 +90,21 @@ export function addEntry(harness: Harness, created: Date, body = "", suffix = ""
 }
 
 /**
+ * Registers `tags` (bare, no `#`) as the INLINE tags of an already-added
+ * entry file. Must be called before `harness.service.load()` for the tags to
+ * be in the initial index — `entryFor` reads the cache once, when the index
+ * is built.
+ */
+export function tagEntry(harness: Harness, file: TFile, tags: string[]): void {
+  harness.app.metadataCache.inlineTags.set(file.path, tags);
+}
+
+/** Same, for FRONTMATTER tags — the ones the timeline renders chips for. */
+export function tagEntryInFrontmatter(harness: Harness, file: TFile, tags: string[]): void {
+  harness.app.metadataCache.frontmatter.set(file.path, { tags });
+}
+
+/**
  * Test-only reflection into `JournalView`'s private state and methods —
  * `rendered`, `dayGroups`, `timelineEl`, `observer`/`mountObserver`,
  * `composer`, `lastLoadedPath`, `applyChangesNow`, etc. Typed `any`
