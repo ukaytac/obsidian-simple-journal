@@ -97,11 +97,11 @@ visible cause. A scope lives only as long as the user keeps it.
 | File | Change |
 | --- | --- |
 | `journal/entryTags.ts` *(new)* | `resolveTags(cache): string[]` over `getAllTags()`. Strips the leading `#`, dedupes case-insensitively keeping first-seen casing, preserves nested form (`work/project`). Source-blind (Rule 1). Also `frontmatterTags(cache): string[]` via `parseFrontMatterTags`, for chips only (Rule 3). |
-| `journal/entry.ts` | `JournalEntry` becomes `{ file, created, tags: string[] }`. |
+| `journal/entry.ts` | `JournalEntry` becomes `{ file, created, tags: readonly string[] }`. `readonly` was added during finalization once review noticed nothing anywhere mutated a `tags` array in place — the replace-only rule §3's Rule 2 depends on is now a compile error rather than a comment asking a future caller to remember it. |
 | `journal/entryRepository.ts` | `entryFor` fills `tags` from `resolveTags(metadataCache.getFileCache(file))`. An unavailable cache yields `[]` — the timeline must not break for one entry, same principle as the `created` fallback chain. |
 | `services/journalService.ts` | `applyUpsert`'s "content" branch assigns `existing.tags = entry.tags`, alongside its existing `existing.file` write-back. Without it an externally-changed tag never reaches the index. **No new `JournalChange` kind**: a tag change is already `content`. |
 | `views/applyChange.ts` | The pure decision function gains a scope predicate. Per change it decides `insert` / `remove` / `refresh`: an entry that left the scope is removed, one that entered is inserted, one that never matched is ignored. Still DOM-free and unit-tested directly. |
-| `views/TagScopeModal.ts` *(new)* | `SuggestModal<string>` over the union of tags across journal entries, alphabetical. First item is **"Clear filter"**, present only while a scope is active. |
+| `views/TagScopeModal.ts` *(new)* | `SuggestModal<TagChoice>` over the union of tags across journal entries, alphabetical, where `TagChoice` is `{ kind: "tag"; tag: string } \| { kind: "clear" }`. Shipped as a union rather than the `SuggestModal<string>` with `""` meaning "clear" this section originally specified, because a bare string leaves "the empty string" as an implicit, easy-to-miss third meaning alongside "an actual tag" — the union makes the caller's `choice.kind` check exhaustive and puts "clear" one `===` away from a real tag. First item is **"Clear filter"** (`{ kind: "clear" }`), present only while a scope is active. |
 | `views/JournalView.ts` | Owns `tagScope: string \| null`, the scope bar, and scope-aware index derivation (§5). |
 | `main.ts` | Registers the `Filter journal by tag` command. |
 
@@ -149,8 +149,27 @@ predicate decides what happens to a *rendered row* for each change in the batch.
   view-local, with no cross-view state surface.
 - **`Go to today`.** Keeps the scope and moves to the newest matching entry.
   Navigation, not creation.
-- **Journal folder setting changed, or a `reload` change arrives.** The scope is
-  cleared; its tag set belonged to a different folder.
+- **Journal folder setting changed, or a `reload` change arrives.** This section
+  originally specified that the scope is cleared here, on the theory that its
+  tag set belonged to a different folder. That was removed during
+  implementation: the scope now SURVIVES a folder-level rebuild. Reasoning —
+  - `JournalService.isJournalFolderPath` matches DESCENDANTS of the journal
+    root, and every install has them (`Journal/2026/08`), so renaming
+    `Journal/2026` triggers this same `"reload"` path while changing not one
+    entry and not one tag. Clearing the scope there would have silently
+    dropped the user's active filter over an edit that has nothing to do with
+    tags.
+  - The semantically identical rebuild on the settings path
+    (`refreshJournal` in `main.ts`) never clears the scope either, so the
+    originally planned behaviour made the design contradict itself depending
+    on which of two equivalent rebuilds happened to run.
+  - There is no correctness need for it: the scoped index is re-derived from
+    `getEntries()` fresh on every reload (§5), so a rebuilt index filters
+    correctly regardless. A scope that ends up matching nothing renders "No
+    entries tagged #x." (see Empty result, below) — which explains itself,
+    unlike a filter that silently disappeared on its own. Silently changing
+    state the user did not ask to change is exactly the failure `CLAUDE.md`'s
+    calendar section warns about, and it applies here too.
 - **Empty result.** A single line — "No entries tagged #x" — instead of a blank
   timeline. Blank space would conceal that a filter is on.
 
@@ -192,4 +211,7 @@ Tag-entry UI, tag rename, tag hierarchy browsing, multiple simultaneous tags
 3. `journalService`: a `content` change updates `tags` on the existing index entry.
 4. Paging under a scope: `pageAfter` with a scoped list, a lost cursor, and a scope
    combined with an anchor.
-5. Scope cleared on `New journal entry`, on a folder change, and on a `reload` change.
+5. Scope cleared on `New journal entry`. NOT on a folder change and NOT on a
+   `reload` change — see the corrected "Journal folder setting changed, or a
+   `reload` change arrives" bullet under §6; the scope surviving those is
+   pinned by its own test rather than being an untested assumption.

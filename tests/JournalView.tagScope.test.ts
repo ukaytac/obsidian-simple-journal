@@ -4,6 +4,7 @@ import {
   addEntry,
   createHarness,
   internals,
+  settle,
   tagEntry,
   tagEntryInFrontmatter,
   timelineEl,
@@ -433,5 +434,36 @@ describe("JournalView tag scope", () => {
 
     expect(h.view.activeTagScope()).toBeNull();
     expect(internals(h.view).anchorDate).toBeNull();
+  });
+
+  /**
+   * `requestTagScope` is the fire-and-forget wrapper every UI trigger uses
+   * (the clear button, Escape, a chip click, and `main.ts`'s modal
+   * callback) precisely because `setTagScope`'s own promise can genuinely
+   * reject — `reload()`'s `clearTimeline` flushes real vault writes, and
+   * `renderStatic` awaits `readBody` unguarded. None of those call sites
+   * has an `async` caller to hand a rejection to, so if this wrapper let one
+   * through it would become an unhandled rejection that never reaches the
+   * console — exactly the failure `newEntry`'s doc in `main.ts` already
+   * names for a different path. Stubbing `setTagScope` itself to reject
+   * keeps this test independent of which specific internal write happens to
+   * be the one that can fail today.
+   */
+  it("requestTagScope reports a rejection instead of leaving it unhandled", async () => {
+    await openWithTaggedEntries();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("boom");
+    const setTagScope = vi.spyOn(h.view, "setTagScope").mockRejectedValueOnce(failure);
+
+    // Not awaited on purpose: every real call site fires this the same way
+    // (a DOM handler, a modal callback), with no promise to await.
+    h.view.requestTagScope("therapy");
+    await settle();
+
+    expect(setTagScope).toHaveBeenCalledWith("therapy");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Simple Journal: could not change the tag filter",
+      failure,
+    );
   });
 });

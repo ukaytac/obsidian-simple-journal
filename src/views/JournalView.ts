@@ -11,7 +11,13 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
-import { entriesWithTag, entryHasTag, frontmatterTags, resolveTags } from "../journal/entryTags";
+import {
+  entriesWithTag,
+  entryHasTag,
+  frontmatterTags,
+  normalizeTag,
+  resolveTags,
+} from "../journal/entryTags";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
@@ -2823,7 +2829,7 @@ export class JournalView extends ItemView {
       .setClass("clickable-icon");
     clear.buttonEl.addClass("journal-scope-clear");
     clear.onClick(() => {
-      void this.setTagScope(null);
+      this.requestTagScope(null);
     });
   }
 
@@ -2839,7 +2845,7 @@ export class JournalView extends ItemView {
     if (target?.closest(".journal-entry")) return;
 
     event.preventDefault();
-    void this.setTagScope(null);
+    this.requestTagScope(null);
   }
 
   /**
@@ -2860,7 +2866,7 @@ export class JournalView extends ItemView {
         attr: { type: "button" },
       });
       chip.addEventListener("click", () => {
-        void this.setTagScope(tag);
+        this.requestTagScope(tag);
       });
       // Same convention as the time button's tooltip above: the visible text
       // is only the bare tag ("#work"), which a screen reader would announce
@@ -2907,11 +2913,37 @@ export class JournalView extends ItemView {
    * differently-populated timeline had it.
    */
   async setTagScope(tag: string | null): Promise<void> {
-    const next = tag === null ? null : tag.trim().replace(/^#+/, "").trim();
+    const next = tag === null ? null : normalizeTag(tag);
     this.tagScope = next === "" ? null : next;
     this.renderScopeBar();
     await this.reload();
     this.scrollToTop();
+  }
+
+  /**
+   * Fire-and-forget entry point for every UI trigger that changes the tag
+   * scope: the clear button and the Escape handler below, a chip click, and
+   * `main.ts`'s `TagScopeModal` callback. All four fire this as a plain,
+   * un-awaited call — the modal callback and the DOM handlers have no
+   * `async` caller to return a promise to — so a rejection from
+   * `setTagScope` has to be caught HERE, once, rather than at each site.
+   *
+   * That rejection is real, not theoretical: `reload()` awaits
+   * `clearTimeline()`, which flushes every pending debounced save (an actual
+   * vault write that can fail), and `renderStatic` awaits `readBody`
+   * unguarded. `enqueueTimelineMutation`'s doc is explicit that the chain
+   * swallows a failure only so it doesn't wedge the *next* enqueued
+   * mutation — the promise handed back to THIS call's own caller still
+   * carries the real outcome. Left unguarded, that outcome would be an
+   * unhandled rejection that never reaches the console, the same failure
+   * `newEntry`'s doc in `main.ts` already names once for a different path:
+   * the filter would appear to do nothing, with no trace of why.
+   */
+  requestTagScope(tag: string | null): void {
+    this.setTagScope(tag).catch((error: unknown) => {
+      console.error("Simple Journal: could not change the tag filter", error);
+      new Notice("Could not change the tag filter. See the developer console.");
+    });
   }
 
   /**

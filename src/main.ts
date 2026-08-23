@@ -250,34 +250,55 @@ export default class JournalEntriesPlugin extends Plugin {
    * are actually reachable in the timeline — never a vault-wide tag list
    * offering choices that would scope the journal to nothing.
    *
-   * No try/catch here, unlike `newEntry`: everything on this path — reading
-   * the already-loaded entry index, deduping tags, reading a getter, opening
-   * a suggester modal — is synchronous, in-memory, and has no realistic
-   * failure mode, unlike `newEntry`'s actual vault write. `goToToday` and
-   * `goToDateInJournal` leave the same kind of path unwrapped for the same
-   * reason.
+   * Wrapped in try/catch, like `newEntry`, and for the same reason: this is
+   * invoked as `void this.filterByTag()` (see the command registration
+   * above), and it starts with the same `await this.openJournal()` call as
+   * `newEntry` does — `leaf.setViewState(...)` then `revealLeaf(leaf)` —
+   * which can throw for the same reasons `newEntry`'s doc names. Left
+   * unwrapped, that throw would be an unhandled rejection that never reaches
+   * the console: the command would appear to do nothing. An earlier version
+   * of this comment claimed the whole path was "synchronous, in-memory, and
+   * has no realistic failure mode" — true of the tag-collection and
+   * modal-opening code below `openJournal()`, never of `openJournal()`
+   * itself. `goToToday` and `goToDateInJournal` share that same unwrapped
+   * `openJournal()` call and the same exposure; this method just no longer
+   * joins them in leaving it unhandled.
+   *
+   * The modal callback below calls `view.requestTagScope(...)`, not
+   * `view.setTagScope(...)` directly: `setTagScope`'s returned promise can
+   * genuinely reject (`reload()` flushes every pending debounced save
+   * through `clearTimeline` — a real vault write — and `renderStatic` awaits
+   * `readBody` unguarded), and this callback has no `async` caller of its
+   * own to hand that rejection to. `requestTagScope` is the one guarded
+   * wrapper every fire-and-forget tag-scope call site uses; see its doc on
+   * `JournalView`.
    */
   async filterByTag(): Promise<void> {
-    const view = await this.openJournal();
+    try {
+      const view = await this.openJournal();
 
-    if (!view) {
-      console.error("Simple Journal: the journal view was not available after opening it");
-      new Notice("Could not open the journal.");
-      return;
+      if (!view) {
+        console.error("Simple Journal: the journal view was not available after opening it");
+        new Notice("Could not open the journal.");
+        return;
+      }
+
+      const tags = collectTags(this.journal.getEntries());
+      const active = view.activeTagScope();
+
+      // Nothing to choose and nothing to clear — a prompt would be a dead end.
+      if (tags.length === 0 && active === null) {
+        new Notice("No tags in the journal yet.");
+        return;
+      }
+
+      new TagScopeModal(this.app, tags, active !== null, (choice) => {
+        view.requestTagScope(choice.kind === "clear" ? null : choice.tag);
+      }).open();
+    } catch (error) {
+      console.error("Simple Journal: could not open the tag filter", error);
+      new Notice("Could not open the tag filter. See the developer console.");
     }
-
-    const tags = collectTags(this.journal.getEntries());
-    const active = view.activeTagScope();
-
-    // Nothing to choose and nothing to clear — a prompt would be a dead end.
-    if (tags.length === 0 && active === null) {
-      new Notice("No tags in the journal yet.");
-      return;
-    }
-
-    new TagScopeModal(this.app, tags, active !== null, (choice) => {
-      void view.setTagScope(choice.kind === "clear" ? null : choice.tag);
-    }).open();
   }
 
   /**

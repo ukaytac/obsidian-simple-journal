@@ -502,6 +502,7 @@ Also implemented:
 
 ```text
 Open calendar
+Filter journal by tag
 ```
 
 Still later:
@@ -1149,9 +1150,9 @@ Anything beyond these seven requirements is secondary until they are reliable.
 # Non-Goals
 
 The MVP above is met, and a few things have deliberately been built past it —
-the calendar, the capture URI, timeline anchoring, and correcting an entry's
-time. Each is documented in its own section as a product decision, not left as
-an undocumented feature.
+the calendar, the capture URI, timeline anchoring, correcting an entry's time,
+and the tag scope. Each is documented in its own section as a product
+decision, not left as an undocumented feature.
 
 Still NOT to implement:
 

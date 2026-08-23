@@ -12,10 +12,14 @@ export interface JournalEntry {
    * REPLACE-ONLY: never mutate this array in place. Every producer builds a
    * fresh array and assigns it wholesale (see `JournalService.applyUpsert`'s
    * `existing.tags = entry.tags`, which aliases a freshly-parsed array
-   * straight into this long-lived index object). That is safe only because
-   * nothing anywhere calls `.push`/`.splice`/etc. on a `tags` array after the
-   * fact — a convention this type cannot enforce, so it is written here
-   * instead.
+   * straight into this long-lived index object). `readonly string[]` makes
+   * that a compile error rather than a convention to remember: `.push`,
+   * `.splice`, and every other mutating array method are rejected by `tsc`
+   * on this field, while the wholesale replacement above — and every
+   * consumer here, which only ever reads (`.some`, `flatMap`,
+   * `normalizeAll`'s `readonly string[]` parameter, `toEqual` in tests) —
+   * keeps working untouched. Same precedent as `refreshEntryTags`'s
+   * `Pick<>` narrowing in `JournalView.ts`.
    */
-  tags: string[];
+  tags: readonly string[];
 }
