@@ -192,6 +192,28 @@ describe("JournalView tag scope", () => {
     expect(scopeBar(h).textContent).toBe("");
   });
 
+  it("wraps the tag and clear button in an inner element, keeping the outer bar full-bleed", async () => {
+    // Pins the full-bleed fix's structure: styles.css relies on the OUTER
+    // `.journal-scope-bar-active` carrying no max-width/centering (so its
+    // background can span the whole scrollport) while an INNER
+    // `.journal-scope-bar-inner` wrapper carries the centering and padding
+    // that lines the text up with the timeline column. If the tag or the
+    // clear button ever moved back to being a direct child of the outer
+    // bar, this would catch it even though the textContent-based assertions
+    // elsewhere in this file would not.
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const bar = scopeBar(h);
+    const inner = bar.querySelector(":scope > .journal-scope-bar-inner");
+    expect(inner).not.toBeNull();
+    expect(inner?.querySelector(".journal-scope-tag")).not.toBeNull();
+    expect(inner?.querySelector(".journal-scope-clear")).not.toBeNull();
+    // Neither lives directly on the outer bar.
+    expect(bar.querySelector(":scope > .journal-scope-tag")).toBeNull();
+    expect(bar.querySelector(":scope > .journal-scope-clear")).toBeNull();
+  });
+
   it("survives a folder-level rebuild, which changes no tag", async () => {
     // Product decision, deliberately pinned: a `"reload"` change must NOT
     // clear the scope. `isJournalFolderPath` matches DESCENDANTS of the

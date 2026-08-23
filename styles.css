@@ -3,6 +3,22 @@
 
 .journal-view {
   overflow-y: auto;
+  /* `.journal-view` IS `ItemView.contentEl`, i.e. Obsidian's own
+     `.view-content` — the scrollport itself, not a wrapper around it. A
+     `position: sticky` child resolves `top: 0` against this box's PADDING
+     edge, not its visible edge (CSS Positioned Layout §sticky-pos: the
+     inset is relative to the nearest scroll container's padding box). So
+     whatever padding-top Obsidian's own stylesheet happens to put on
+     `.view-content` becomes a permanent gap above the sticky scope bar —
+     transparent, with scrolled entries visible through it — no matter what
+     that padding-top is. Rather than guess at Obsidian's value (which can
+     differ by version or theme) and try to cancel it with a matching
+     negative offset, this rule just zeroes the padding on the exact box we
+     already own the class of. `.journal-timeline` and
+     `.journal-scope-bar-inner` supply their own padding below, so nothing
+     is lost — this only removes an outer padding that would otherwise
+     double up with theirs and, worse, break the sticky bar's offset. */
+  padding: 0;
 }
 
 .journal-timeline {
@@ -319,8 +335,10 @@
 
 /* Mirrors `.journal-timeline`'s horizontal padding above, so the scope
    bar's `#tag` stays aligned with the entries underneath it instead of
-   sitting a size step to the right of them. */
-.is-mobile .journal-scope-bar-active {
+   sitting a size step to the right of them. The horizontal padding now
+   lives on `.journal-scope-bar-inner`, not the full-bleed outer bar (see
+   that rule above), so that is what this override has to target too. */
+.is-mobile .journal-scope-bar-inner {
   padding-left: var(--size-4-4);
   padding-right: var(--size-4-4);
 }
@@ -744,17 +762,29 @@
   display: none;
 }
 
+/* Deliberately full-bleed: no max-width/margin here. This element's
+   background is what has to cover anything that scrolls in from either
+   side, so it has to span the whole scrollport, not just the centred text
+   column. `.journal-scope-bar-inner` (below) is the one that centres to
+   `--file-line-width` and carries the horizontal padding — mirroring the
+   split `.journal-timeline` doesn't need, because it has no full-bleed
+   background of its own to provide. This box's height is just whatever the
+   inner wrapper's padded content needs, so the background still covers
+   exactly the bar's visible extent. */
 .journal-scope-bar-active {
   position: sticky;
   top: 0;
   z-index: 1;
+  background-color: var(--background-primary);
+}
+
+.journal-scope-bar-inner {
   display: flex;
   align-items: center;
   gap: var(--size-4-2);
   padding: var(--size-4-2) var(--size-4-8);
   max-width: var(--file-line-width);
   margin: 0 auto;
-  background-color: var(--background-primary);
 }
 
 .journal-scope-tag {

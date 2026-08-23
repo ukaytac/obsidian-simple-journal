@@ -2821,9 +2821,19 @@ export class JournalView extends ItemView {
     el.toggleClass("journal-scope-bar-active", this.tagScope !== null);
     if (this.tagScope === null) return;
 
-    el.createSpan({ cls: "journal-scope-tag", text: `#${this.tagScope}` });
+    // The outer element (`el`) is full-bleed — see styles.css — so its
+    // background covers the whole scrollport width. This inner wrapper is
+    // what actually centres to `--file-line-width` and carries the
+    // horizontal padding, mirroring `.journal-timeline`'s own centring, so
+    // the tag label lines up with the entries underneath it. It is only
+    // ever created in this scoped branch: unscoped, `el` stays with zero
+    // children, so `.journal-scope-bar:empty` in styles.css still applies
+    // and the bar takes no space, exactly as before this wrapper existed.
+    const inner = el.createDiv({ cls: "journal-scope-bar-inner" });
 
-    const clear = new ButtonComponent(el)
+    inner.createSpan({ cls: "journal-scope-tag", text: `#${this.tagScope}` });
+
+    const clear = new ButtonComponent(inner)
       .setIcon("x")
       .setTooltip("Clear tag filter")
       .setClass("clickable-icon");

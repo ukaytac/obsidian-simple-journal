@@ -667,6 +667,15 @@ and a live metadata cache — none of which the unit tests' mocks can observe.
 - [ ] **Clicking a chip scopes the timeline.** Click the `#work` chip.
       Confirm only entries carrying that tag remain, the scope bar names
       `#work`, and both its `✕` and `Esc` restore the full timeline.
+- [ ] **The scope bar sits flush at the top and covers full width while
+      scrolling.** With a scope active, scroll the timeline. Confirm no gap
+      opens above the bar and no entry text is visible above, or to either
+      side of, the bar at any point during the scroll — the bar's background
+      should read as one solid strip across the whole view, with the `#tag`
+      label lining up with the entries beneath it. This is the fix for the
+      original full-bleed bug (`.journal-view` padding vs. sticky's offset,
+      plus the bar's own `max-width`); this check is the one that would have
+      caught it.
 - [ ] **Scope survives a reload, and composes with a calendar day click.**
       With the timeline scoped to a tag, trigger a reload unrelated to the
       scope (e.g. edit a different entry from another pane). Confirm the
