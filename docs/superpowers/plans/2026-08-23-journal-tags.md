@@ -1875,6 +1875,27 @@ git add src/views/TagScopeModal.ts tests/tagScopeModal.test.ts
 git commit -m "feat: tag suggester for the journal filter"
 ```
 
+**Correction applied during execution.** Step 1's test called a mock-only
+`choose()` helper on `SuggestModal`. That fails `tsc` — the test type-checks
+`instance: TagScopeModal` against the REAL Obsidian package (only vitest
+aliases `obsidian` to the mock; `tsc` does not), and the real `SuggestModal`
+has no `choose()`. The shipped test calls the real, public
+`onChooseSuggestion(item, evt)` directly instead, which exercises the same
+path. `tests/obsidian-mock.ts`'s now-dead `choose()` helper was removed, and
+its module doc gained a note against adding convenience surface to any class
+that shadows a real Obsidian class.
+
+Calling the real member directly then surfaced a second, smaller mismatch:
+Step 3's `onChooseSuggestion(choice: TagChoice): void` drops the real
+signature's `evt` parameter, which TypeScript permits for an override (a
+subclass may implement fewer parameters than its abstract member) but which
+also narrows the arity TypeScript checks at any call site typed as
+`TagScopeModal` specifically — so the two-argument call from the corrected
+test failed with "Expected 1 arguments, but got 2." The shipped
+`onChooseSuggestion` keeps the real member's full `(choice, _evt)` signature,
+ignoring `evt`, so a `TagScopeModal`-typed reference accepts calls at the same
+arity the real API does.
+
 ---
 
 ### Task 12: The `Filter journal by tag` command

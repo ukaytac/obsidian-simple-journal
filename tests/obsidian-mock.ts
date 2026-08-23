@@ -4,6 +4,15 @@
  * without a running Obsidian instance. Only what the tested code needs is here.
  */
 
+// `tsc` resolves `obsidian` to the real package's type definitions, while
+// vitest resolves it to this file — so a member added to a class here that
+// shadows a real Obsidian class, but that the real API does NOT have, will
+// type-check fine under vitest and then fail `tsc` the moment a test uses it
+// through a real-typed reference (exactly what happened with a `choose()`
+// helper once added to `SuggestModal` below). This mock must not invent
+// convenience surface on such classes; a test-only helper belongs in the
+// test harness or the test itself, never on a class standing in for a real
+// one.
 export class TAbstractFile {
   // Typed `any` so mock instances remain structurally assignable to the real
   // `obsidian` package's TFile/TAbstractFile when tsc (unlike vitest) resolves
@@ -505,9 +514,10 @@ export class Modal {
 /**
  * Minimal stand-in for Obsidian's `SuggestModal`. Real Obsidian renders a
  * floating prompt with a filtered list; jsdom has no layout for that, so this
- * exposes the three abstract members a subclass implements and a test-only
- * `choose` to pick a suggestion by hand — which is the whole surface
- * `TagScopeModal` has.
+ * exposes only the three abstract members a subclass implements. A test
+ * drives a choice by calling the real, public `onChooseSuggestion(item, evt)`
+ * directly — see the constraint note atop this file for why nothing
+ * convenience-only is added here.
  */
 export abstract class SuggestModal<T> extends Modal {
   limit = 50;
@@ -526,11 +536,6 @@ export abstract class SuggestModal<T> extends Modal {
   abstract getSuggestions(query: string): T[] | Promise<T[]>;
   abstract renderSuggestion(value: T, el: HTMLElement): void;
   abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
-
-  /** Test-only: chooses `item` exactly as a click in the real prompt would. */
-  choose(item: T): void {
-    this.onChooseSuggestion(item, new MouseEvent("click"));
-  }
 }
 
 /**
