@@ -193,6 +193,13 @@ interface ComposerSnapshot {
 
 export class JournalView extends ItemView {
   private timelineEl!: HTMLElement;
+  /**
+   * The tag-scope bar. Deliberately a sibling of `timelineEl` rather than a
+   * child: `clearTimeline` empties `timelineEl` on every reload, and the one
+   * element that explains why the timeline looks empty must not be part of
+   * what gets emptied. Present but blank when no scope is active.
+   */
+  private scopeBarEl: HTMLElement | null = null;
   private rendered = new Map<string, RenderedEntry>();
   /**
    * Day-group `.journal-day-entries` containers, keyed by `dayKey`, so
@@ -492,7 +499,16 @@ export class JournalView extends ItemView {
   async onOpen(): Promise<void> {
     this.contentEl.empty();
     this.contentEl.addClass("journal-view");
+    this.scopeBarEl = this.contentEl.createDiv({ cls: "journal-scope-bar" });
     this.timelineEl = this.contentEl.createDiv({ cls: "journal-timeline" });
+    this.renderScopeBar();
+
+    // `addEventListener` + `register` rather than a bare listener, so the
+    // view's own teardown removes it — nothing else would.
+    const onKeyDown = (event: KeyboardEvent): void => this.onContentKeyDown(event);
+    this.contentEl.addEventListener("keydown", onKeyDown);
+    this.register(() => this.contentEl.removeEventListener("keydown", onKeyDown));
+
     // ItemView.register runs this unsubscribe when the view closes, so no
     // change can reach `applyChange` once torn down, short of the race
     // `closed` itself guards against.
@@ -2681,7 +2697,7 @@ export class JournalView extends ItemView {
     // this, abandoning the very first entry in an otherwise-empty journal
     // would leave a blank pane with no way back to the message short of a
     // manual reload.
-    if (this.rendered.size === 0) this.renderEmptyState();
+    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.tagScope);
   }
 
   /**
@@ -2707,8 +2723,44 @@ export class JournalView extends ItemView {
     return this.tagScope === null || entryHasTag(entry, this.tagScope);
   }
 
-  /** Task 9 renders the scope bar here. */
-  private renderScopeBar(): void {}
+  /**
+   * Renders (or blanks) the scope bar. Idempotent, and safe before `onOpen`
+   * has created the element.
+   */
+  private renderScopeBar(): void {
+    const el = this.scopeBarEl;
+    if (!el) return;
+
+    el.empty();
+    el.toggleClass("journal-scope-bar-active", this.tagScope !== null);
+    if (this.tagScope === null) return;
+
+    el.createSpan({ cls: "journal-scope-tag", text: `#${this.tagScope}` });
+
+    const clear = new ButtonComponent(el)
+      .setIcon("x")
+      .setTooltip("Clear tag filter")
+      .setClass("clickable-icon");
+    clear.buttonEl.addClass("journal-scope-clear");
+    clear.onClick(() => {
+      void this.setTagScope(null);
+    });
+  }
+
+  /**
+   * Escape clears an active scope — but only when it was not pressed inside
+   * an entry, where the editor (vim mode, an open autocomplete, a selection)
+   * owns that key and would be silently overridden.
+   */
+  private onContentKeyDown(event: KeyboardEvent): void {
+    if (event.key !== "Escape" || this.tagScope === null) return;
+
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (target?.closest(".journal-entry")) return;
+
+    event.preventDefault();
+    void this.setTagScope(null);
+  }
 
   /** Task 10 re-renders one row's frontmatter chips here. */
   private refreshEntryTags(_rendered: RenderedEntry): void {}

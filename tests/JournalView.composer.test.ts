@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addEntry, createHarness, internals, settle } from "./journalViewHarness";
+import { addEntry, createHarness, internals, settle, tagEntry } from "./journalViewHarness";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -91,6 +91,36 @@ describe("JournalView composer lifecycle", () => {
     expect(internals(h.view).composer).toBeNull();
     expect(h.app.vault.files.size).toBe(0);
     expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeNull();
+  });
+
+  it("abandoning an empty composer into an otherwise-empty scoped timeline keeps naming the scope", async () => {
+    // Regression test: `discardEmptyComposer` used to call `renderEmptyState()`
+    // with no arguments, which always renders the generic "no journal entries
+    // yet" message — wrong here on two counts: the journal is not empty (a
+    // tag scope is excluding everything), and that is exactly the situation
+    // the scoped message exists to explain.
+    const h = createHarness();
+    const other = addEntry(h, new Date(2026, 7, 12, 9, 0, 0));
+    tagEntry(h, other, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    await h.view.setTagScope("therapy");
+    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
+      "No entries tagged #therapy.",
+    );
+
+    await h.view.startNewEntry();
+    const textarea = composerTextarea(h.view);
+    typeInto(textarea, "   ");
+    typeInto(textarea, "");
+    textarea.blur();
+    await settle();
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
+      "No entries tagged #therapy.",
+    );
   });
 
   it("a blur that never received any input does not discard the composer, even after a genuine focus", async () => {

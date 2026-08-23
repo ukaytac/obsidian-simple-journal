@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addEntry, createHarness, tagEntry, timelineEl } from "./journalViewHarness";
+import { addEntry, createHarness, internals, tagEntry, timelineEl } from "./journalViewHarness";
 import type { Harness } from "./journalViewHarness";
 
 function renderedPaths(h: Harness): string[] {
@@ -116,5 +116,50 @@ describe("JournalView tag scope", () => {
     expect(renderedPaths(h)).toEqual([older.path]);
     expect(h.view.activeTagScope()).toBe("therapy");
     void tagged;
+  });
+
+  function scopeBar(h: Harness): HTMLElement {
+    return internals(h.view).scopeBarEl as HTMLElement;
+  }
+
+  it("names the scope in a bar, and clears it from there", async () => {
+    await openWithTaggedEntries();
+    expect(scopeBar(h).textContent).toBe("");
+
+    await h.view.setTagScope("therapy");
+    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+
+    scopeBar(h).querySelector<HTMLButtonElement>(".journal-scope-clear")?.click();
+    await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
+    expect(scopeBar(h).textContent).toBe("");
+  });
+
+  it("lives outside the timeline, so a reload cannot wipe it", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    await h.view.reload();
+
+    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+  });
+
+  it("clears the scope on Escape outside an entry", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    scopeBar(h).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
+  });
+
+  it("leaves Escape alone inside an entry, where the editor owns it", async () => {
+    const { tagged } = await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const row = timelineEl(h.view).querySelector<HTMLElement>(
+      `.journal-entry[data-path="${tagged.path}"]`,
+    );
+    row?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(h.view.activeTagScope()).toBe("therapy");
   });
 });

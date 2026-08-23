@@ -715,3 +715,32 @@
   gap: var(--size-4-2);
   margin-top: var(--size-4-4);
 }
+
+/* Tag scope bar. A sibling of .journal-timeline (see JournalView.onOpen),
+   sticky against the scroll container so the one explanation for a
+   filtered-looking journal cannot scroll away. Blank and inert — no padding,
+   no background — when no scope is active, so an unscoped timeline looks
+   exactly as it did before tag scoping existed. */
+.journal-scope-bar:empty {
+  display: none;
+}
+
+.journal-scope-bar-active {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-8);
+  max-width: var(--file-line-width);
+  margin: 0 auto;
+  background-color: var(--background-primary);
+}
+
+.journal-scope-tag {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
