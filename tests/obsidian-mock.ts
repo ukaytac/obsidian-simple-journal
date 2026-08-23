@@ -331,6 +331,16 @@ export class Vault {
 }
 
 /**
+ * Shape `getFileCache` returns and `getAllTags` accepts. Named once so the
+ * two cannot drift apart if the shape later grows a member such as
+ * `position`.
+ */
+export interface FakeFileCache {
+  frontmatter?: Record<string, unknown>;
+  tags?: Array<{ tag: string }>;
+}
+
+/**
  * In-memory metadata cache. Frontmatter is supplied per path by the test;
  * inline `#tag` occurrences are supplied separately via `inlineTags` (bare
  * tag text, no `#`), because a real cache reports the two through different
@@ -341,9 +351,7 @@ export class FakeMetadataCache extends FakeEvents {
   /** Inline tags per path, WITHOUT the leading `#`. */
   inlineTags = new Map<string, string[]>();
 
-  getFileCache(
-    file: TFile,
-  ): { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } | null {
+  getFileCache(file: TFile): FakeFileCache | null {
     const fm = this.frontmatter.get(file.path);
     const inline = this.inlineTags.get(file.path);
     // Null for a file the test said nothing about, matching a real cache that
@@ -351,7 +359,7 @@ export class FakeMetadataCache extends FakeEvents {
     // that to fall back to the filename convention.
     if (!fm && !inline) return null;
 
-    const cache: { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } = {};
+    const cache: FakeFileCache = {};
     if (fm) cache.frontmatter = fm;
     // Real Obsidian reports inline tags WITH the `#`, and with a `position`
     // nothing under test reads — only `.tag` is modeled.
@@ -364,7 +372,8 @@ export class FakeMetadataCache extends FakeEvents {
  * Stand-in for Obsidian's `parseFrontMatterTags`. Returns tags WITH a leading
  * `#`, like the real function, and accepts both of the shapes a user's
  * frontmatter can legitimately hold — a YAML list, or one comma/space
- * separated string.
+ * separated string — under either the plural `tags` key or the singular
+ * `tag` key.
  */
 export function parseFrontMatterTags(
   frontmatter: Record<string, unknown> | null | undefined,
@@ -390,9 +399,7 @@ export function parseFrontMatterTags(
  * `resolveTags` dedupes for itself, and leaving duplicates in makes a test
  * that relies on that dedupe prove something real.
  */
-export function getAllTags(
-  cache: { frontmatter?: Record<string, unknown>; tags?: Array<{ tag: string }> } | null,
-): string[] | null {
+export function getAllTags(cache: FakeFileCache | null): string[] | null {
   if (!cache) return null;
 
   const tags = [
@@ -516,7 +523,7 @@ export abstract class SuggestModal<T> extends Modal {
     this.inputEl.placeholder = text;
   }
 
-  abstract getSuggestions(query: string): T[];
+  abstract getSuggestions(query: string): T[] | Promise<T[]>;
   abstract renderSuggestion(value: T, el: HTMLElement): void;
   abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
 

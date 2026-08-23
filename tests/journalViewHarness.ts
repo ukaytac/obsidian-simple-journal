@@ -99,7 +99,13 @@ export function tagEntry(harness: Harness, file: TFile, tags: string[]): void {
   harness.app.metadataCache.inlineTags.set(file.path, tags);
 }
 
-/** Same, for FRONTMATTER tags — the ones the timeline renders chips for. */
+/**
+ * Same, for FRONTMATTER tags — the ones the timeline renders chips for.
+ * Overwrites (does not merge with) any frontmatter already registered for
+ * this path — safe today only because `addEntry` never writes into
+ * `metadataCache.frontmatter` itself. A future helper touching the same map
+ * for the same path would need to merge instead.
+ */
 export function tagEntryInFrontmatter(harness: Harness, file: TFile, tags: string[]): void {
   harness.app.metadataCache.frontmatter.set(file.path, { tags });
 }
