@@ -130,3 +130,53 @@ describe("decideChangeAction: added and reload", () => {
     expect(decideChangeAction(change, state())).toEqual({ type: "reloadView" });
   });
 });
+
+describe("decideChangeAction with a tag scope", () => {
+  const rendered = { exists: true, focused: false, dirty: false, fileStillExists: true };
+  const absent = { exists: false, focused: false, dirty: false, fileStillExists: true };
+
+  it("does not insert an added entry the scope excludes", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent, false)).toEqual({ type: "noop" });
+  });
+
+  it("still inserts an added entry the scope admits", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent, true)).toEqual({ type: "insert" });
+  });
+
+  it("removes a rendered entry that has left the scope", () => {
+    expect(decideChangeAction({ kind: "content", entry }, rendered, false)).toEqual({
+      type: "remove",
+      flush: true,
+    });
+  });
+
+  it("inserts an entry that has entered the scope", () => {
+    expect(decideChangeAction({ kind: "content", entry }, absent, true)).toEqual({
+      type: "insert",
+    });
+  });
+
+  it("never yanks a row the user is focused in, even out of scope", () => {
+    expect(
+      decideChangeAction({ kind: "content", entry }, { ...rendered, focused: true }, false),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("never yanks a row with unsaved text, even out of scope", () => {
+    expect(
+      decideChangeAction({ kind: "content", entry }, { ...rendered, dirty: true }, false),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("removes rather than repositions a moved entry the scope excludes", () => {
+    expect(decideChangeAction({ kind: "moved", entry }, rendered, false)).toEqual({
+      type: "remove",
+      flush: true,
+    });
+  });
+
+  it("defaults to in-scope, so an unscoped timeline behaves exactly as before", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent)).toEqual({ type: "insert" });
+    expect(decideChangeAction({ kind: "content", entry }, rendered)).toEqual({ type: "refresh" });
+  });
+});

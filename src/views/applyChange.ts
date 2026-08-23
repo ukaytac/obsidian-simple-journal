@@ -48,14 +48,26 @@ export type ChangeAction =
  * directly with fabricated `RenderedState`, rather than only through a live
  * `JournalView` (which needs a DOM, `IntersectionObserver`s, and Obsidian
  * internals this test environment doesn't provide).
+ *
+ * `inScope` is whether the changed entry belongs in the timeline as
+ * currently filtered — always `true` for an unscoped timeline, which is why
+ * it defaults that way: an unscoped journal must behave exactly as it did
+ * before tag scoping existed. Only consulted for the three kinds that carry
+ * an entry; "removed" and "reload" are scope-independent.
  */
-export function decideChangeAction(change: JournalChange, state: RenderedState): ChangeAction {
+export function decideChangeAction(
+  change: JournalChange,
+  state: RenderedState,
+  inScope = true,
+): ChangeAction {
   switch (change.kind) {
     case "reload":
       return { type: "reloadView" };
 
     case "added":
-      return { type: "insert" };
+      // An entry the scope excludes is not merely rendered elsewhere — it is
+      // not part of this timeline at all, so there is nothing to insert.
+      return inScope ? { type: "insert" } : { type: "noop" };
 
     case "removed":
       // Nothing rendered at this path (e.g. a delete of a path that was
@@ -70,6 +82,7 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       return { type: "remove", flush: state.fileStillExists };
 
     case "moved":
+      if (!inScope) return leaveScope(state);
       // Nothing rendered under this path yet: still insert it fresh, same
       // as "added" — reachable when a rename also changes the resolved
       // `created` (the old rendering, if any, was already torn down by this
@@ -78,6 +91,7 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       return { type: "reposition", flush: state.fileStillExists };
 
     case "content":
+      if (!inScope) return leaveScope(state);
       // Same reasoning as "moved": nothing rendered yet, insert fresh
       // rather than silently dropping the change (reachable after a
       // same-timestamp rename).
@@ -94,4 +108,22 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       if (state.focused || state.dirty) return { type: "noop" };
       return { type: "refresh" };
   }
+}
+
+/**
+ * What to do with a rendered row whose entry no longer belongs in the
+ * current scope — the user removed the scoped tag from it, or changed it to
+ * a different one, from anywhere in Obsidian.
+ *
+ * The focused/dirty decline is the same one `"content"` makes above, and
+ * matters MORE here: removing a scoped tag from an entry is something a user
+ * plausibly does while typing in that very entry, and destroying the editor
+ * mid-keystroke would take unsaved text with it. The row then stays visible
+ * although out of scope until the next reload — a briefly over-inclusive
+ * timeline, which is the safe direction to be wrong in.
+ */
+function leaveScope(state: RenderedState): ChangeAction {
+  if (!state.exists) return { type: "noop" };
+  if (state.focused || state.dirty) return { type: "noop" };
+  return { type: "remove", flush: state.fileStillExists };
 }
