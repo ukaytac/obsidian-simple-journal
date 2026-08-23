@@ -139,6 +139,20 @@ export interface ChangeApplicationDeps {
   logUnsavedTextIfLost(rendered: ChangeEntry): void;
   /** `this.clearMobileTimers` — shared with `clearTimeline`/`confirmDelete`. */
   clearMobileTimers(rendered: ChangeEntry): void;
+  /**
+   * Whether `entry` belongs in the timeline as currently filtered —
+   * `JournalView.matchesScope`. Always true when no tag scope is active.
+   */
+  matchesScope(entry: JournalEntry): boolean;
+  /**
+   * Re-renders one row's frontmatter tag chips from the current metadata
+   * cache — `JournalView.refreshEntryTags`. Called for every "content"/
+   * "moved" change, INCLUDING the ones whose action is `noop`: that decline
+   * protects the editor's text, and the header's chips are not the editor.
+   * Without this a chip would keep advertising a frontmatter tag the user
+   * had already removed, until the next full reload.
+   */
+  refreshEntryTags(rendered: ChangeEntry): void;
   /** Passed straight through to `entrySave.ts`'s `flushSave`. */
   save: SaveDeps;
 }
@@ -462,7 +476,11 @@ export function createChangeApplication(mountOrder: string[], deps: ChangeApplic
       // Remaining kinds ("added" | "content" | "moved") all carry `entry`.
       const path = change.entry.file.path;
       const rendered = deps.getRendered(path);
-      const action = decideChangeAction(change, renderedStateFor(rendered));
+      // Before the switch, so it also runs for the `noop` a focused/dirty
+      // editor produces — see `refreshEntryTags`'s doc in the deps.
+      if (rendered && change.kind !== "added") deps.refreshEntryTags(rendered);
+      const inScope = deps.matchesScope(change.entry);
+      const action = decideChangeAction(change, renderedStateFor(rendered), inScope);
 
       switch (action.type) {
         case "noop":
@@ -540,9 +558,30 @@ export function createChangeApplication(mountOrder: string[], deps: ChangeApplic
           break;
 
         case "remove":
+          // Reachable only for an entry that has LEFT the active tag scope
+          // (see `decideScopeExit` in `applyChange.ts`); a genuine deletion
+          // is a "removed" change, handled above.
+          if (action.flush && rendered) {
+            await flushSave(rendered, deps.save);
+            if (deps.isClosed() || generation !== deps.getGeneration()) return;
+
+            // Unreachable in practice: `decideScopeExit` only returns
+            // `remove` when the row is NOT dirty, so the flush above has
+            // nothing to write and cannot leave it dirty. Kept as defensive
+            // parity with the "removed" and "reposition" branches — if it
+            // ever did become reachable, tearing this rendering down would
+            // replace the on-screen text with the stale `savedBody` and
+            // discard exactly what the "not saved" marker promises is still
+            // safe. Leaving an out-of-scope row on screen is the smaller
+            // harm by a wide margin.
+            if (isDirty(rendered)) break;
+          }
+          if (removeRenderedEntry(path)) dayGroupsDirty = true;
+          break;
+
         case "reloadView":
           // Unreachable for "added"/"content"/"moved" — decideChangeAction
-          // only returns these for "removed"/"reload", both handled above.
+          // only returns this for "reload", handled above.
           break;
       }
     }

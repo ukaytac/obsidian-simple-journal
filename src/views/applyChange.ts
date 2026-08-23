@@ -55,13 +55,13 @@ export type ChangeAction =
  * before tag scoping existed. Only consulted for the three kinds that carry
  * an entry; "removed" and "reload" are scope-independent.
  *
- * TRIPWIRE for the next caller: `remove` is now reachable for `"content"`
- * and `"moved"` when `inScope` is `false` (via `decideScopeExit`).
- * `changeApplication.ts`'s batch loop still treats `remove`/`reloadView` as
- * unreachable for these two kinds and drops them with a bare `break` — true
- * today only because no caller passes `inScope: false` yet. That consumer
- * MUST be implemented before any caller starts passing `inScope: false`, or
- * every scope exit decided here becomes a silent no-op that no test catches.
+ * TRIPWIRE for future maintainers: `remove` is reachable for `"content"` and
+ * `"moved"` when `inScope` is `false` (via `decideScopeExit`), and
+ * `changeApplication.ts`'s `applyChangesNow` handles it in its `"remove"`
+ * case. If that case is ever refactored to drop `"content"`/`"moved"` back
+ * to a bare `break` (as it still does for the genuinely-unreachable
+ * `"reloadView"`), every scope exit decided here silently becomes a no-op
+ * that no test catches.
  */
 export function decideChangeAction(
   change: JournalChange,
