@@ -19,6 +19,11 @@ the suite, builds, and opens a **draft** release carrying `main.js`,
 `manifest.json` and `styles.css`. Draft on purpose: look at the three assets
 before anyone can download them. Publish the draft from the GitHub releases page.
 
+The workflow gives the draft a title and no body. Paste the body from
+`CHANGELOG.md`'s section for that version — the changelog is where the notes are
+written and reviewed, so the release page and the repository cannot disagree
+about what shipped.
+
 Those three files are what Obsidian installs. `main.js` is deliberately
 gitignored and built in CI, so the release is the only place it exists.
 
