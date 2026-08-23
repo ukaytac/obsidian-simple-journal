@@ -119,6 +119,29 @@ describe("JournalService: applyKnownEntry", () => {
     expect(changes).toEqual([{ kind: "content", entry: expect.objectContaining({ file }) }]);
     expect(service.getEntries()).toHaveLength(1);
   });
+
+  it("updates tags on the existing index entry when only the tags changed", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    fake.metadataCache.inlineTags.set(file.path, ["work"]);
+    service.load();
+
+    const [existing] = service.getEntries();
+    expect(existing.tags).toEqual(["work"]);
+
+    fake.metadataCache.inlineTags.set(file.path, ["work", "therapy"]);
+    const change = service.applyKnownEntry({
+      file,
+      created: existing.created,
+      tags: ["work", "therapy"],
+    });
+
+    // Same object — the identity `indexOf`-by-reference callers depend on is
+    // preserved — but its tags are current.
+    expect(change).toEqual({ kind: "content", entry: existing });
+    expect(service.getEntries()[0]).toBe(existing);
+    expect(existing.tags).toEqual(["work", "therapy"]);
+  });
 });
 
 describe("JournalService: create", () => {

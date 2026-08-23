@@ -347,6 +347,13 @@ export class JournalService extends Component {
     // forever (nothing else ever refreshes it), and hand that stale
     // reference to every future consumer of this index entry.
     existing.file = entry.file;
+    // Written back for the same reason `.file` is, and for one more: this
+    // branch is the ONLY one a tag-only change ever reaches, since
+    // `applyUpsert` compares `created` and nothing else. Without this, an
+    // entry that gained or lost a tag elsewhere in Obsidian would keep its
+    // stale tags in the index forever, and `JournalView`'s tag scope would
+    // filter on them.
+    existing.tags = entry.tags;
     return { kind: "content", entry: existing };
   }
 
