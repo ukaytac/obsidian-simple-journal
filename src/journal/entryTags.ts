@@ -2,16 +2,25 @@ import { getAllTags, parseFrontMatterTags, type CachedMetadata } from "obsidian"
 import type { JournalEntry } from "./entry";
 
 /**
- * The ONE place tags are resolved, exactly as `entryDate.ts` is the one place
- * an entry's chronology is resolved.
+ * The ONE place tags are resolved from a file's cache — `resolveTags` and
+ * `frontmatterTags` below — exactly as `entryDate.ts` is the one place an
+ * entry's chronology is resolved.
  *
  * Obsidian draws no semantic distinction between an inline `#tag` and a
  * frontmatter `tags:` entry — `getAllTags` merges both, and search, the tag
  * pane and the graph all treat them identically. Neither does this plugin,
- * with exactly one exception: `frontmatterTags` below, which exists because
- * the timeline hides the properties panel (`styles.css`'s
+ * with exactly one exception: `frontmatterTags`, which exists because the
+ * timeline hides the properties panel (`styles.css`'s
  * `.journal-entry-embed .metadata-container`) and so has to surface the one
  * kind of tag it would otherwise make invisible.
+ *
+ * `entryHasTag` and `collectTags` are a different layer: they query and
+ * aggregate tags already resolved onto `JournalEntry[]`, closer in kind to
+ * `entryIndex.ts` than to the resolvers above. They live here only because
+ * they are two small, inseparable-in-practice functions built directly on
+ * the resolvers' output. If tag querying grows — multi-tag filters, "any of
+ * N tags" — that belongs in its own module rather than accreting onto this
+ * one.
  *
  * Nothing here ever WRITES a tag. Frontmatter belongs to the user (only
  * `created` is ours, via `setCreatedProperty`), and the body needs no help:

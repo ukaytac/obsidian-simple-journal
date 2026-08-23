@@ -55,6 +55,10 @@ describe("resolveTags", () => {
   it("ignores frontmatter tag entries that are not usable text", () => {
     expect(resolveTags(cache([], { tags: ["work", "", null, 7] }))).toEqual(["work", "7"]);
   });
+
+  it("strips a doubled leading # — a malformed frontmatter value a user can really write", () => {
+    expect(resolveTags(cache([], { tags: ["##work"] }))).toEqual(["work"]);
+  });
 });
 
 describe("frontmatterTags", () => {
