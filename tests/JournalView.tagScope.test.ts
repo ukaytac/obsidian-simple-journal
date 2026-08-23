@@ -211,10 +211,25 @@ describe("JournalView tag scope", () => {
   it("lives outside the timeline, so a reload cannot wipe it", async () => {
     await openWithTaggedEntries();
     await h.view.setTagScope("therapy");
+    const bar = scopeBar(h);
 
     await h.view.reload();
 
-    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+    // Structural, not just textual: `Element.empty()` (what `clearTimeline`
+    // calls) only detaches a node from ITS PARENT — it does not clear the
+    // detached node's own children. So even the exact regression this test
+    // is named for (`scopeBarEl` accidentally created as a child of
+    // `timelineEl`) would leave a detached-but-still-populated node behind,
+    // and `scopeBar(h)` re-reads the live `scopeBarEl` field, so it would
+    // never even look at that stale node — a content-only assertion here
+    // cannot fail for the reason the test claims to guard against. Asserting
+    // identity (same element across the reload), connectedness (still in the
+    // document), and non-containment (not inside `timelineEl`) is what
+    // actually pins the sibling placement.
+    expect(scopeBar(h)).toBe(bar);
+    expect(bar.isConnected).toBe(true);
+    expect(timelineEl(h.view).contains(bar)).toBe(false);
+    expect(bar.querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
   });
 
   it("clears the scope on Escape outside an entry", async () => {
@@ -223,6 +238,22 @@ describe("JournalView tag scope", () => {
 
     scopeBar(h).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
+  });
+
+  it("does not add a second Escape listener when onOpen runs again over the view's life", async () => {
+    // Pins the fix, not just its symptom: `setTagScope(null)` on an
+    // already-null scope is idempotent, so a duplicate listener firing twice
+    // for one keydown would leave `activeTagScope()` looking correct either
+    // way — asserting only that would not catch a regression back to
+    // per-`onOpen` registration. Counting calls does.
+    await openWithTaggedEntries();
+    await h.view.onOpen(); // Same instance, second call — see the constructor's own doc.
+    await h.view.setTagScope("therapy");
+
+    const spy = vi.spyOn(h.view, "setTagScope");
+    scopeBar(h).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("leaves Escape alone inside an entry, where the editor owns it", async () => {

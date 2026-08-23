@@ -317,6 +317,14 @@
   padding: var(--size-4-4) var(--size-4-4) 50vh;
 }
 
+/* Mirrors `.journal-timeline`'s horizontal padding above, so the scope
+   bar's `#tag` stays aligned with the entries underneath it instead of
+   sitting a size step to the right of them. */
+.is-mobile .journal-scope-bar-active {
+  padding-left: var(--size-4-4);
+  padding-right: var(--size-4-4);
+}
+
 .is-mobile .journal-entry {
   margin-bottom: var(--size-4-8);
 }
@@ -343,6 +351,17 @@
      whole area. */
   position: relative;
   z-index: 1;
+}
+
+/* Same reasoning as `.journal-entry-header .journal-entry-time` above — a
+   larger tap target via padding, cancelled by a matching negative margin so
+   the bar's own height doesn't grow. Smaller than the timestamp's bump: this
+   is tapped once per scope change, not once per entry, and there is no
+   sibling below it competing for the hit-test the way `.journal-entry-body`
+   does there. */
+.is-mobile .journal-scope-clear {
+  padding: var(--size-4-1);
+  margin: calc(-1 * var(--size-4-1));
 }
 
 /* Now that long-press opens the same menu (see JournalView.createEntryEl),

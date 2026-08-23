@@ -482,6 +482,17 @@ export class JournalView extends ItemView {
     this.addAction("plus", "New journal entry", () => {
       void this.startNewEntry();
     });
+
+    // Same reasoning as `addAction` above, and for the same reason:
+    // `contentEl` is one object for the view's entire life (`onOpen` only
+    // empties its children, never replaces it), so a listener added there on
+    // every `onOpen` would accumulate — every extra copy still firing, for
+    // the rest of the view's life, alongside the others. One listener,
+    // registered once, here, is correct no matter how many times `onOpen`
+    // runs. `setTagScope(null)` on an already-null scope is idempotent, which
+    // is why a duplicate listener was inert rather than visibly broken — not
+    // a reason to leave the duplicate in place.
+    this.contentEl.addEventListener("keydown", (event) => this.onContentKeyDown(event));
   }
 
   getViewType(): string {
@@ -502,12 +513,6 @@ export class JournalView extends ItemView {
     this.scopeBarEl = this.contentEl.createDiv({ cls: "journal-scope-bar" });
     this.timelineEl = this.contentEl.createDiv({ cls: "journal-timeline" });
     this.renderScopeBar();
-
-    // `addEventListener` + `register` rather than a bare listener, so the
-    // view's own teardown removes it — nothing else would.
-    const onKeyDown = (event: KeyboardEvent): void => this.onContentKeyDown(event);
-    this.contentEl.addEventListener("keydown", onKeyDown);
-    this.register(() => this.contentEl.removeEventListener("keydown", onKeyDown));
 
     // ItemView.register runs this unsubscribe when the view closes, so no
     // change can reach `applyChange` once torn down, short of the race
