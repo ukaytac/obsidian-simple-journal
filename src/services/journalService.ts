@@ -25,7 +25,7 @@ const FOLDER_RELOAD_KEY = "__journal-folder-reload__";
 
 /**
  * Owns the in-memory index of entries and translates vault events into
- * timeline-level changes. Stores only `{ file, created }` — never content —
+ * timeline-level changes. Stores only `{ file, created, tags }` — never content —
  * so the index stays cheap at tens of thousands of entries.
  *
  * `getEntries()` returns the live backing array, not a copy: `JournalView`

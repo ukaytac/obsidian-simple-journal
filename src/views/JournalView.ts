@@ -11,6 +11,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
+import { resolveTags } from "../journal/entryTags";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
@@ -1601,7 +1602,16 @@ export class JournalView extends ItemView {
     const change = this.plugin.journal.applyKnownEntry({
       file,
       created: value,
-      tags: rendered.entry.tags,
+      // Re-resolved from the metadata cache rather than carried over from
+      // `rendered.entry.tags`: that array can be stale. A freshly committed
+      // composer's rendered entry is a separate object the "added" change
+      // never replaces (`insertEntryInPlace` early-returns on an
+      // already-rendered path), so it can still hold the `[]` the composer
+      // built it with while the index already has the real tags. Trusting it
+      // here would write that staleness INTO the index, which a tag scope
+      // would then filter on. The cache is also simply more current: the
+      // user may have changed the entry's tags since the row was rendered.
+      tags: resolveTags(this.app.metadataCache.getFileCache(file)),
     });
     await this.enqueueTimelineMutation(() => this.applyChangesNow([change]));
 
@@ -2506,10 +2516,16 @@ export class JournalView extends ItemView {
       return;
     }
 
-    // `[]`, not a fresh resolve: the file was created a moment ago and the
-    // metadata cache has not indexed it yet. The `changed` event it will fire
-    // arrives as a "content" change, and `applyUpsert` fills the real tags in
-    // then (see `journalService.ts`).
+    // `[]`, not a resolve: the file was created a moment ago and the
+    // metadata cache has not indexed it yet. The INDEX gets the real tags
+    // shortly — the vault "create" event reaches `applyUpsert`'s "added"
+    // branch, which re-derives the entry through `entryFor` — but this
+    // rendered copy does not: that "added" change resolves to an insert,
+    // and `insertEntryInPlace` early-returns because this path is already
+    // rendered. So `rendered.entry.tags` stays `[]` until a reload or a
+    // reposition, and nothing may rely on it: the header's chips read the
+    // metadata cache live, and `changeEntryTime` re-resolves rather than
+    // carrying this array over.
     rendered.entry = { file, created, tags: [] };
     rendered.el.dataset.path = file.path;
     rendered.el.removeClass("journal-entry-composer");

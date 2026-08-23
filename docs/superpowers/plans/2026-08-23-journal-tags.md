@@ -588,6 +588,8 @@ git add src/journal/entry.ts src/journal/entryRepository.ts src/views/JournalVie
 git commit -m "feat: carry tags on JournalEntry"
 ```
 
+**Correction applied during execution.** Step 5 specified `tags: rendered.entry.tags` at `commitEntryTimeChange`; code review found that array can be stale for a freshly committed composer entry (the "added" change never replaces it, since `insertEntryInPlace` early-returns on an already-rendered path), so the shipped code re-resolves the tags from the metadata cache instead. The `commitComposer` comment at `:2502` was also corrected to name the "added" branch rather than "content", which was never the branch that event takes.
+
 ---
 
 ### Task 4: A tag changed externally reaches the index
