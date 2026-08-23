@@ -58,4 +58,33 @@ describe("TagScopeModal", () => {
     instance.renderSuggestion({ kind: "clear" }, clearEl);
     expect(clearEl.textContent).toBe("Clear filter");
   });
+
+  it("sets an honest placeholder and empty-state message", () => {
+    const { instance } = modal(["work"], false);
+    expect(instance.inputEl.placeholder).toBe("Filter the journal by tag");
+    // Must be true in the only case `SuggestModal` can actually show it: a
+    // query that matched nothing in a journal that HAS tags (see the
+    // constructor's comment). "No tags in the journal yet" would be false
+    // every single time a user saw it.
+    expect(instance.emptyStateText).toBe("No matching tags.");
+  });
+
+  it("is empty when a query matches nothing and no scope is active — the only reachable empty case", () => {
+    // `main.ts`'s filterByTag never opens this modal when the journal has no
+    // tags, and a live scope always keeps "Clear filter" in the list, so
+    // this — tags present, no scope, an unmatched query — is the ONE path
+    // that can produce []. A stub that always injects the clear item (a
+    // plausible wrong "fix" for the emptyStateText bug) would fail this.
+    const { instance } = modal(["books", "work"], false);
+    expect(instance.getSuggestions("zzz")).toEqual([]);
+  });
+
+  it("normalizes a hash-then-space query the same way entryTags.normalizeTag does", () => {
+    // Regression guard for the divergence between this modal's own
+    // normalization and `normalizeTag`'s double trim: reverting to
+    // `query.trim().replace(/^#+/, "").toLowerCase()` here leaves a leading
+    // space in the needle and this match fails.
+    const { instance } = modal(["work"], false);
+    expect(instance.getSuggestions("# work")).toEqual([{ kind: "tag", tag: "work" }]);
+  });
 });

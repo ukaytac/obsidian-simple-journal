@@ -65,6 +65,15 @@ describe("resolveTags", () => {
   it("strips a doubled leading # — a malformed frontmatter value a user can really write", () => {
     expect(resolveTags(cache([], { tags: ["##work"] }))).toEqual(["work"]);
   });
+
+  it("trims whitespace exposed by stripping the #, not just whitespace at the original edges", () => {
+    // "# work" has no leading/trailing whitespace of its own, but stripping
+    // the "#" exposes a leading space that a single trim (before, or only
+    // after, the replace) would miss — normalizeTag trims twice for exactly
+    // this reason. Frontmatter is free-form user text, so "# work" is a
+    // realistic value, not a contrived one.
+    expect(resolveTags(cache([], { tags: ["# work"] }))).toEqual(["work"]);
+  });
 });
 
 describe("frontmatterTags", () => {

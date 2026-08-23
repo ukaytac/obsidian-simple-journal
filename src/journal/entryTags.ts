@@ -28,8 +28,23 @@ import type { JournalEntry } from "./entry";
  * Obsidian's own tag autocomplete.
  */
 
-/** Bare tag text: no leading `#`, no surrounding whitespace. */
-function normalizeTag(raw: string): string {
+/**
+ * Bare tag text: no leading `#`, no surrounding whitespace.
+ *
+ * Trims TWICE, deliberately: stripping the `#` can expose whitespace that
+ * was never at the edge of the original string — `"# work"` trims to itself
+ * (no edge whitespace), then loses its `#` to leave `" work"`, which still
+ * has a leading space until the second trim removes it. A single trim before
+ * the replace, or none after it, both leave that space in.
+ *
+ * Exported so every place that turns user-typed or frontmatter-adjacent text
+ * into a tag comparison — `TagScopeModal`'s suggester query included — goes
+ * through the one function that owns this rule, rather than each caller
+ * approximating it and drifting apart the way the modal's own
+ * `query.trim().replace(/^#+/, "").toLowerCase()` once did (it was missing
+ * exactly this second trim).
+ */
+export function normalizeTag(raw: string): string {
   return raw.trim().replace(/^#+/, "").trim();
 }
 

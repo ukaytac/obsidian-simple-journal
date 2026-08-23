@@ -776,8 +776,14 @@
   gap: var(--size-4-1);
 }
 
+/* Obsidian tags whatever the user is pressing on a touch device with
+   `mobile-tap`, and its `button:not(.clickable-icon).mobile-tap` rule is a
+   class ahead of the reset below — so without this, every tap on a tag chip
+   flashes the filled chip back for the duration of the press. Same fix as
+   `.journal-entry-time` and `.journal-calendar-day` above. */
 .journal-entry-header .journal-entry-tag,
-.journal-entry-header .journal-entry-tag:hover {
+.journal-entry-header .journal-entry-tag:hover,
+.journal-entry-header .journal-entry-tag.mobile-tap {
   padding: 0;
   height: auto;
   border: none;
