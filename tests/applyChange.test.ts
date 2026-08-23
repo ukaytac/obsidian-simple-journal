@@ -132,8 +132,12 @@ describe("decideChangeAction: added and reload", () => {
 });
 
 describe("decideChangeAction with a tag scope", () => {
-  const rendered = { exists: true, focused: false, dirty: false, fileStillExists: true };
-  const absent = { exists: false, focused: false, dirty: false, fileStillExists: true };
+  // `absent` deliberately omits `fileStillExists: true` — the real resolver
+  // (`renderedStateFor(undefined)`) always returns `fileStillExists: false`
+  // when nothing is rendered, and a fixture that can't occur in practice
+  // would be misleading right where the `!exists` branch is under test.
+  const rendered = state({ exists: true, fileStillExists: true });
+  const absent = state({ exists: false });
 
   it("does not insert an added entry the scope excludes", () => {
     expect(decideChangeAction({ kind: "added", entry }, absent, false)).toEqual({ type: "noop" });
@@ -173,6 +177,32 @@ describe("decideChangeAction with a tag scope", () => {
       type: "remove",
       flush: true,
     });
+  });
+
+  it("a filter can never suppress a deletion, even out of scope", () => {
+    // "removed" is scope-independent by design — a delete must go through
+    // regardless of what the current filter thinks belongs on screen.
+    expect(
+      decideChangeAction({ kind: "removed", path: "Journal/gone.md" }, rendered, false),
+    ).toEqual({ type: "remove", flush: true });
+  });
+
+  it("a filter can never suppress a full reload", () => {
+    expect(decideChangeAction({ kind: "reload" }, rendered, false)).toEqual({
+      type: "reloadView",
+    });
+  });
+
+  it("does nothing for an out-of-scope content change with nothing rendered — the dominant case once a scope is active, since JournalService emits content/moved for every entry regardless of what the view rendered", () => {
+    expect(decideChangeAction({ kind: "content", entry }, absent, false)).toEqual({
+      type: "noop",
+    });
+  });
+
+  it("declines an out-of-scope moved on a focused row too, unlike in-scope moved which never suppresses on focus", () => {
+    expect(
+      decideChangeAction({ kind: "moved", entry }, { ...rendered, focused: true }, false),
+    ).toEqual({ type: "noop" });
   });
 
   it("defaults to in-scope, so an unscoped timeline behaves exactly as before", () => {

@@ -54,6 +54,14 @@ export type ChangeAction =
  * it defaults that way: an unscoped journal must behave exactly as it did
  * before tag scoping existed. Only consulted for the three kinds that carry
  * an entry; "removed" and "reload" are scope-independent.
+ *
+ * TRIPWIRE for the next caller: `remove` is now reachable for `"content"`
+ * and `"moved"` when `inScope` is `false` (via `decideScopeExit`).
+ * `changeApplication.ts`'s batch loop still treats `remove`/`reloadView` as
+ * unreachable for these two kinds and drops them with a bare `break` — true
+ * today only because no caller passes `inScope: false` yet. That consumer
+ * MUST be implemented before any caller starts passing `inScope: false`, or
+ * every scope exit decided here becomes a silent no-op that no test catches.
  */
 export function decideChangeAction(
   change: JournalChange,
@@ -82,7 +90,7 @@ export function decideChangeAction(
       return { type: "remove", flush: state.fileStillExists };
 
     case "moved":
-      if (!inScope) return leaveScope(state);
+      if (!inScope) return decideScopeExit(state);
       // Nothing rendered under this path yet: still insert it fresh, same
       // as "added" — reachable when a rename also changes the resolved
       // `created` (the old rendering, if any, was already torn down by this
@@ -91,7 +99,7 @@ export function decideChangeAction(
       return { type: "reposition", flush: state.fileStillExists };
 
     case "content":
-      if (!inScope) return leaveScope(state);
+      if (!inScope) return decideScopeExit(state);
       // Same reasoning as "moved": nothing rendered yet, insert fresh
       // rather than silently dropping the change (reachable after a
       // same-timestamp rename).
@@ -115,14 +123,37 @@ export function decideChangeAction(
  * current scope — the user removed the scoped tag from it, or changed it to
  * a different one, from anywhere in Obsidian.
  *
- * The focused/dirty decline is the same one `"content"` makes above, and
- * matters MORE here: removing a scoped tag from an entry is something a user
- * plausibly does while typing in that very entry, and destroying the editor
- * mid-keystroke would take unsaved text with it. The row then stays visible
- * although out of scope until the next reload — a briefly over-inclusive
- * timeline, which is the safe direction to be wrong in.
+ * The focused/dirty decline mirrors `"content"`'s above, but for `"moved"`
+ * it is a NEW decision, not a reuse of an existing one: in-scope `moved`
+ * above deliberately does NOT suppress on focus (reverse-chronological
+ * ordering is a product requirement — see "a focused editor is still
+ * repositioned" in `tests/applyChange.test.ts`), while an out-of-scope
+ * `moved` routed here through `decideScopeExit` DOES decline on
+ * focus/dirty. The asymmetry is intentional: ordering must happen even at
+ * the cost of disturbing focus, because a wrongly-ordered timeline is a
+ * product-visible bug, whereas a filter being briefly loose about one row
+ * is cosmetic and can wait.
+ *
+ * A declined exit leaves the row rendered, out of scope, until the next
+ * full `reload()` — and nothing re-runs this decision once the entry later
+ * goes clean or loses focus, the same known gap the `reposition` branch's
+ * own KNOWN LIMITATION note in `changeApplication.ts` documents for its own
+ * case. In a long session with no settings/anchor/folder change to trigger
+ * a reload, that is effectively the rest of the session; for an entry whose
+ * writes keep failing, it is unbounded. Retaining the row is still the safe
+ * direction to be wrong in — the alternative risks destroying unsaved text
+ * — but it is not merely "briefly" wrong, and should not be described that
+ * way.
+ *
+ * `flush: state.fileStillExists` is deliberately kept even though it is
+ * inert here by construction: this function only reaches `remove` when
+ * `!dirty`, so the resulting `flushSave` finds nothing to write, never
+ * fails, and never surfaces a notice. It stays for the same reason the
+ * "removed" branch above keeps it — defensive parity in data-safety code,
+ * not because a mid-debounce scope exit is actually possible here; the
+ * focused/dirty decline just above has already ruled that out.
  */
-function leaveScope(state: RenderedState): ChangeAction {
+function decideScopeExit(state: RenderedState): ChangeAction {
   if (!state.exists) return { type: "noop" };
   if (state.focused || state.dirty) return { type: "noop" };
   return { type: "remove", flush: state.fileStillExists };
