@@ -1,11 +1,13 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
+import { collectTags } from "./journal/entryTags";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/CalendarView";
 import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
+import { TagScopeModal } from "./views/TagScopeModal";
 
 export default class JournalEntriesPlugin extends Plugin {
   settings: JournalSettings = { ...DEFAULT_SETTINGS };
@@ -61,6 +63,14 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Go to today",
       callback: () => {
         void this.goToToday();
+      },
+    });
+
+    this.addCommand({
+      id: "filter-journal-by-tag",
+      name: "Filter journal by tag",
+      callback: () => {
+        void this.filterByTag();
       },
     });
 
@@ -229,6 +239,45 @@ export default class JournalEntriesPlugin extends Plugin {
   async goToToday(): Promise<void> {
     const view = await this.openJournal();
     if (view) await view.goToToday();
+  }
+
+  /**
+   * Opens (or reveals) the journal and prompts for a tag to scope it to —
+   * same shape as `newEntry`/`goToToday`/`goToDateInJournal`, so nothing
+   * about opening the view is duplicated here.
+   *
+   * The tag list comes from the index, so it contains exactly the tags that
+   * are actually reachable in the timeline — never a vault-wide tag list
+   * offering choices that would scope the journal to nothing.
+   *
+   * No try/catch here, unlike `newEntry`: everything on this path — reading
+   * the already-loaded entry index, deduping tags, reading a getter, opening
+   * a suggester modal — is synchronous, in-memory, and has no realistic
+   * failure mode, unlike `newEntry`'s actual vault write. `goToToday` and
+   * `goToDateInJournal` leave the same kind of path unwrapped for the same
+   * reason.
+   */
+  async filterByTag(): Promise<void> {
+    const view = await this.openJournal();
+
+    if (!view) {
+      console.error("Simple Journal: the journal view was not available after opening it");
+      new Notice("Could not open the journal.");
+      return;
+    }
+
+    const tags = collectTags(this.journal.getEntries());
+    const active = view.activeTagScope();
+
+    // Nothing to choose and nothing to clear — a prompt would be a dead end.
+    if (tags.length === 0 && active === null) {
+      new Notice("No tags in the journal yet.");
+      return;
+    }
+
+    new TagScopeModal(this.app, tags, active !== null, (choice) => {
+      void view.setTagScope(choice.kind === "clear" ? null : choice.tag);
+    }).open();
   }
 
   /**
