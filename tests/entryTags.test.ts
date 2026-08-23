@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "../src/journal/entry";
-import { collectTags, entryHasTag, frontmatterTags, resolveTags } from "../src/journal/entryTags";
+import {
+  collectTags,
+  entriesWithTag,
+  entryHasTag,
+  frontmatterTags,
+  resolveTags,
+} from "../src/journal/entryTags";
 
 /** A cache shaped like Obsidian's, as `getFileCache` returns it. */
 function cache(inline: string[] = [], frontmatter?: Record<string, unknown>) {
@@ -86,6 +92,43 @@ describe("entryHasTag", () => {
 
   it("is false for an entry with no tags", () => {
     expect(entryHasTag(entry([]), "work")).toBe(false);
+  });
+});
+
+describe("entriesWithTag", () => {
+  it("matches case-insensitively", () => {
+    const hit = entry(["Work"]);
+    expect(entriesWithTag([hit, entry(["therapy"])], "work")).toEqual([hit]);
+  });
+
+  it("accepts a needle written with a #", () => {
+    const hit = entry(["work"]);
+    expect(entriesWithTag([hit, entry([])], "#work")).toEqual([hit]);
+  });
+
+  it("does not match a child tag — scoping is exact", () => {
+    expect(entriesWithTag([entry(["work/project"])], "work")).toEqual([]);
+  });
+
+  it("is empty for an empty needle", () => {
+    expect(entriesWithTag([entry(["work"])], "#")).toEqual([]);
+  });
+
+  /**
+   * The scoped index is handed to `pageAfter` and `insertEntryInPlace`, which
+   * look entries up by reference — so the result must hold the SAME objects,
+   * and must never be the input array itself (an unscoped view relies on
+   * that identity meaning "no filter is active").
+   */
+  it("returns a new array of the same entry objects, leaving the input alone", () => {
+    const hit = entry(["work"]);
+    const entries = [hit, entry(["therapy"])];
+
+    const filtered = entriesWithTag(entries, "work");
+
+    expect(filtered).not.toBe(entries);
+    expect(filtered[0]).toBe(hit);
+    expect(entries).toHaveLength(2);
   });
 });
 

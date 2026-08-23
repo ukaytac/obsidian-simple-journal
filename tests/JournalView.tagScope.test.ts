@@ -30,15 +30,30 @@ describe("JournalView tag scope", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * Four entries, chosen so that the tag axis and the date axis CROSS — which
+   * is what makes the composition test below non-vacuous:
+   *
+   *   tagged   Aug 12 22:41  #therapy   newer than the anchor
+   *   untagged Aug 12 17:23  --         newer than the anchor
+   *   older    Aug 10 09:34  #therapy   older than the anchor
+   *   oldUntagged Aug  9 09:00 --       older than the anchor
+   *
+   * Each single filter admits two of the four, and they are different pairs,
+   * so only their intersection is `[older]`. Drop `oldUntagged` and the
+   * anchor alone would already produce that answer, letting the scope be
+   * removed from `reloadNow` with every test still green.
+   */
   async function openWithTaggedEntries() {
     const tagged = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
     const untagged = addEntry(h, new Date(2026, 7, 12, 17, 23, 41));
     const older = addEntry(h, new Date(2026, 7, 10, 9, 34, 21));
+    const oldUntagged = addEntry(h, new Date(2026, 7, 9, 9, 0, 0));
     tagEntry(h, tagged, ["therapy"]);
     tagEntry(h, older, ["therapy"]);
     h.service.load();
     await h.view.onOpen();
-    return { tagged, untagged, older };
+    return { tagged, untagged, older, oldUntagged };
   }
 
   it("renders only the entries carrying the scoped tag", async () => {
@@ -51,12 +66,29 @@ describe("JournalView tag scope", () => {
   });
 
   it("restores the whole timeline when the scope is cleared", async () => {
-    const { tagged, untagged, older } = await openWithTaggedEntries();
+    const { tagged, untagged, older, oldUntagged } = await openWithTaggedEntries();
 
     await h.view.setTagScope("therapy");
+
+    // The CRUX of the scoped-index design, not a tautology — do not
+    // "simplify" these two away. `applyChangesNow` deliberately SKIPS its
+    // re-derive while unscoped, so an unscoped view's correctness rests
+    // entirely on `scopedIndex()` handing back the service's array BY
+    // IDENTITY: that alias is what makes `applyKnownEntry`'s emit-less
+    // mutation of the live index visible to the view with no hand-off at
+    // all. Return a copy instead — `all.slice()` — and every other test in
+    // this suite still passes while that alias is silently gone.
+    expect(internals(h.view).index).not.toBe(h.service.getEntries());
+
     await h.view.setTagScope(null);
 
-    expect(renderedPaths(h)).toEqual([tagged.path, untagged.path, older.path]);
+    expect(internals(h.view).index).toBe(h.service.getEntries());
+    expect(renderedPaths(h)).toEqual([
+      tagged.path,
+      untagged.path,
+      older.path,
+      oldUntagged.path,
+    ]);
   });
 
   it("reports the active scope", async () => {
@@ -99,6 +131,14 @@ describe("JournalView tag scope", () => {
     h.app.vault.trigger("create", fresh);
     vi.advanceTimersByTime(300);
     await vi.waitFor(() => expect(renderedPaths(h)).toEqual(before));
+
+    // The assertion above holds at t=0 too, so on its own it passes just as
+    // well if the create event were dropped, the debounce never fired, or
+    // the change pipeline were broken outright. Clearing the scope and
+    // finding `fresh` at the top proves the entry really was processed and
+    // deliberately excluded, rather than never processed at all.
+    await h.view.setTagScope(null);
+    expect(renderedPaths(h)[0]).toBe(fresh.path);
   });
 
   it("inserts a newly created entry the scope admits", async () => {
@@ -113,16 +153,25 @@ describe("JournalView tag scope", () => {
   });
 
   it("composes with an anchor: the scoped tag, from that day backwards", async () => {
-    const { tagged, older } = await openWithTaggedEntries();
+    const { tagged, older, oldUntagged } = await openWithTaggedEntries();
+    const anchor = new Date(2026, 7, 11, 23, 59, 59);
 
+    // Each filter alone, first — so the intersection asserted last is
+    // provably narrower than either, and removing either one from
+    // `reloadNow` breaks this test rather than leaving it green.
+    await h.view.goToDate(anchor);
+    expect(renderedPaths(h)).toEqual([older.path, oldUntagged.path]);
+
+    await h.view.goToDate(null);
     await h.view.setTagScope("therapy");
-    await h.view.goToDate(new Date(2026, 7, 11, 23, 59, 59));
+    expect(renderedPaths(h)).toEqual([tagged.path, older.path]);
 
-    // `tagged` is newer than the anchor, so the anchor excludes it; `older`
-    // carries the tag and is older, so both filters admit it.
+    // Both: `tagged` carries the tag but is newer than the anchor;
+    // `oldUntagged` is older than the anchor but carries no tag. Only
+    // `older` satisfies both, and the anchor is kept — the two compose.
+    await h.view.goToDate(anchor);
     expect(renderedPaths(h)).toEqual([older.path]);
     expect(h.view.activeTagScope()).toBe("therapy");
-    void tagged;
   });
 
   function scopeBar(h: Harness): HTMLElement {
@@ -139,6 +188,24 @@ describe("JournalView tag scope", () => {
     scopeBar(h).querySelector<HTMLButtonElement>(".journal-scope-clear")?.click();
     await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
     expect(scopeBar(h).textContent).toBe("");
+  });
+
+  it("survives a folder-level rebuild, which changes no tag", async () => {
+    // Product decision, deliberately pinned: a `"reload"` change must NOT
+    // clear the scope. `isJournalFolderPath` matches DESCENDANTS of the
+    // journal root, and every install has them (`Journal/2026/08`), so
+    // renaming `Journal/2026` — which touches not one entry and not one tag
+    // — would otherwise silently drop the user's filter and blink the scope
+    // bar off with no cause they could connect to what they did. See the
+    // correction block under Task 7 in the plan.
+    const { tagged, older } = await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    await internals(h.view).applyChangesNow([{ kind: "reload" }]);
+
+    expect(h.view.activeTagScope()).toBe("therapy");
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([tagged.path, older.path]));
+    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
   });
 
   it("lives outside the timeline, so a reload cannot wipe it", async () => {

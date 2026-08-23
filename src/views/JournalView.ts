@@ -11,7 +11,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
-import { entryHasTag, frontmatterTags, resolveTags } from "../journal/entryTags";
+import { entriesWithTag, entryHasTag, frontmatterTags, resolveTags } from "../journal/entryTags";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
@@ -2088,14 +2088,20 @@ export class JournalView extends ItemView {
     // Skipped entirely when unscoped, so `this.index` stays the live alias.
     if (this.tagScope !== null) this.index = this.scopedIndex();
 
-    // A folder-level rebuild ("reload") means the journal root itself moved,
-    // so the tag set the scope was chosen from no longer describes what is
-    // being shown. Cleared before `changeApplication` fires the reload, so
-    // the rebuild it triggers already sees no scope.
-    if (changes.some((change) => change.kind === "reload") && this.tagScope !== null) {
-      this.tagScope = null;
-      this.renderScopeBar();
-    }
+    // A "reload" change deliberately does NOT clear the scope. It fires for
+    // any mutation of the journal folder or its DESCENDANTS (see
+    // `isJournalFolderPath`), and every install has descendants —
+    // `Journal/2026/08` — so renaming `Journal/2026`, which changes not one
+    // entry and not one tag, would silently drop the user's filter and blink
+    // the scope bar off with no cause they could connect to what they did.
+    // The semantically identical settings-path rebuild (`refreshJournal` in
+    // `main.ts`) does not clear it either, so clearing here would make the
+    // design contradict itself. Nor is there any correctness need:
+    // `scopedIndex()` reads `getEntries()` fresh, so a rebuilt index filters
+    // fine, and a scope that now matches nothing renders "No entries tagged
+    // #x." — which explains itself, unlike state that changes on its own.
+    // Pinned by "survives a folder-level rebuild" in
+    // `tests/JournalView.tagScope.test.ts`.
 
     await this.changeApplication.applyChangesNow(changes);
   }
@@ -2721,12 +2727,21 @@ export class JournalView extends ItemView {
    * same entry objects, so `pageAfter`'s path cursor and
    * `insertEntryInPlace`'s `indexOf`-by-reference both keep working against
    * it unchanged, and two lists can never drift apart.
+   *
+   * ONE reader escapes that per-batch re-derivation: `nextPage`/
+   * `loadNextPage` are reached from `onSentinelVisible`, which is NOT on
+   * `enqueueTimelineMutation`'s chain (it has its own `loading` lock and a
+   * generation guard instead). So between `applyKnownEntry` mutating the
+   * live index and the enqueued `applyChangesNow` re-deriving from it, a
+   * scroll-driven page can read a filtered array in which one entry still
+   * sits at its pre-correction slot — costing row order within a day, healed
+   * by the next flush or reload.
    */
   private scopedIndex(): JournalEntry[] {
     const all = this.plugin.journal.getEntries();
     const scope = this.tagScope;
     if (scope === null) return all;
-    return all.filter((entry) => entryHasTag(entry, scope));
+    return entriesWithTag(all, scope);
   }
 
   /** Whether `entry` belongs in the timeline as currently filtered. */

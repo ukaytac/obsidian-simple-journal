@@ -14,13 +14,13 @@ import type { JournalEntry } from "./entry";
  * `.journal-entry-embed .metadata-container`) and so has to surface the one
  * kind of tag it would otherwise make invisible.
  *
- * `entryHasTag` and `collectTags` are a different layer: they query and
- * aggregate tags already resolved onto `JournalEntry[]`, closer in kind to
- * `entryIndex.ts` than to the resolvers above. They live here only because
- * they are two small, inseparable-in-practice functions built directly on
- * the resolvers' output. If tag querying grows — multi-tag filters, "any of
- * N tags" — that belongs in its own module rather than accreting onto this
- * one.
+ * `entryHasTag`, `entriesWithTag` and `collectTags` are a different layer:
+ * they query and aggregate tags already resolved onto `JournalEntry[]`,
+ * closer in kind to `entryIndex.ts` than to the resolvers above. They live
+ * here only because they are small, inseparable-in-practice functions built
+ * directly on the resolvers' output. If tag querying grows — multi-tag
+ * filters, "any of N tags" — that belongs in its own module rather than
+ * accreting onto this one.
  *
  * Nothing here ever WRITES a tag. Frontmatter belongs to the user (only
  * `created` is ours, via `setCreatedProperty`), and the body needs no help:
@@ -91,6 +91,28 @@ export function entryHasTag(entry: JournalEntry, tag: string): boolean {
   const needle = normalizeTag(tag).toLowerCase();
   if (!needle) return false;
   return entry.tags.some((value) => value.toLowerCase() === needle);
+}
+
+/**
+ * The entries carrying `tag`, in their existing order — the tag scope's
+ * filter predicate, kept here rather than in `JournalView` so this module
+ * stays the one place tags are queried.
+ *
+ * Normalizes the needle ONCE instead of per entry, which is the whole reason
+ * this exists as its own function rather than `entries.filter((entry) =>
+ * entryHasTag(entry, tag))`: that form re-runs a regex replace, two trims and
+ * a `toLowerCase()` on an unchanging value for every entry, so a scoped
+ * filter over a 50k-entry journal did 50k of each. `entryHasTag` stays
+ * exported for the single-entry question (`JournalView.matchesScope`).
+ *
+ * Always a NEW array; `entries` is never mutated. Callers rely on the
+ * elements being the SAME entry objects, so reference-identity lookups
+ * (`indexOf`, path cursors) keep working against the result.
+ */
+export function entriesWithTag(entries: readonly JournalEntry[], tag: string): JournalEntry[] {
+  const needle = normalizeTag(tag).toLowerCase();
+  if (!needle) return [];
+  return entries.filter((entry) => entry.tags.some((value) => value.toLowerCase() === needle));
 }
 
 /** Every tag across `entries`, deduped and alphabetical — the suggester's list. */

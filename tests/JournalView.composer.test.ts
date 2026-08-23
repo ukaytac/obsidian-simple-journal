@@ -123,6 +123,38 @@ describe("JournalView composer lifecycle", () => {
     );
   });
 
+  it("abandoning an empty composer into an anchored, unscoped timeline blames the anchor", async () => {
+    // The other half of `discardEmptyComposer`'s `(this.anchorDate !== null,
+    // this.tagScope)`. The scoped half is covered above; without this one,
+    // passing `anchorDate` at all could be dropped and only the generic "no
+    // journal entries yet" message would ever be asserted.
+    //
+    // The composer is opened BEFORE anchoring, then carried through the
+    // anchor's reload by `reestablishComposer`: `startNewEntry` clears an
+    // active anchor (see its doc), so anchoring first would un-anchor the
+    // view again and there would be nothing to blame.
+    const h = createHarness();
+    addEntry(h, new Date(2026, 7, 12, 9, 0, 0));
+    h.service.load();
+    await h.view.onOpen();
+
+    await h.view.startNewEntry();
+    // Older than the only entry, so the anchor excludes it and the timeline
+    // holds nothing but the composer.
+    await h.view.goToDate(new Date(2026, 7, 10, 23, 59, 59));
+
+    const textarea = composerTextarea(h.view);
+    typeInto(textarea, "   ");
+    typeInto(textarea, "");
+    textarea.blur();
+    await settle();
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
+      "Nothing on or before this date.",
+    );
+  });
+
   it("a blur that never received any input does not discard the composer, even after a genuine focus", async () => {
     // The real-world bug this pins: `openComposer` itself calls
     // `editor.focus()` synchronously as part of `startNewEntry()`, so by the
