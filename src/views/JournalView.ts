@@ -1598,7 +1598,11 @@ export class JournalView extends ItemView {
 
     if (this.closed) return;
 
-    const change = this.plugin.journal.applyKnownEntry({ file, created: value });
+    const change = this.plugin.journal.applyKnownEntry({
+      file,
+      created: value,
+      tags: rendered.entry.tags,
+    });
     await this.enqueueTimelineMutation(() => this.applyChangesNow([change]));
 
     if (this.closed) return;
@@ -2206,6 +2210,9 @@ export class JournalView extends ItemView {
       // createEntryEl leaves `data-path` unset for exactly this case.
       file: null as unknown as JournalEntry["file"],
       created,
+      // No file, so nothing has been indexed: an uncommitted composer has no
+      // tags even if its draft text already contains a `#tag`.
+      tags: [],
     };
 
     const rendered = this.createEntryEl(placeholder);
@@ -2499,7 +2506,11 @@ export class JournalView extends ItemView {
       return;
     }
 
-    rendered.entry = { file, created };
+    // `[]`, not a fresh resolve: the file was created a moment ago and the
+    // metadata cache has not indexed it yet. The `changed` event it will fire
+    // arrives as a "content" change, and `applyUpsert` fills the real tags in
+    // then (see `journalService.ts`).
+    rendered.entry = { file, created, tags: [] };
     rendered.el.dataset.path = file.path;
     rendered.el.removeClass("journal-entry-composer");
     // Reveal the actions button now that there's a file for it to act on

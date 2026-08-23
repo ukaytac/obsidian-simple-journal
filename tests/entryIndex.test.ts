@@ -16,6 +16,7 @@ function entry(basename: string, created: Date): JournalEntry {
   return {
     file: { path: `Journal/${basename}.md`, basename } as JournalEntry["file"],
     created,
+    tags: [],
   };
 }
 
@@ -120,6 +121,7 @@ describe("insertSorted", () => {
     const edited: JournalEntry = {
       file: aug12_1723.file,
       created: new Date(2026, 7, 12, 23, 0, 0), // now newer than aug12_2241
+      tags: [],
     };
 
     insertSorted(list, edited);
@@ -135,10 +137,11 @@ describe("insertSorted", () => {
 
   it("keeps exactly one, newest, copy when inserted twice with the same path", () => {
     const list: JournalEntry[] = [];
-    const first: JournalEntry = { file: aug12_1723.file, created: aug12_1723.created };
+    const first: JournalEntry = { file: aug12_1723.file, created: aug12_1723.created, tags: [] };
     const second: JournalEntry = {
       file: aug12_1723.file,
       created: new Date(2026, 7, 12, 18, 0, 0),
+      tags: [],
     };
 
     insertSorted(list, first);

@@ -85,7 +85,7 @@ describe("JournalService: applyKnownEntry", () => {
     expect(service.getEntries().map((e) => e.file.path)).toEqual([AUG12, AUG11]);
 
     const newlyOldest = new Date(2026, 6, 1, 8, 0, 0);
-    const change = service.applyKnownEntry({ file, created: newlyOldest });
+    const change = service.applyKnownEntry({ file, created: newlyOldest, tags: [] });
 
     expect(change.kind).toBe("moved");
     // No timer advance at all: the index is already correct synchronously.
@@ -98,7 +98,7 @@ describe("JournalService: applyKnownEntry", () => {
     service.load();
     const changes = collectChanges(service);
 
-    service.applyKnownEntry({ file, created: new Date(2026, 6, 1, 8, 0, 0) });
+    service.applyKnownEntry({ file, created: new Date(2026, 6, 1, 8, 0, 0), tags: [] });
 
     expect(changes).toHaveLength(0);
   });
@@ -109,7 +109,7 @@ describe("JournalService: applyKnownEntry", () => {
     service.load();
 
     const correctedAt = new Date(2026, 6, 1, 8, 0, 0);
-    service.applyKnownEntry({ file, created: correctedAt });
+    service.applyKnownEntry({ file, created: correctedAt, tags: [] });
 
     const changes = collectChanges(service);
     fake.metadataCache.frontmatter.set(file.path, { created: formatCreatedProperty(correctedAt) });
@@ -401,7 +401,11 @@ describe("JournalService: rename", () => {
     expect(existing.file).toBe(file);
 
     const replacement = new TFile(file.path, file.stat.ctime);
-    const change = service.applyKnownEntry({ file: replacement, created: existing.created });
+    const change = service.applyKnownEntry({
+      file: replacement,
+      created: existing.created,
+      tags: existing.tags,
+    });
 
     // Same `JournalEntry` object — the identity `indexOf`-by-reference
     // callers depend on is preserved — but its `.file` now points at the
@@ -557,7 +561,7 @@ describe("JournalService: a rename following a created write settles to exactly 
     const changes = collectChanges(service);
 
     const correctedAt = new Date(2026, 8, 1, 0, 0, 0);
-    service.applyKnownEntry({ file, created: correctedAt });
+    service.applyKnownEntry({ file, created: correctedAt, tags: [] });
     expect(service.getEntries()).toHaveLength(1);
 
     // The rename itself: Obsidian mutates the same TFile in place rather

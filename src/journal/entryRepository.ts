@@ -1,6 +1,7 @@
 import { App, TFile, TFolder, Vault } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
+import { resolveTags } from "./entryTags";
 import {
   hasCreatedLine,
   preserveSeparator,
@@ -161,14 +162,16 @@ export class EntryRepository {
   entryFor(file: TFile): JournalEntry | null {
     if (!this.isEntryFile(file)) return null;
 
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    // Read once: `resolveTags` needs the whole cache (inline tags live
+    // outside `frontmatter`), and `resolveEntryDate` needs only `created`.
+    const cache = this.app.metadataCache.getFileCache(file);
     const created = resolveEntryDate({
       basename: file.basename,
       ctime: file.stat.ctime,
-      created: frontmatter?.created,
+      created: cache?.frontmatter?.created,
     });
 
-    return { file, created };
+    return { file, created, tags: resolveTags(cache) };
   }
 
   /**

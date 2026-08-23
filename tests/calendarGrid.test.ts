@@ -7,6 +7,7 @@ function entry(basename: string, created: Date): JournalEntry {
   return {
     file: { path: `Journal/${basename}.md`, basename } as JournalEntry["file"],
     created,
+    tags: [],
   };
 }
 
