@@ -9,6 +9,7 @@ import {
   timelineEl,
 } from "./journalViewHarness";
 import type { Harness } from "./journalViewHarness";
+import { TFolder } from "./obsidian-mock";
 
 function renderedPaths(h: Harness): string[] {
   return Array.from(timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-entry")).map(
@@ -206,6 +207,73 @@ describe("JournalView tag scope", () => {
     expect(h.view.activeTagScope()).toBe("therapy");
     await vi.waitFor(() => expect(renderedPaths(h)).toEqual([tagged.path, older.path]));
     expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+  });
+
+  it("blames the folder, not the tag, when a real folder rename actually empties the index", async () => {
+    // Companion to "survives a folder-level rebuild" above: that test drives
+    // `applyChangesNow([{ kind: "reload" }])` directly, so the service's
+    // index is never actually touched and the scoped message stays correct
+    // by accident of the fixture, not by anything under test. This one
+    // performs a REAL rename of the journal folder itself — moving every
+    // entry out from under the still-configured "Journal" root — so
+    // `JournalService.rebuild()` (triggered by the debounced "folderReload"
+    // path, exactly as production code reaches it) really does re-scan to
+    // find nothing there.
+    //
+    // Per item 1's fix, the resulting empty state must NOT say "No entries
+    // tagged #therapy.": the tag scope had nothing to do with this. The
+    // unfiltered index is empty too, so the plain "no entries at all"
+    // message is the one that actually explains what happened.
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const vault = h.app.vault as unknown as {
+      folders: Set<string>;
+      files: Map<string, { path: string }>;
+      contents: Map<string, string>;
+    };
+    const oldRoot = h.folder;
+    const newRoot = "JournalRenamed";
+
+    // Move every folder path under the root, mirroring how Obsidian moves a
+    // renamed folder's whole subtree rather than leaving orphaned children.
+    for (const folderPath of [...vault.folders]) {
+      if (folderPath !== oldRoot && !folderPath.startsWith(`${oldRoot}/`)) continue;
+      vault.folders.delete(folderPath);
+      vault.folders.add(newRoot + folderPath.slice(oldRoot.length));
+    }
+    // Move every file with it — Obsidian mutates each TFile's `path` in
+    // place on a folder rename rather than handing back new objects, the
+    // same convention `journalService.test.ts`'s own rename fixtures follow.
+    for (const [filePath, file] of [...vault.files]) {
+      if (!filePath.startsWith(`${oldRoot}/`)) continue;
+      const newPath = newRoot + filePath.slice(oldRoot.length);
+      vault.files.delete(filePath);
+      vault.files.set(newPath, file);
+      file.path = newPath;
+      const content = vault.contents.get(filePath);
+      vault.contents.delete(filePath);
+      if (content !== undefined) vault.contents.set(newPath, content);
+    }
+
+    // Must be a real `TFolder` instance, not merely `{ path, name }` — the
+    // service's rename listener branches on `file instanceof TFolder` to
+    // tell a folder rename apart from a file rename.
+    const renamedFolder = new TFolder();
+    renamedFolder.path = newRoot;
+    renamedFolder.name = newRoot;
+    h.app.vault.trigger("rename", renamedFolder, oldRoot);
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() =>
+      expect(timelineEl(h.view).querySelector(".journal-empty")?.textContent).toBe(
+        "No journal entries yet. Use the + button above to write the first one.",
+      ),
+    );
+    expect(renderedPaths(h)).toEqual([]);
+    // The scope itself is untouched — the "reload" change does not clear it
+    // (see `applyChangesNow`'s doc) — only the message's blame changes.
+    expect(h.view.activeTagScope()).toBe("therapy");
   });
 
   it("lives outside the timeline, so a reload cannot wipe it", async () => {

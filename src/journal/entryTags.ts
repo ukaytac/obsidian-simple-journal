@@ -79,6 +79,26 @@ export function frontmatterTags(cache: CachedMetadata | null | undefined): strin
 }
 
 /**
+ * Builds the EXACT, case-insensitive "does this entry carry `tag`" predicate
+ * — the one comparison `entryHasTag` and `entriesWithTag` both need — so the
+ * product decision it encodes (`work` does not match `work/project`; see
+ * `entryHasTag`'s doc for why) lives in exactly one place. A future "match
+ * nested tags" change edits this function and both callers pick it up.
+ *
+ * Normalizes the needle ONCE, at predicate-construction time, not per entry:
+ * `entriesWithTag` calls this once and filters with the result, so a scoped
+ * filter over a 50k-entry journal does one regex replace/trim/`toLowerCase()`
+ * total, not 50k of each. An empty needle normalizes to `""`, which the
+ * returned predicate always rejects, matching the "empty needle matches
+ * nothing" behaviour both exported functions have always had.
+ */
+function tagMatcher(tag: string): (entry: JournalEntry) => boolean {
+  const needle = normalizeTag(tag).toLowerCase();
+  if (!needle) return () => false;
+  return (entry) => entry.tags.some((value) => value.toLowerCase() === needle);
+}
+
+/**
  * Whether `entry` carries `tag`, compared case-insensitively. `tag` may be
  * written with or without a leading `#`.
  *
@@ -88,9 +108,7 @@ export function frontmatterTags(cache: CachedMetadata | null | undefined): strin
  * unreachable.
  */
 export function entryHasTag(entry: JournalEntry, tag: string): boolean {
-  const needle = normalizeTag(tag).toLowerCase();
-  if (!needle) return false;
-  return entry.tags.some((value) => value.toLowerCase() === needle);
+  return tagMatcher(tag)(entry);
 }
 
 /**
@@ -98,21 +116,18 @@ export function entryHasTag(entry: JournalEntry, tag: string): boolean {
  * filter predicate, kept here rather than in `JournalView` so this module
  * stays the one place tags are queried.
  *
- * Normalizes the needle ONCE instead of per entry, which is the whole reason
- * this exists as its own function rather than `entries.filter((entry) =>
- * entryHasTag(entry, tag))`: that form re-runs a regex replace, two trims and
- * a `toLowerCase()` on an unchanging value for every entry, so a scoped
- * filter over a 50k-entry journal did 50k of each. `entryHasTag` stays
- * exported for the single-entry question (`JournalView.matchesScope`).
+ * Built on `tagMatcher` rather than `entries.filter((entry) =>
+ * entryHasTag(entry, tag))`: that form would re-normalize the unchanging
+ * needle for every entry, so a scoped filter over a 50k-entry journal did
+ * 50k regex replaces/trims/`toLowerCase()`s instead of one. `entryHasTag`
+ * stays exported for the single-entry question (`JournalView.matchesScope`).
  *
  * Always a NEW array; `entries` is never mutated. Callers rely on the
  * elements being the SAME entry objects, so reference-identity lookups
  * (`indexOf`, path cursors) keep working against the result.
  */
 export function entriesWithTag(entries: readonly JournalEntry[], tag: string): JournalEntry[] {
-  const needle = normalizeTag(tag).toLowerCase();
-  if (!needle) return [];
-  return entries.filter((entry) => entry.tags.some((value) => value.toLowerCase() === needle));
+  return entries.filter(tagMatcher(tag));
 }
 
 /** Every tag across `entries`, deduped and alphabetical — the suggester's list. */

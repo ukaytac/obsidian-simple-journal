@@ -129,6 +129,11 @@ describe("JournalService: applyKnownEntry", () => {
     const [existing] = service.getEntries();
     expect(existing.tags).toEqual(["work"]);
 
+    // Illustrative, not load-bearing: `applyKnownEntry` below takes its tags
+    // from the literal passed directly into it, never re-reading the
+    // metadata cache. This line only sets the scene — "the tags changed
+    // elsewhere in Obsidian" — matching what a real edit would leave behind;
+    // deleting it changes nothing about what this test proves.
     fake.metadataCache.inlineTags.set(file.path, ["work", "therapy"]);
     const change = service.applyKnownEntry({
       file,

@@ -205,6 +205,27 @@ describe("decideChangeAction with a tag scope", () => {
     ).toEqual({ type: "noop" });
   });
 
+  it("a scope exit's flush tracks fileStillExists, not a hardcoded true", () => {
+    // Pins `decideScopeExit`'s `flush: state.fileStillExists` against being
+    // "simplified" to a literal `true`. Both fixtures above (`rendered`) set
+    // `fileStillExists: true`, so without this test nothing would notice —
+    // this one flips it to `false` and expects `flush` to follow.
+    //
+    // The state is reachable, not just a fabrication: `fileStillExists` is
+    // an IDENTITY check (see `RenderedState`'s doc), so a delete-then-recreate
+    // at the same path inside one debounce window really does yield
+    // `exists: true, fileStillExists: false` here — and flushing in that
+    // case would aim a stale editor's text at a DIFFERENT file, which is
+    // exactly what a hardcoded `true` would do.
+    expect(
+      decideChangeAction(
+        { kind: "content", entry },
+        state({ exists: true, fileStillExists: false }),
+        false,
+      ),
+    ).toEqual({ type: "remove", flush: false });
+  });
+
   it("defaults to in-scope, so an unscoped timeline behaves exactly as before", () => {
     expect(decideChangeAction({ kind: "added", entry }, absent)).toEqual({ type: "insert" });
     expect(decideChangeAction({ kind: "content", entry }, rendered)).toEqual({ type: "refresh" });

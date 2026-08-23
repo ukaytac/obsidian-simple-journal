@@ -612,7 +612,14 @@ export class JournalView extends ItemView {
     this.installMountObserver();
 
     if (this.index.length === 0) {
-      this.renderEmptyState(false, this.tagScope);
+      // A scope only EXPLAINS an empty timeline when the unfiltered index
+      // is non-empty — otherwise the real cause is that the journal folder
+      // itself holds nothing (e.g. it was just renamed out from under the
+      // configured root), and "No entries tagged #x." would blame the tag
+      // for something it did not cause. `this.index` is already the
+      // SCOPED array here, so the unfiltered count has to come from the
+      // service directly.
+      this.renderEmptyState(false, this.plugin.journal.getEntries().length > 0 ? this.tagScope : null);
       // Still installed even though there's nothing to page yet: the
       // sentinel's own initial IntersectionObserver callback finds the
       // first page empty and tears itself back down immediately (see
@@ -631,7 +638,16 @@ export class JournalView extends ItemView {
     // then loads nothing. Distinct from the `index.length === 0` branch
     // above: that one never calls `loadNextPage` at all, this one already
     // did and it legitimately came back with nothing to show.
-    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.tagScope);
+    //
+    // Same attribution guard as above: only name the scope when the
+    // unfiltered index is non-empty, so an empty journal folder is never
+    // blamed on the tag filter.
+    if (this.rendered.size === 0) {
+      this.renderEmptyState(
+        this.anchorDate !== null,
+        this.plugin.journal.getEntries().length > 0 ? this.tagScope : null,
+      );
+    }
 
     this.installSentinel();
     await this.reestablishComposer(composerSnapshot);
