@@ -744,3 +744,34 @@
   letter-spacing: 0.06em;
   color: var(--text-muted);
 }
+
+/* Frontmatter tag chips (JournalView.createEntryEl). Real <button>s, so —
+   exactly like .journal-entry-time — a lone class selector would lose to
+   Obsidian's own `button:not(.clickable-icon)` and bare `button` rules and
+   leave a filled, rounded, shadowed chip where a quiet tag belongs. The
+   two-class selector clears both, and the explicit :hover entry keeps a
+   theme's own `button:hover` from flipping the tie back. */
+.journal-entry-tags {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+.journal-entry-header .journal-entry-tag,
+.journal-entry-header .journal-entry-tag:hover {
+  padding: 0;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: transparent;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.journal-entry-header .journal-entry-tag:hover {
+  color: var(--text-accent);
+}

@@ -11,7 +11,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
-import { entryHasTag, resolveTags } from "../journal/entryTags";
+import { entryHasTag, frontmatterTags, resolveTags } from "../journal/entryTags";
 import { UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
@@ -1195,6 +1195,13 @@ export class JournalView extends ItemView {
     // below. `commitComposer` re-enables it the moment the entry gets a file.
     if (!entry.file) timeButton.disabled = true;
 
+    // Chips for the FRONTMATTER tags only — the ones the timeline hides by
+    // suppressing `.metadata-container` (see styles.css). An inline `#tag`
+    // already renders as a clickable pill in live preview, so chipping it too
+    // would show the same tag twice. See `entryTags.ts`'s module doc.
+    const tagsEl = headerEl.createDiv({ cls: "journal-entry-tags" });
+    this.renderEntryTagsInto(tagsEl, entry);
+
     // Hidden until hover/focus (see styles.css) — the timeline is a writing
     // surface, not a dashboard, so nothing but the timestamp is visible at rest.
     const actionsEl = headerEl.createDiv({ cls: "journal-entry-actions" });
@@ -1342,11 +1349,12 @@ export class JournalView extends ItemView {
       // right-click above. Bails immediately on a touch that starts inside
       // `.journal-entry-body`: that surface is an editing surface first, and
       // a long-press there is the editor's own text-selection gesture, not a
-      // request for this menu. Also bails inside `.journal-entry-actions` and
-      // `.journal-entry-time`: both already open something on tap (this same
-      // menu, and the time editor, respectively), and without this a
-      // long-press on either would open the menu at 500ms and the touch's own
-      // `touchend`-driven `click` would then fire right after.
+      // request for this menu. Also bails inside `.journal-entry-actions`,
+      // `.journal-entry-time`, and `.journal-entry-tag`: all three already do
+      // something on tap (this same menu, the time editor, and setting the
+      // tag scope, respectively), and without this a long-press on any of
+      // them would open the menu at 500ms and the touch's own `touchend`-
+      // driven `click` would then fire right after.
       //
       // `instanceof Element`, not `HTMLElement`, matching the `contextmenu`
       // handler above and for the same reason: an SVG target (a Mermaid
@@ -1366,7 +1374,10 @@ export class JournalView extends ItemView {
         }
 
         const target = event.target;
-        if (target instanceof Element && target.closest(".journal-entry-body, .journal-entry-actions, .journal-entry-time")) {
+        if (
+          target instanceof Element &&
+          target.closest(".journal-entry-body, .journal-entry-actions, .journal-entry-time, .journal-entry-tag")
+        ) {
           return;
         }
 
@@ -2762,8 +2773,47 @@ export class JournalView extends ItemView {
     void this.setTagScope(null);
   }
 
-  /** Task 10 re-renders one row's frontmatter chips here. */
-  private refreshEntryTags(_rendered: RenderedEntry): void {}
+  /**
+   * Fills `tagsEl` with one chip per frontmatter tag. Buttons, not spans, so
+   * they are keyboard-reachable and activate on Enter/Space with no extra
+   * wiring — same reasoning as the time button above.
+   */
+  private renderEntryTagsInto(tagsEl: HTMLElement, entry: JournalEntry): void {
+    tagsEl.empty();
+    // No file yet (an uncommitted composer) means nothing is indexed, so
+    // there is nothing to chip.
+    if (!entry.file) return;
+
+    for (const tag of frontmatterTags(this.app.metadataCache.getFileCache(entry.file))) {
+      const chip = tagsEl.createEl("button", {
+        cls: "journal-entry-tag",
+        text: `#${tag}`,
+        attr: { type: "button" },
+      });
+      chip.addEventListener("click", () => {
+        void this.setTagScope(tag);
+      });
+    }
+  }
+
+  /**
+   * Re-reads one rendered row's frontmatter chips from the metadata cache.
+   * Called for every "content"/"moved" change, including those whose action
+   * is a `noop` to protect a focused or dirty editor — the chips are in the
+   * header, not the editor, so refreshing them is always safe, and a chip
+   * advertising a tag the user already deleted is a lie the timeline has no
+   * other way to correct before the next reload.
+   *
+   * Confined strictly to `.journal-entry-tags`, a child of `headerEl`: that
+   * element is a SIBLING of `bodyEl`, where the editor is mounted, so
+   * touching it cannot disturb the editor's focus, selection, or CM6 state.
+   * `RenderedEntry` also hands out `bodyEl`/`editor` — do not widen this to
+   * touch either.
+   */
+  private refreshEntryTags(rendered: RenderedEntry): void {
+    const tagsEl = rendered.el.querySelector<HTMLElement>(".journal-entry-tags");
+    if (tagsEl) this.renderEntryTagsInto(tagsEl, rendered.entry);
+  }
 
   /** The active tag scope, or null. Read by `main.ts` to build the suggester. */
   activeTagScope(): string | null {
