@@ -193,13 +193,18 @@ describe("decideChangeAction with a tag scope", () => {
     });
   });
 
-  it("does nothing for an out-of-scope content change with nothing rendered — the dominant case once a scope is active, since JournalService emits content/moved for every entry regardless of what the view rendered", () => {
+  it("does nothing for an out-of-scope content change with nothing rendered", () => {
+    // The dominant case once a scope is active: `JournalService` emits
+    // "content"/"moved" for every entry regardless of what the view actually
+    // rendered, and most entries are out of scope and never rendered at all.
     expect(decideChangeAction({ kind: "content", entry }, absent, false)).toEqual({
       type: "noop",
     });
   });
 
-  it("declines an out-of-scope moved on a focused row too, unlike in-scope moved which never suppresses on focus", () => {
+  it("declines an out-of-scope moved on a focused row too", () => {
+    // Unlike in-scope "moved" (see the "ordering reposition" describe block
+    // above), which never suppresses on focus.
     expect(
       decideChangeAction({ kind: "moved", entry }, { ...rendered, focused: true }, false),
     ).toEqual({ type: "noop" });

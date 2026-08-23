@@ -353,6 +353,9 @@ export class JournalService extends Component {
     // entry that gained or lost a tag elsewhere in Obsidian would keep its
     // stale tags in the index forever, and `JournalView`'s tag scope would
     // filter on them.
+    //
+    // A plain reassignment, not an in-place mutation of the old array — see
+    // `JournalEntry.tags`'s doc for why that distinction is load-bearing.
     existing.tags = entry.tags;
     return { kind: "content", entry: existing };
   }

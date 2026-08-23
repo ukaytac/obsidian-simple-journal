@@ -131,8 +131,8 @@ export function decideChangeAction(
  * `moved` routed here through `decideScopeExit` DOES decline on
  * focus/dirty. The asymmetry is intentional: ordering must happen even at
  * the cost of disturbing focus, because a wrongly-ordered timeline is a
- * product-visible bug, whereas a filter being briefly loose about one row
- * is cosmetic and can wait.
+ * product-visible bug, whereas a filter being loose about one row is
+ * cosmetic and can wait.
  *
  * A declined exit leaves the row rendered, out of scope, until the next
  * full `reload()` — and nothing re-runs this decision once the entry later
@@ -145,13 +145,18 @@ export function decideChangeAction(
  * — but it is not merely "briefly" wrong, and should not be described that
  * way.
  *
- * `flush: state.fileStillExists` is deliberately kept even though it is
- * inert here by construction: this function only reaches `remove` when
- * `!dirty`, so the resulting `flushSave` finds nothing to write, never
- * fails, and never surfaces a notice. It stays for the same reason the
- * "removed" branch above keeps it — defensive parity in data-safety code,
- * not because a mid-debounce scope exit is actually possible here; the
- * focused/dirty decline just above has already ruled that out.
+ * `flush: state.fileStillExists` is not the redundant guard it can look
+ * like. `fileStillExists` is compared by IDENTITY, not by path (see
+ * `RenderedState`'s doc) — so `exists: true, fileStillExists: false` is
+ * genuinely reachable here: a delete-then-recreate at the same path inside
+ * one debounce window, where the row is still rendered but the `TFile` it
+ * points at is no longer the live one. In that window, flushing would aim a
+ * stale editor's text at a DIFFERENT file than the one now at that path.
+ * The focused/dirty decline just above and this flag are therefore two
+ * independent guards that happen to agree in the common case, not one
+ * checking the other's work — `tests/applyChange.test.ts`'s "a scope exit's
+ * flush tracks fileStillExists, not a hardcoded true" pins the derivation so
+ * a future simplification to a literal `true` gets caught.
  */
 function decideScopeExit(state: RenderedState): ChangeAction {
   if (!state.exists) return { type: "noop" };

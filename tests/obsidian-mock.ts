@@ -2,17 +2,34 @@
  * Minimal stand-in for the `obsidian` module. Vitest aliases `obsidian` to this
  * file, so unit tests can import Obsidian types and exercise repository code
  * without a running Obsidian instance. Only what the tested code needs is here.
+ *
+ * `tsc` resolves `obsidian` to the real package's type definitions, while
+ * vitest resolves it to this file — so a member added to a class here that
+ * shadows a real Obsidian class, but that the real API does NOT have, will
+ * type-check fine under vitest and then fail `tsc` the moment a test uses it
+ * through a real-typed reference (exactly what happened with a `choose()`
+ * helper once added to `SuggestModal` below). This mock must not invent
+ * convenience surface on such classes; a test-only helper belongs in the
+ * test harness or the test itself, never on a class standing in for a real
+ * one.
+ *
+ * This file is not yet fully compliant with that rule. Three pre-existing
+ * exceptions predate it, and each is safe today only because every access to
+ * its extra surface goes through a mock-typed reference or an explicit cast
+ * — never through a real-typed one, which is the only way the mismatch above
+ * could actually bite:
+ *
+ * - `Menu`'s `items`/`shown`/`findItem` (below) — inspection surface the real
+ *   `Menu` doesn't have. Safe because no test currently references `Menu` at
+ *   all; the entire mock class is presently unused.
+ * - `TFile`'s public constructor (below) — the real `TFile` declares none
+ *   (Obsidian constructs it internally). Safe because every test constructs
+ *   a `TFile` through this mock's own type, never through `obsidian`'s real
+ *   type.
+ * - `WorkspaceLeaf`'s `app` field (below) — not on the real class's public
+ *   surface. Safe because it is only ever read through this mock's `ItemView`
+ *   constructor, itself mock-typed.
  */
-
-// `tsc` resolves `obsidian` to the real package's type definitions, while
-// vitest resolves it to this file — so a member added to a class here that
-// shadows a real Obsidian class, but that the real API does NOT have, will
-// type-check fine under vitest and then fail `tsc` the moment a test uses it
-// through a real-typed reference (exactly what happened with a `choose()`
-// helper once added to `SuggestModal` below). This mock must not invent
-// convenience surface on such classes; a test-only helper belongs in the
-// test harness or the test itself, never on a class standing in for a real
-// one.
 export class TAbstractFile {
   // Typed `any` so mock instances remain structurally assignable to the real
   // `obsidian` package's TFile/TAbstractFile when tsc (unlike vitest) resolves

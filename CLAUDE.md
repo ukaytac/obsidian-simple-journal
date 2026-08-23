@@ -416,6 +416,78 @@ Deletion must use safe Obsidian file APIs and should respect Obsidian's normal t
 
 ---
 
+# Tags
+
+Obsidian draws no semantic distinction between an inline `#tag` — mid-sentence
+or at the end of an entry — and a frontmatter `tags:` entry: `getAllTags`
+merges both into one array, and search, the tag pane, and the graph all treat
+them identically. Neither does this plugin, with exactly one exception, and
+the exception exists for a reason specific to this timeline: the timeline
+hides `.metadata-container` by design (see **Main Journal View**), so a
+frontmatter tag is the one kind that would otherwise be invisible and
+unremovable there. An inline tag needs no such help — it already renders as a
+clickable pill in live preview, like any other note.
+
+## Rule 1 — One reader, source-blind
+
+A single module, `journal/entryTags.ts`, resolves every tag on an entry —
+inline and frontmatter alike — exactly as `entryDate.ts` is the one place an
+entry's chronology is resolved. Nothing downstream asks which kind a given tag
+came from. Obsidian does not ask; neither do we.
+
+## Rule 2 — The plugin never writes a tag
+
+Frontmatter belongs to the user: only `created` is the plugin's to write (see
+**Entry Metadata**), and that boundary holds for tags too — no code path adds,
+removes, or reformats a `tags:` entry. The body needs no help either: the
+embedded editor is a real Obsidian editor (see **Editing**), so typing `#`
+brings up Obsidian's own tag autocomplete with nothing from this plugin
+involved. There is no tag-entry UI. "Automatic tagging" stays a non-goal.
+
+## Rule 3 — Chips show only what the timeline hides
+
+Inline tags already render as clickable pills in live preview, so rendering
+them again as chips would show the same tag twice. Frontmatter tags render
+nowhere else in the timeline. So: chips are rendered for frontmatter tags
+only. Nothing then appears twice, and nothing appears zero times.
+
+## Rule 4 — Clicking a tag scopes the timeline
+
+A tag is not a point on the chronological axis, so anchoring — what a
+calendar day click does — has no meaning for it. The honest options were
+filter or nothing; this filters, and calls it a **scope**. A scope composes
+with an anchor ("this tag, from that day backwards"), and the calendar's dots
+stay scope-independent — they describe the journal, not the current filter.
+
+Matching is exact and case-insensitive: `#work` does not include
+`#work/project`. Nested tags are listed separately in the tag suggester, so
+every tag stays reachable, and tag-hierarchy browsing stays out of scope.
+
+## A scope is never persisted
+
+Not to view state, not to settings, not to the saved workspace layout. A
+restored filter at startup would hide most of a user's journal with no
+visible cause — the same "permanently locked out" failure the calendar's
+placement policy above exists to avoid.
+
+Its lifecycle is therefore entirely explicit user action: only `setTagScope`
+and the reset a new entry triggers ever write it — nothing else, including a
+folder reload, touches it on its own. Silently changing state the user didn't
+ask to change is exactly the failure this section's precedent warns about.
+
+`New journal entry` clears both the scope and any active anchor before opening
+the composer: a new entry has no tags, and would otherwise be written safely
+to disk and be invisible in a timeline still filtered to something else.
+
+## Entry points
+
+The way into a scope is one command, `Filter journal by tag`, plus the
+plugin's own frontmatter chips. Obsidian's inline tag pill is deliberately
+left alone — intercepting it would make the same pill mean two different
+things in two different places.
+
+---
+
 # Navigation
 
 Required commands:
@@ -1099,7 +1171,8 @@ Still NOT to implement:
 * daily summaries
 * weekly/monthly reviews
 * Bases integration
-* advanced filters
+* advanced filters, except the tag scope described under `# Tags` — a single
+  tag, chosen from one command, never persisted
 * alternative sort modes
 * single-day filtering — clicking a calendar day anchors the timeline rather
   than filtering it; see the calendar section for why

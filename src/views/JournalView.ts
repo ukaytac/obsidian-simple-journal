@@ -444,8 +444,12 @@ export class JournalView extends ItemView {
    * read and static-rendering fallback; `fileIdentityStillValid`,
    * `logUnsavedTextIfLost`, and `clearMobileTimers` are small helpers shared
    * with teardown paths this seam doesn't own (`clearTimeline`,
-   * `confirmDelete`). `save: this.saveDeps` is passed straight through, same
-   * reasoning as `mountLifecycle`'s.
+   * `confirmDelete`). `matchesScope`/`refreshEntryTags` are the tag-scope
+   * seam this pipeline needs but doesn't own either — deciding whether a
+   * changed entry belongs in the current filter, and re-rendering one row's
+   * frontmatter chips, are both `JournalView` state (`tagScope`, the DOM
+   * under `.journal-entry-tags`). `save: this.saveDeps` is passed straight
+   * through, same reasoning as `mountLifecycle`'s.
    * The `as RenderedEntry`/`as ChangeEntry` casts mirror `mountLifecycle`'s/
    * `timelineDom`'s: every `ChangeEntry` this pipeline is ever actually
    * called with (`this.rendered`'s values) already IS a full `RenderedEntry`.
@@ -492,6 +496,17 @@ export class JournalView extends ItemView {
     // runs. `setTagScope(null)` on an already-null scope is idempotent, which
     // is why a duplicate listener was inert rather than visibly broken — not
     // a reason to leave the duplicate in place.
+    //
+    // No explicit `register(() => removeEventListener(...))` teardown, on the
+    // precedent of `addAction` just above and of the entry-level listeners
+    // (`bodyEl`'s `pointerdown`/`focusin`/`touchstart`), none of which have
+    // one either — `contentEl` is expected to be garbage-collected with the
+    // rest of the leaf once the view closes. That reasoning is sound but
+    // unverified: it is reasoned from documented Obsidian lifecycle
+    // behaviour, not proven against a real leaf detach, and the test harness
+    // mocks do not model real GC/teardown semantics either. Same caveat as
+    // the mobile timing guesses elsewhere in this file — see CLAUDE.md's
+    // Target Platforms section.
     this.contentEl.addEventListener("keydown", (event) => this.onContentKeyDown(event));
   }
 
@@ -2753,14 +2768,28 @@ export class JournalView extends ItemView {
    * `insertEntryInPlace`'s `indexOf`-by-reference both keep working against
    * it unchanged, and two lists can never drift apart.
    *
-   * ONE reader escapes that per-batch re-derivation: `nextPage`/
-   * `loadNextPage` are reached from `onSentinelVisible`, which is NOT on
-   * `enqueueTimelineMutation`'s chain (it has its own `loading` lock and a
-   * generation guard instead). So between `applyKnownEntry` mutating the
-   * live index and the enqueued `applyChangesNow` re-deriving from it, a
+   * A SECOND writer can also invalidate the unscoped alias, out from under
+   * this same method: `JournalService.rebuild()` (driven by `refreshJournal`
+   * in `main.ts`) assigns the service a wholly new index array with no
+   * `onChange` emit at all. That breaks the plain alias identically whether
+   * or not a scope is active, so it isn't specifically a scoped-index
+   * concern — worth naming here anyway, since `refreshJournal` always calls
+   * `reload()` on every open view right after, which calls this method again
+   * and puts the alias right; nothing observes the gap in between.
+   *
+   * ONE reader escapes the per-batch re-derivation described above:
+   * `nextPage`/`loadNextPage` are reached from `onSentinelVisible`, which is
+   * NOT on `enqueueTimelineMutation`'s chain (it has its own `loading` lock
+   * and a generation guard instead). So between `applyKnownEntry` mutating
+   * the live index and the enqueued `applyChangesNow` re-deriving from it, a
    * scroll-driven page can read a filtered array in which one entry still
-   * sits at its pre-correction slot — costing row order within a day, healed
-   * by the next flush or reload.
+   * sits at its pre-correction slot — costing row order within a day. A full
+   * `reload()` heals this outright, because it rebuilds the DOM from the
+   * now-correct index; a mere flush does not, because re-deriving
+   * `this.index` alone does not retroactively move a row `insertEntryInPlace`
+   * already appended at a stale slot — that heals only once a LATER change
+   * touches this same entry, whose own reposition/insert then lands at the
+   * by-then-correct slot.
    */
   private scopedIndex(): JournalEntry[] {
     const all = this.plugin.journal.getEntries();

@@ -269,6 +269,14 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
    * the same path — one leaked indefinitely, since only the map's most
    * recent entry for that path is ever reachable to tear down.
    *
+   * That duplicate-node outcome is now also independently prevented by the
+   * `hasRendered` guard at the top of both this function and `appendEntry`:
+   * whichever of the two runs second would bail immediately on finding the
+   * path already rendered. So today the `>=` is belt-and-braces, not the
+   * sole defence — the reasoning above is why it was added, and stays
+   * correct on its own terms, but a reader should not conclude from it that
+   * flipping this to `>` would reintroduce the duplicate by itself.
+   *
    * `offset` — `anchorPosition(index, anchorDate)` when an anchor is active,
    * `0` otherwise — is where the loaded window actually starts. Without it,
    * an anchored timeline's loaded window no longer begins at index 0, so
