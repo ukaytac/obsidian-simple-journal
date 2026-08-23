@@ -2191,14 +2191,13 @@ export class JournalView extends ItemView {
    * every other timeline mutation) and finds `this.composer` already set.
    *
    * REQUIRED, per CLAUDE.md's "Creating a New Entry": if the timeline is
-   * anchored to a past date (`goToDate`), this must move the user back to
-   * today before opening the composer — otherwise the anchor stays set, and
-   * the very next `reload()` for any unrelated reason (a settings change, a
-   * lost-cursor re-anchor in `nextPage`, anything) would exclude the entry
-   * just written, since it is newer than the stale anchor. The file itself
-   * would still be safe on disk, but it would silently vanish from the
-   * timeline with no explanation — worse than the anchor merely being
-   * inconvenient.
+   * anchored to a past date (`goToDate`) or scoped to a tag (`setTagScope`),
+   * this must clear both before opening the composer — otherwise the
+   * exclusion stays in force, and the entry just written is either newer than
+   * the anchor or missing the scoped tag, so it silently vanishes from the
+   * timeline. The file itself would still be safe on disk, but it would
+   * disappear with no explanation — worse than the navigation state merely
+   * being inconvenient.
    *
    * Only reached when no composer is open yet — the fast-path return above
    * guards this, and `goToDate`/`reload()` never runs (an already-open
@@ -2224,8 +2223,13 @@ export class JournalView extends ItemView {
       return;
     }
 
-    if (this.anchorDate !== null) {
-      await this.goToDate(null);
+    // REQUIRED, per CLAUDE.md's "Creating a New Entry": a stale anchor OR an
+    // active tag scope would exclude the entry about to be written — a new
+    // entry has no tags, and is newer than any past anchor — leaving the file
+    // safe on disk but absent from the timeline with no explanation. Both are
+    // cleared in one reload rather than two.
+    if (this.tagScope !== null || this.anchorDate !== null) {
+      await this.resetToNewest();
     }
 
     await this.enqueueTimelineMutation(() => this.openComposer());

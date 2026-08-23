@@ -99,18 +99,21 @@ describe("JournalView composer lifecycle", () => {
     // yet" message — wrong here on two counts: the journal is not empty (a
     // tag scope is excluding everything), and that is exactly the situation
     // the scoped message exists to explain.
+    //
+    // The composer is opened BEFORE scoping, then carried through the scope's
+    // reload by `reestablishComposer`: since Task 13, `startNewEntry` clears
+    // an active scope (see its doc) exactly as it already cleared an active
+    // anchor, so scoping first would unscope the view again on the very next
+    // `startNewEntry` and there would be nothing left to blame.
     const h = createHarness();
     const other = addEntry(h, new Date(2026, 7, 12, 9, 0, 0));
     tagEntry(h, other, ["work"]);
     h.service.load();
     await h.view.onOpen();
 
-    await h.view.setTagScope("therapy");
-    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
-      "No entries tagged #therapy.",
-    );
-
     await h.view.startNewEntry();
+    await h.view.setTagScope("therapy");
+
     const textarea = composerTextarea(h.view);
     typeInto(textarea, "   ");
     typeInto(textarea, "");

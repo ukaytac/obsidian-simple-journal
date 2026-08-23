@@ -345,4 +345,25 @@ describe("JournalView tag scope", () => {
     vi.advanceTimersByTime(300);
     await vi.waitFor(() => expect(chips(h, file.path)).toEqual(["#work", "#books"]));
   });
+
+  it("clears the scope when a new entry is started", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    await h.view.startNewEntry();
+
+    expect(h.view.activeTagScope()).toBeNull();
+    expect(internals(h.view).composer).not.toBeNull();
+  });
+
+  it("clears a scope AND an anchor together", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+    await h.view.goToDate(new Date(2026, 7, 11, 23, 59, 59));
+
+    await h.view.startNewEntry();
+
+    expect(h.view.activeTagScope()).toBeNull();
+    expect(internals(h.view).anchorDate).toBeNull();
+  });
 });
