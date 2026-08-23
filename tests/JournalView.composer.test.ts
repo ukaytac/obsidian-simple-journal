@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addEntry, createHarness, internals, settle } from "./journalViewHarness";
+import { addEntry, createHarness, internals, settle, tagEntry } from "./journalViewHarness";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -91,6 +91,71 @@ describe("JournalView composer lifecycle", () => {
     expect(internals(h.view).composer).toBeNull();
     expect(h.app.vault.files.size).toBe(0);
     expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeNull();
+  });
+
+  it("abandoning an empty composer into an otherwise-empty scoped timeline keeps naming the scope", async () => {
+    // Regression test: `discardEmptyComposer` used to call `renderEmptyState()`
+    // with no arguments, which always renders the generic "no journal entries
+    // yet" message — wrong here on two counts: the journal is not empty (a
+    // tag scope is excluding everything), and that is exactly the situation
+    // the scoped message exists to explain.
+    //
+    // The composer is opened BEFORE scoping, then carried through the scope's
+    // reload by `reestablishComposer`: since Task 13, `startNewEntry` clears
+    // an active scope (see its doc) exactly as it already cleared an active
+    // anchor, so scoping first would unscope the view again on the very next
+    // `startNewEntry` and there would be nothing left to blame.
+    const h = createHarness();
+    const other = addEntry(h, new Date(2026, 7, 12, 9, 0, 0));
+    tagEntry(h, other, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    await h.view.startNewEntry();
+    await h.view.setTagScope("therapy");
+
+    const textarea = composerTextarea(h.view);
+    typeInto(textarea, "   ");
+    typeInto(textarea, "");
+    textarea.blur();
+    await settle();
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
+      "No entries tagged #therapy.",
+    );
+  });
+
+  it("abandoning an empty composer into an anchored, unscoped timeline blames the anchor", async () => {
+    // The other half of `discardEmptyComposer`'s `(this.anchorDate !== null,
+    // this.tagScope)`. The scoped half is covered above; without this one,
+    // passing `anchorDate` at all could be dropped and only the generic "no
+    // journal entries yet" message would ever be asserted.
+    //
+    // The composer is opened BEFORE anchoring, then carried through the
+    // anchor's reload by `reestablishComposer`: `startNewEntry` clears an
+    // active anchor (see its doc), so anchoring first would un-anchor the
+    // view again and there would be nothing to blame.
+    const h = createHarness();
+    addEntry(h, new Date(2026, 7, 12, 9, 0, 0));
+    h.service.load();
+    await h.view.onOpen();
+
+    await h.view.startNewEntry();
+    // Older than the only entry, so the anchor excludes it and the timeline
+    // holds nothing but the composer.
+    await h.view.goToDate(new Date(2026, 7, 10, 23, 59, 59));
+
+    const textarea = composerTextarea(h.view);
+    typeInto(textarea, "   ");
+    typeInto(textarea, "");
+    textarea.blur();
+    await settle();
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).timelineEl.querySelector(".journal-empty")?.textContent).toBe(
+      "Nothing on or before this date.",
+    );
   });
 
   it("a blur that never received any input does not discard the composer, even after a genuine focus", async () => {
@@ -399,5 +464,48 @@ describe("JournalView composer lifecycle", () => {
     expect(composerAfter).not.toBeNull();
     expect(composerAfter.editor.hasFocus()).toBe(false);
     expect(document.activeElement).toBe(stealer);
+  });
+
+  /**
+   * Regression test for the staleness `commitComposer`'s own comment now
+   * documents: it builds `rendered.entry` with `tags: []` because the
+   * metadata cache hasn't indexed the just-created file yet, and nothing
+   * ever replaces that object afterwards — the vault "create" event's
+   * "added" change resolves to an insert, and `insertEntryInPlace`
+   * early-returns because this path is already rendered. So
+   * `rendered.entry.tags` stays `[]` even once the cache catches up.
+   * `commitEntryTimeChange` must not carry that staleness into the index by
+   * trusting `rendered.entry.tags`; it re-resolves from the cache instead.
+   */
+  it("a time correction on a freshly committed entry picks up its real tags, not the stale [] left by commit", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    typeInto(composerTextarea(h.view), "Thinking about #work today");
+    await settle();
+    await settle();
+
+    const [path] = h.app.vault.files.keys();
+    const rendered = internals(h.view).rendered.get(path);
+    const file = rendered.entry.file;
+
+    // Confirms the premise this test guards against: the composer really
+    // did leave the rendered copy stale.
+    expect(rendered.entry.tags).toEqual([]);
+
+    // The metadata cache catching up moments later, same as it would for a
+    // real inline #tag once Obsidian re-parses the new file. `created` is
+    // required (with any value) by `setEntryCreated`'s own frontmatter
+    // cross-check, not by anything this test cares about.
+    h.app.metadataCache.frontmatter.set(path, { created: "placeholder" });
+    h.app.metadataCache.inlineTags.set(path, ["work"]);
+
+    await internals(h.view).commitEntryTimeChange(rendered, file, new Date(2026, 6, 1, 9, 0, 0));
+    await settle();
+
+    const indexed = h.service.getEntries().find((e: { file: { path: string } }) => e.file.path === file.path);
+    expect(indexed?.tags).toEqual(["work"]);
   });
 });

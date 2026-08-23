@@ -2,8 +2,34 @@
  * Minimal stand-in for the `obsidian` module. Vitest aliases `obsidian` to this
  * file, so unit tests can import Obsidian types and exercise repository code
  * without a running Obsidian instance. Only what the tested code needs is here.
+ *
+ * `tsc` resolves `obsidian` to the real package's type definitions, while
+ * vitest resolves it to this file — so a member added to a class here that
+ * shadows a real Obsidian class, but that the real API does NOT have, will
+ * type-check fine under vitest and then fail `tsc` the moment a test uses it
+ * through a real-typed reference (exactly what happened with a `choose()`
+ * helper once added to `SuggestModal` below). This mock must not invent
+ * convenience surface on such classes; a test-only helper belongs in the
+ * test harness or the test itself, never on a class standing in for a real
+ * one.
+ *
+ * This file is not yet fully compliant with that rule. Three pre-existing
+ * exceptions predate it, and each is safe today only because every access to
+ * its extra surface goes through a mock-typed reference or an explicit cast
+ * — never through a real-typed one, which is the only way the mismatch above
+ * could actually bite:
+ *
+ * - `Menu`'s `items`/`shown`/`findItem` (below) — inspection surface the real
+ *   `Menu` doesn't have. Safe because no test currently references `Menu` at
+ *   all; the entire mock class is presently unused.
+ * - `TFile`'s public constructor (below) — the real `TFile` declares none
+ *   (Obsidian constructs it internally). Safe because every test constructs
+ *   a `TFile` through this mock's own type, never through `obsidian`'s real
+ *   type.
+ * - `WorkspaceLeaf`'s `app` field (below) — not on the real class's public
+ *   surface. Safe because it is only ever read through this mock's `ItemView`
+ *   constructor, itself mock-typed.
  */
-
 export class TAbstractFile {
   // Typed `any` so mock instances remain structurally assignable to the real
   // `obsidian` package's TFile/TAbstractFile when tsc (unlike vitest) resolves
@@ -330,14 +356,84 @@ export class Vault {
   }
 }
 
-/** In-memory metadata cache. Frontmatter is supplied per path by the test. */
+/**
+ * Shape `getFileCache` returns and `getAllTags` accepts. Named once so the
+ * two cannot drift apart if the shape later grows a member such as
+ * `position`.
+ */
+export interface FakeFileCache {
+  frontmatter?: Record<string, unknown>;
+  tags?: Array<{ tag: string }>;
+}
+
+/**
+ * In-memory metadata cache. Frontmatter is supplied per path by the test;
+ * inline `#tag` occurrences are supplied separately via `inlineTags` (bare
+ * tag text, no `#`), because a real cache reports the two through different
+ * fields and `resolveTags` must be provable against both.
+ */
 export class FakeMetadataCache extends FakeEvents {
   frontmatter = new Map<string, Record<string, unknown>>();
+  /** Inline tags per path, WITHOUT the leading `#`. */
+  inlineTags = new Map<string, string[]>();
 
-  getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {
+  getFileCache(file: TFile): FakeFileCache | null {
     const fm = this.frontmatter.get(file.path);
-    return fm ? { frontmatter: fm } : null;
+    const inline = this.inlineTags.get(file.path);
+    // Null for a file the test said nothing about, matching a real cache that
+    // has not indexed (or found anything in) the file — `entryFor` relies on
+    // that to fall back to the filename convention.
+    if (!fm && !inline) return null;
+
+    const cache: FakeFileCache = {};
+    if (fm) cache.frontmatter = fm;
+    // Real Obsidian reports inline tags WITH the `#`, and with a `position`
+    // nothing under test reads — only `.tag` is modeled.
+    if (inline) cache.tags = inline.map((tag) => ({ tag: `#${tag}` }));
+    return cache;
   }
+}
+
+/**
+ * Stand-in for Obsidian's `parseFrontMatterTags`. Returns tags WITH a leading
+ * `#`, like the real function, and accepts both of the shapes a user's
+ * frontmatter can legitimately hold — a YAML list, or one comma/space
+ * separated string — under either the plural `tags` key or the singular
+ * `tag` key.
+ */
+export function parseFrontMatterTags(
+  frontmatter: Record<string, unknown> | null | undefined,
+): string[] | null {
+  if (!frontmatter) return null;
+
+  const raw = frontmatter.tags ?? frontmatter.tag;
+  if (raw === undefined || raw === null) return null;
+
+  const list = Array.isArray(raw) ? raw : String(raw).split(/[,\s]+/);
+  const tags = list
+    .filter((value) => typeof value === "string" || typeof value === "number")
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0)
+    .map((value) => (value.startsWith("#") ? value : `#${value}`));
+
+  return tags.length > 0 ? tags : null;
+}
+
+/**
+ * Stand-in for Obsidian's `getAllTags`: inline tags and frontmatter tags
+ * merged into one array, each with its `#`. Deliberately does NOT dedupe —
+ * `resolveTags` dedupes for itself, and leaving duplicates in makes a test
+ * that relies on that dedupe prove something real.
+ */
+export function getAllTags(cache: FakeFileCache | null): string[] | null {
+  if (!cache) return null;
+
+  const tags = [
+    ...(cache.tags ?? []).map((entry) => entry.tag),
+    ...(parseFrontMatterTags(cache.frontmatter) ?? []),
+  ];
+
+  return tags.length > 0 ? tags : null;
 }
 
 export class FakeFileManager {
@@ -430,6 +526,33 @@ export class Modal {
   }
   onOpen(): void {}
   onClose(): void {}
+}
+
+/**
+ * Minimal stand-in for Obsidian's `SuggestModal`. Real Obsidian renders a
+ * floating prompt with a filtered list; jsdom has no layout for that, so this
+ * exposes only the three abstract members a subclass implements. A test
+ * drives a choice by calling the real, public `onChooseSuggestion(item, evt)`
+ * directly — see the constraint note atop this file for why nothing
+ * convenience-only is added here.
+ */
+export abstract class SuggestModal<T> extends Modal {
+  limit = 50;
+  emptyStateText = "";
+  inputEl: HTMLInputElement;
+
+  constructor(app?: unknown) {
+    super(app);
+    this.inputEl = document.createElement("input");
+  }
+
+  setPlaceholder(text: string): void {
+    this.inputEl.placeholder = text;
+  }
+
+  abstract getSuggestions(query: string): T[] | Promise<T[]>;
+  abstract renderSuggestion(value: T, el: HTMLElement): void;
+  abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
 }
 
 /**

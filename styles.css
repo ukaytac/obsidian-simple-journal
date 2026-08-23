@@ -317,6 +317,14 @@
   padding: var(--size-4-4) var(--size-4-4) 50vh;
 }
 
+/* Mirrors `.journal-timeline`'s horizontal padding above, so the scope
+   bar's `#tag` stays aligned with the entries underneath it instead of
+   sitting a size step to the right of them. */
+.is-mobile .journal-scope-bar-active {
+  padding-left: var(--size-4-4);
+  padding-right: var(--size-4-4);
+}
+
 .is-mobile .journal-entry {
   margin-bottom: var(--size-4-8);
 }
@@ -343,6 +351,17 @@
      whole area. */
   position: relative;
   z-index: 1;
+}
+
+/* Same reasoning as `.journal-entry-header .journal-entry-time` above — a
+   larger tap target via padding, cancelled by a matching negative margin so
+   the bar's own height doesn't grow. Smaller than the timestamp's bump: this
+   is tapped once per scope change, not once per entry, and there is no
+   sibling below it competing for the hit-test the way `.journal-entry-body`
+   does there. */
+.is-mobile .journal-scope-clear {
+  padding: var(--size-4-1);
+  margin: calc(-1 * var(--size-4-1));
 }
 
 /* Now that long-press opens the same menu (see JournalView.createEntryEl),
@@ -714,4 +733,90 @@
   justify-content: flex-end;
   gap: var(--size-4-2);
   margin-top: var(--size-4-4);
+}
+
+/* Tag scope bar. A sibling of .journal-timeline (see JournalView.onOpen),
+   sticky against the scroll container so the one explanation for a
+   filtered-looking journal cannot scroll away. Blank and inert — no padding,
+   no background — when no scope is active, so an unscoped timeline looks
+   exactly as it did before tag scoping existed. */
+.journal-scope-bar:empty {
+  display: none;
+}
+
+.journal-scope-bar-active {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-8);
+  max-width: var(--file-line-width);
+  margin: 0 auto;
+  background-color: var(--background-primary);
+}
+
+.journal-scope-tag {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* Frontmatter tag chips (JournalView.createEntryEl). Real <button>s, so —
+   exactly like .journal-entry-time — a lone class selector would lose to
+   Obsidian's own `button:not(.clickable-icon)` and bare `button` rules and
+   leave a filled, rounded, shadowed chip where a quiet tag belongs. The
+   two-class selector clears both, and the explicit :hover entry keeps a
+   theme's own `button:hover` from flipping the tie back. */
+.journal-entry-tags {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+}
+
+/* Obsidian tags whatever the user is pressing on a touch device with
+   `mobile-tap`, and its `button:not(.clickable-icon).mobile-tap` rule is a
+   class ahead of the reset below — so without this, every tap on a tag chip
+   flashes the filled chip back for the duration of the press. Same fix as
+   `.journal-entry-time` and `.journal-calendar-day` above. */
+.journal-entry-header .journal-entry-tag,
+.journal-entry-header .journal-entry-tag:hover,
+.journal-entry-header .journal-entry-tag.mobile-tap {
+  padding: 0;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: transparent;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+/* The focus ring below is a box-shadow, which forced-colors mode discards
+   along with all author colours, and Obsidian's button base sets
+   `outline: none`. Without this, a high-contrast user gets no focus
+   indicator at all — same fix as `.journal-entry-time` above. */
+@media (forced-colors: active) {
+  .journal-entry-header .journal-entry-tag:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
+.journal-entry-header .journal-entry-tag:hover,
+.journal-entry-header .journal-entry-tag:focus-visible {
+  color: var(--text-accent);
+}
+
+/* The `box-shadow: none` above also erases Obsidian's own
+   `button:focus-visible` ring — without this, tabbing to a chip would leave
+   no visible focus indicator at all. Reinstated explicitly, using the same
+   variable Obsidian's own focus rings use — same fix as `.journal-entry-time`
+   above. */
+.journal-entry-header .journal-entry-tag:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }

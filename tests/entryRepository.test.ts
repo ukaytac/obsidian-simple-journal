@@ -636,6 +636,24 @@ describe("setEntryCreated", () => {
   });
 });
 
+describe("entryFor tags", () => {
+  it("carries the entry's tags, inline and frontmatter merged", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+    fake.metadataCache.inlineTags.set(file.path, ["therapy"]);
+    fake.metadataCache.frontmatter.set(file.path, { tags: ["work"] });
+
+    expect(repo.entryFor(file)?.tags).toEqual(["therapy", "work"]);
+  });
+
+  it("is an empty array, not undefined, for an unindexed entry", () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "");
+
+    expect(repo.entryFor(file)?.tags).toEqual([]);
+  });
+});
+
 describe("renameEntryToMatch", () => {
   it("moves a conventionally-named entry within the same month", async () => {
     const { fake, repo } = setup();

@@ -130,3 +130,109 @@ describe("decideChangeAction: added and reload", () => {
     expect(decideChangeAction(change, state())).toEqual({ type: "reloadView" });
   });
 });
+
+describe("decideChangeAction with a tag scope", () => {
+  // `absent` deliberately omits `fileStillExists: true` — the real resolver
+  // (`renderedStateFor(undefined)`) always returns `fileStillExists: false`
+  // when nothing is rendered, and a fixture that can't occur in practice
+  // would be misleading right where the `!exists` branch is under test.
+  const rendered = state({ exists: true, fileStillExists: true });
+  const absent = state({ exists: false });
+
+  it("does not insert an added entry the scope excludes", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent, false)).toEqual({ type: "noop" });
+  });
+
+  it("still inserts an added entry the scope admits", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent, true)).toEqual({ type: "insert" });
+  });
+
+  it("removes a rendered entry that has left the scope", () => {
+    expect(decideChangeAction({ kind: "content", entry }, rendered, false)).toEqual({
+      type: "remove",
+      flush: true,
+    });
+  });
+
+  it("inserts an entry that has entered the scope", () => {
+    expect(decideChangeAction({ kind: "content", entry }, absent, true)).toEqual({
+      type: "insert",
+    });
+  });
+
+  it("never yanks a row the user is focused in, even out of scope", () => {
+    expect(
+      decideChangeAction({ kind: "content", entry }, { ...rendered, focused: true }, false),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("never yanks a row with unsaved text, even out of scope", () => {
+    expect(
+      decideChangeAction({ kind: "content", entry }, { ...rendered, dirty: true }, false),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("removes rather than repositions a moved entry the scope excludes", () => {
+    expect(decideChangeAction({ kind: "moved", entry }, rendered, false)).toEqual({
+      type: "remove",
+      flush: true,
+    });
+  });
+
+  it("a filter can never suppress a deletion, even out of scope", () => {
+    // "removed" is scope-independent by design — a delete must go through
+    // regardless of what the current filter thinks belongs on screen.
+    expect(
+      decideChangeAction({ kind: "removed", path: "Journal/gone.md" }, rendered, false),
+    ).toEqual({ type: "remove", flush: true });
+  });
+
+  it("a filter can never suppress a full reload", () => {
+    expect(decideChangeAction({ kind: "reload" }, rendered, false)).toEqual({
+      type: "reloadView",
+    });
+  });
+
+  it("does nothing for an out-of-scope content change with nothing rendered", () => {
+    // The dominant case once a scope is active: `JournalService` emits
+    // "content"/"moved" for every entry regardless of what the view actually
+    // rendered, and most entries are out of scope and never rendered at all.
+    expect(decideChangeAction({ kind: "content", entry }, absent, false)).toEqual({
+      type: "noop",
+    });
+  });
+
+  it("declines an out-of-scope moved on a focused row too", () => {
+    // Unlike in-scope "moved" (see the "ordering reposition" describe block
+    // above), which never suppresses on focus.
+    expect(
+      decideChangeAction({ kind: "moved", entry }, { ...rendered, focused: true }, false),
+    ).toEqual({ type: "noop" });
+  });
+
+  it("a scope exit's flush tracks fileStillExists, not a hardcoded true", () => {
+    // Pins `decideScopeExit`'s `flush: state.fileStillExists` against being
+    // "simplified" to a literal `true`. Both fixtures above (`rendered`) set
+    // `fileStillExists: true`, so without this test nothing would notice —
+    // this one flips it to `false` and expects `flush` to follow.
+    //
+    // The state is reachable, not just a fabrication: `fileStillExists` is
+    // an IDENTITY check (see `RenderedState`'s doc), so a delete-then-recreate
+    // at the same path inside one debounce window really does yield
+    // `exists: true, fileStillExists: false` here — and flushing in that
+    // case would aim a stale editor's text at a DIFFERENT file, which is
+    // exactly what a hardcoded `true` would do.
+    expect(
+      decideChangeAction(
+        { kind: "content", entry },
+        state({ exists: true, fileStillExists: false }),
+        false,
+      ),
+    ).toEqual({ type: "remove", flush: false });
+  });
+
+  it("defaults to in-scope, so an unscoped timeline behaves exactly as before", () => {
+    expect(decideChangeAction({ kind: "added", entry }, absent)).toEqual({ type: "insert" });
+    expect(decideChangeAction({ kind: "content", entry }, rendered)).toEqual({ type: "refresh" });
+  });
+});

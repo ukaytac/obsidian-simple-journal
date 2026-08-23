@@ -588,6 +588,8 @@ git add src/journal/entry.ts src/journal/entryRepository.ts src/views/JournalVie
 git commit -m "feat: carry tags on JournalEntry"
 ```
 
+**Correction applied during execution.** Step 5 specified `tags: rendered.entry.tags` at `commitEntryTimeChange`; code review found that array can be stale for a freshly committed composer entry (the "added" change never replaces it, since `insertEntryInPlace` early-returns on an already-rendered path), so the shipped code re-resolves the tags from the metadata cache instead. The `commitComposer` comment at `:2502` was also corrected to name the "added" branch rather than "content", which was never the branch that event takes.
+
 ---
 
 ### Task 4: A tag changed externally reaches the index
@@ -1257,6 +1259,40 @@ git add src/views/JournalView.ts tests/JournalView.tagScope.test.ts
 git commit -m "feat: tag scope state and scoped index derivation"
 ```
 
+**Correction applied during execution.** Step 8 specified that a `"reload"`
+change in the batch clears the tag scope; that block was **removed** and the
+scope now survives a folder rebuild. `JournalService.isJournalFolderPath`
+matches DESCENDANTS of the journal root, and every install has them
+(`Journal/2026/08`), so renaming `Journal/2026` — which changes not one entry
+and not one tag — would have silently dropped the user's active filter and
+blinked the scope bar off with no cause they could connect to what they did.
+The semantically identical rebuild on the settings path (`refreshJournal` in
+`src/main.ts`) does not clear the scope either, so the planned behaviour made
+the design contradict itself. There is also no correctness need:
+`scopedIndex()` reads `getEntries()` fresh, so a rebuilt index filters fine,
+and a scope that now matches nothing renders "No entries tagged #x." — which
+explains itself, unlike state that changes on its own. Silently changing state
+is exactly the failure `CLAUDE.md`'s calendar section exists to warn about.
+
+Removing it also resolved a code-review finding by construction: the derive ran
+BEFORE the clear, so `this.index` was left filtered while `matchesScope()`
+began returning `true` for everything. Had a `"reload"` ever arrived alongside
+other changes (the case `some()` exists for) and landed after them, every
+earlier change would have computed `inScope === true`, called
+`insertEntryInPlace`, hit `indexOf === -1`, and been silently dropped.
+
+**Task 14 must not claim the scope is cleared on a folder reload** — neither
+§6 of the design spec nor the `CLAUDE.md` Tags section.
+
+Also folded in from review: the scoped filter predicate moved out of
+`JournalView` into `entriesWithTag` in `src/journal/entryTags.ts`, which
+normalizes the needle once instead of once per entry (the planned
+`all.filter((entry) => entryHasTag(entry, scope))` ran a regex replace, two
+trims and a `toLowerCase()` per entry over the whole journal). `entryHasTag`
+stays for `matchesScope`'s single-entry question. Task 8's widening of
+`timelineDom.renderEmptyState` was also done here, since Task 7 cannot compile
+without it.
+
 ---
 
 ### Task 8: Empty state names the scope
@@ -1838,6 +1874,27 @@ Expected: PASS, 6 tests.
 git add src/views/TagScopeModal.ts tests/tagScopeModal.test.ts
 git commit -m "feat: tag suggester for the journal filter"
 ```
+
+**Correction applied during execution.** Step 1's test called a mock-only
+`choose()` helper on `SuggestModal`. That fails `tsc` — the test type-checks
+`instance: TagScopeModal` against the REAL Obsidian package (only vitest
+aliases `obsidian` to the mock; `tsc` does not), and the real `SuggestModal`
+has no `choose()`. The shipped test calls the real, public
+`onChooseSuggestion(item, evt)` directly instead, which exercises the same
+path. `tests/obsidian-mock.ts`'s now-dead `choose()` helper was removed, and
+its module doc gained a note against adding convenience surface to any class
+that shadows a real Obsidian class.
+
+Calling the real member directly then surfaced a second, smaller mismatch:
+Step 3's `onChooseSuggestion(choice: TagChoice): void` drops the real
+signature's `evt` parameter, which TypeScript permits for an override (a
+subclass may implement fewer parameters than its abstract member) but which
+also narrows the arity TypeScript checks at any call site typed as
+`TagScopeModal` specifically — so the two-argument call from the corrected
+test failed with "Expected 1 arguments, but got 2." The shipped
+`onChooseSuggestion` keeps the real member's full `(choice, _evt)` signature,
+ignoring `evt`, so a `TagScopeModal`-typed reference accepts calls at the same
+arity the real API does.
 
 ---
 

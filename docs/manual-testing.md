@@ -644,3 +644,60 @@ rather than merely untested.
 - [ ] **Paging works on mobile.** Entries render, the keyboard does not cover
       the focused entry, long-press opens the actions menu, and scrolling
       down loads older entries without jumping.
+
+## 11. Tags
+
+Tags are read-only from the plugin's side (see `CLAUDE.md`'s `# Tags`
+section: the plugin never writes one), so what needs confirming by hand is
+autocomplete, chip rendering, and the scope's lifecycle against a live vault
+and a live metadata cache — none of which the unit tests' mocks can observe.
+
+- [ ] **`#` autocomplete fires inside the embedded editor.** UNVERIFIED — the
+      editor is real, but nothing proves its suggester is actually wired
+      without running it, and this is the assumption Rule 2 of `# Tags`
+      rests on. Type `#` inside a timeline entry and confirm Obsidian's own
+      tag-autocomplete popup appears. Expected to NOT fire in the
+      `<textarea>` fallback (force it per §9's "Fallback path" check above) —
+      that is accepted.
+- [ ] **Frontmatter chips appear; an inline tag does not get a chip.** Add
+      `tags: [work]` to an entry's frontmatter by hand and type `#therapy`
+      somewhere in its body. Confirm a `#work` chip renders in the entry's
+      header, and `#therapy` shows only as its usual live-preview pill inside
+      the body — never a second chip for it.
+- [ ] **Clicking a chip scopes the timeline.** Click the `#work` chip.
+      Confirm only entries carrying that tag remain, the scope bar names
+      `#work`, and both its `✕` and `Esc` restore the full timeline.
+- [ ] **Scope survives a reload, and composes with a calendar day click.**
+      With the timeline scoped to a tag, trigger a reload unrelated to the
+      scope (e.g. edit a different entry from another pane). Confirm the
+      scope bar is still there and still names the tag. Then click a
+      calendar day: confirm the timeline now shows only that tag, from that
+      day backwards, with the scope bar still present.
+- [ ] **Removing the scoped tag from an entry elsewhere in Obsidian drops its
+      row.** With the timeline scoped, open one of the visible entries'
+      source file in another pane and delete its tag. Confirm the row
+      disappears from the timeline and the file itself is untouched.
+- [ ] **Editing a scoped entry while its tag is removed elsewhere does not
+      yank the row.** Put the caret in a scoped entry (typing, not yet
+      saved), then, from another pane, remove that entry's scoped tag.
+      Confirm the row stays on screen rather than being torn down
+      mid-keystroke.
+- [ ] **`New journal entry` while scoped clears the scope.** With a scope
+      active, run **New journal entry**. Confirm the scope bar disappears,
+      the timeline returns to today, and the composer has focus.
+- [ ] **Nothing persists.** Scope the timeline to a tag, restart Obsidian
+      completely, reopen the journal. Confirm it comes back unscoped.
+- [ ] **The tag suggester's "Clear filter" row is never filtered out.** Open
+      **Filter journal by tag** and type text that matches no tag. Confirm
+      "Clear filter" is the only row left. Not a pass/fail check, but worth
+      watching: reflex-pressing Enter there clears the scope — non-destructive
+      and one command from undo, but worth seeing how it feels in practice.
+
+### Mobile
+
+Unverified, like the rest of this file's mobile items — none of the tag UI
+has run on a device.
+
+- [ ] The scope bar's left edge lines up with the entries beneath it.
+- [ ] Tapping a chip does not flash Obsidian's default button chrome.
+- [ ] The scope bar's `✕` is comfortably tappable.

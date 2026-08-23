@@ -85,7 +85,7 @@ export interface TimelineDom {
   removeEmptyDayGroups(): void;
   insertEntryInPlace(entry: JournalEntry): void;
   appendEntry(entry: JournalEntry): void;
-  renderEmptyState(anchored?: boolean): void;
+  renderEmptyState(anchored?: boolean, scopeTag?: string | null): void;
   /** Clears `dayGroups`/`lastRenderedMonth`. Called by `clearTimeline`. */
   reset(): void;
   /**
@@ -269,6 +269,14 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
    * the same path — one leaked indefinitely, since only the map's most
    * recent entry for that path is ever reachable to tear down.
    *
+   * That duplicate-node outcome is now also independently prevented by the
+   * `hasRendered` guard at the top of both this function and `appendEntry`:
+   * whichever of the two runs second would bail immediately on finding the
+   * path already rendered. So today the `>=` is belt-and-braces, not the
+   * sole defence — the reasoning above is why it was added, and stays
+   * correct on its own terms, but a reader should not conclude from it that
+   * flipping this to `>` would reintroduce the duplicate by itself.
+   *
    * `offset` — `anchorPosition(index, anchorDate)` when an anchor is active,
    * `0` otherwise — is where the loaded window actually starts. Without it,
    * an anchored timeline's loaded window no longer begins at index 0, so
@@ -335,13 +343,22 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
    * (`goToDate`) view that excludes every entry because the anchor is older
    * than everything in it — the index isn't empty in that case, so "no
    * journal entries yet" would be misleading.
+   *
+   * `scopeTag` deliberately takes precedence over `anchored`: when a filter
+   * is on, that is overwhelmingly the reason the timeline is empty, and
+   * naming it is the only thing that explains an empty journal that clearly
+   * is not empty. Saying "nothing on or before this date" while a tag scope
+   * is silently excluding everything else would send the user looking in the
+   * wrong place.
    */
-  function renderEmptyState(anchored = false): void {
+  function renderEmptyState(anchored = false, scopeTag: string | null = null): void {
     deps.getTimelineEl().createDiv({
       cls: "journal-empty",
-      text: anchored
-        ? "Nothing on or before this date."
-        : "No journal entries yet. Use the + button above to write the first one.",
+      text: scopeTag
+        ? `No entries tagged #${scopeTag}.`
+        : anchored
+          ? "Nothing on or before this date."
+          : "No journal entries yet. Use the + button above to write the first one.",
     });
   }
 

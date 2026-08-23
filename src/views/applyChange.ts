@@ -48,14 +48,34 @@ export type ChangeAction =
  * directly with fabricated `RenderedState`, rather than only through a live
  * `JournalView` (which needs a DOM, `IntersectionObserver`s, and Obsidian
  * internals this test environment doesn't provide).
+ *
+ * `inScope` is whether the changed entry belongs in the timeline as
+ * currently filtered — always `true` for an unscoped timeline, which is why
+ * it defaults that way: an unscoped journal must behave exactly as it did
+ * before tag scoping existed. Only consulted for the three kinds that carry
+ * an entry; "removed" and "reload" are scope-independent.
+ *
+ * TRIPWIRE for future maintainers: `remove` is reachable for `"content"` and
+ * `"moved"` when `inScope` is `false` (via `decideScopeExit`), and
+ * `changeApplication.ts`'s `applyChangesNow` handles it in its `"remove"`
+ * case. If that case is ever refactored to drop `"content"`/`"moved"` back
+ * to a bare `break` (as it still does for the genuinely-unreachable
+ * `"reloadView"`), every scope exit decided here silently becomes a no-op
+ * that no test catches.
  */
-export function decideChangeAction(change: JournalChange, state: RenderedState): ChangeAction {
+export function decideChangeAction(
+  change: JournalChange,
+  state: RenderedState,
+  inScope = true,
+): ChangeAction {
   switch (change.kind) {
     case "reload":
       return { type: "reloadView" };
 
     case "added":
-      return { type: "insert" };
+      // An entry the scope excludes is not merely rendered elsewhere — it is
+      // not part of this timeline at all, so there is nothing to insert.
+      return inScope ? { type: "insert" } : { type: "noop" };
 
     case "removed":
       // Nothing rendered at this path (e.g. a delete of a path that was
@@ -70,6 +90,7 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       return { type: "remove", flush: state.fileStillExists };
 
     case "moved":
+      if (!inScope) return decideScopeExit(state);
       // Nothing rendered under this path yet: still insert it fresh, same
       // as "added" — reachable when a rename also changes the resolved
       // `created` (the old rendering, if any, was already torn down by this
@@ -78,6 +99,7 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       return { type: "reposition", flush: state.fileStillExists };
 
     case "content":
+      if (!inScope) return decideScopeExit(state);
       // Same reasoning as "moved": nothing rendered yet, insert fresh
       // rather than silently dropping the change (reachable after a
       // same-timestamp rename).
@@ -94,4 +116,50 @@ export function decideChangeAction(change: JournalChange, state: RenderedState):
       if (state.focused || state.dirty) return { type: "noop" };
       return { type: "refresh" };
   }
+}
+
+/**
+ * What to do with a rendered row whose entry no longer belongs in the
+ * current scope — the user removed the scoped tag from it, or changed it to
+ * a different one, from anywhere in Obsidian.
+ *
+ * The focused/dirty decline mirrors `"content"`'s above, but for `"moved"`
+ * it is a NEW decision, not a reuse of an existing one: in-scope `moved`
+ * above deliberately does NOT suppress on focus (reverse-chronological
+ * ordering is a product requirement — see "a focused editor is still
+ * repositioned" in `tests/applyChange.test.ts`), while an out-of-scope
+ * `moved` routed here through `decideScopeExit` DOES decline on
+ * focus/dirty. The asymmetry is intentional: ordering must happen even at
+ * the cost of disturbing focus, because a wrongly-ordered timeline is a
+ * product-visible bug, whereas a filter being loose about one row is
+ * cosmetic and can wait.
+ *
+ * A declined exit leaves the row rendered, out of scope, until the next
+ * full `reload()` — and nothing re-runs this decision once the entry later
+ * goes clean or loses focus, the same known gap the `reposition` branch's
+ * own KNOWN LIMITATION note in `changeApplication.ts` documents for its own
+ * case. In a long session with no settings/anchor/folder change to trigger
+ * a reload, that is effectively the rest of the session; for an entry whose
+ * writes keep failing, it is unbounded. Retaining the row is still the safe
+ * direction to be wrong in — the alternative risks destroying unsaved text
+ * — but it is not merely "briefly" wrong, and should not be described that
+ * way.
+ *
+ * `flush: state.fileStillExists` is not the redundant guard it can look
+ * like. `fileStillExists` is compared by IDENTITY, not by path (see
+ * `RenderedState`'s doc) — so `exists: true, fileStillExists: false` is
+ * genuinely reachable here: a delete-then-recreate at the same path inside
+ * one debounce window, where the row is still rendered but the `TFile` it
+ * points at is no longer the live one. In that window, flushing would aim a
+ * stale editor's text at a DIFFERENT file than the one now at that path.
+ * The focused/dirty decline just above and this flag are therefore two
+ * independent guards that happen to agree in the common case, not one
+ * checking the other's work — `tests/applyChange.test.ts`'s "a scope exit's
+ * flush tracks fileStillExists, not a hardcoded true" pins the derivation so
+ * a future simplification to a literal `true` gets caught.
+ */
+function decideScopeExit(state: RenderedState): ChangeAction {
+  if (!state.exists) return { type: "noop" };
+  if (state.focused || state.dirty) return { type: "noop" };
+  return { type: "remove", flush: state.fileStillExists };
 }

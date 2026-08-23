@@ -25,7 +25,7 @@ const FOLDER_RELOAD_KEY = "__journal-folder-reload__";
 
 /**
  * Owns the in-memory index of entries and translates vault events into
- * timeline-level changes. Stores only `{ file, created }` — never content —
+ * timeline-level changes. Stores only `{ file, created, tags }` — never content —
  * so the index stays cheap at tens of thousands of entries.
  *
  * `getEntries()` returns the live backing array, not a copy: `JournalView`
@@ -347,6 +347,16 @@ export class JournalService extends Component {
     // forever (nothing else ever refreshes it), and hand that stale
     // reference to every future consumer of this index entry.
     existing.file = entry.file;
+    // Written back for the same reason `.file` is, and for one more: this
+    // branch is the ONLY one a tag-only change ever reaches, since
+    // `applyUpsert` compares `created` and nothing else. Without this, an
+    // entry that gained or lost a tag elsewhere in Obsidian would keep its
+    // stale tags in the index forever, and `JournalView`'s tag scope would
+    // filter on them.
+    //
+    // A plain reassignment, not an in-place mutation of the old array — see
+    // `JournalEntry.tags`'s doc for why that distinction is load-bearing.
+    existing.tags = entry.tags;
     return { kind: "content", entry: existing };
   }
 

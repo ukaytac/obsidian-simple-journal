@@ -1,0 +1,469 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  addEntry,
+  createHarness,
+  internals,
+  settle,
+  tagEntry,
+  tagEntryInFrontmatter,
+  timelineEl,
+} from "./journalViewHarness";
+import type { Harness } from "./journalViewHarness";
+import { TFolder } from "./obsidian-mock";
+
+function renderedPaths(h: Harness): string[] {
+  return Array.from(timelineEl(h.view).querySelectorAll<HTMLElement>(".journal-entry")).map(
+    (el) => el.dataset.path ?? "",
+  );
+}
+
+describe("JournalView tag scope", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h = createHarness();
+  });
+
+  afterEach(async () => {
+    await h.view.onClose();
+    h.service.unload();
+    vi.useRealTimers();
+  });
+
+  /**
+   * Four entries, chosen so that the tag axis and the date axis CROSS — which
+   * is what makes the composition test below non-vacuous:
+   *
+   *   tagged   Aug 12 22:41  #therapy   newer than the anchor
+   *   untagged Aug 12 17:23  --         newer than the anchor
+   *   older    Aug 10 09:34  #therapy   older than the anchor
+   *   oldUntagged Aug  9 09:00 --       older than the anchor
+   *
+   * Each single filter admits two of the four, and they are different pairs,
+   * so only their intersection is `[older]`. Drop `oldUntagged` and the
+   * anchor alone would already produce that answer, letting the scope be
+   * removed from `reloadNow` with every test still green.
+   */
+  async function openWithTaggedEntries() {
+    const tagged = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    const untagged = addEntry(h, new Date(2026, 7, 12, 17, 23, 41));
+    const older = addEntry(h, new Date(2026, 7, 10, 9, 34, 21));
+    const oldUntagged = addEntry(h, new Date(2026, 7, 9, 9, 0, 0));
+    tagEntry(h, tagged, ["therapy"]);
+    tagEntry(h, older, ["therapy"]);
+    h.service.load();
+    await h.view.onOpen();
+    return { tagged, untagged, older, oldUntagged };
+  }
+
+  it("renders only the entries carrying the scoped tag", async () => {
+    const { tagged, untagged, older } = await openWithTaggedEntries();
+
+    await h.view.setTagScope("therapy");
+
+    expect(renderedPaths(h)).toEqual([tagged.path, older.path]);
+    expect(renderedPaths(h)).not.toContain(untagged.path);
+  });
+
+  it("restores the whole timeline when the scope is cleared", async () => {
+    const { tagged, untagged, older, oldUntagged } = await openWithTaggedEntries();
+
+    await h.view.setTagScope("therapy");
+
+    // The CRUX of the scoped-index design, not a tautology — do not
+    // "simplify" these two away. `applyChangesNow` deliberately SKIPS its
+    // re-derive while unscoped, so an unscoped view's correctness rests
+    // entirely on `scopedIndex()` handing back the service's array BY
+    // IDENTITY: that alias is what makes `applyKnownEntry`'s emit-less
+    // mutation of the live index visible to the view with no hand-off at
+    // all. Return a copy instead — `all.slice()` — and every other test in
+    // this suite still passes while that alias is silently gone.
+    expect(internals(h.view).index).not.toBe(h.service.getEntries());
+
+    await h.view.setTagScope(null);
+
+    expect(internals(h.view).index).toBe(h.service.getEntries());
+    expect(renderedPaths(h)).toEqual([
+      tagged.path,
+      untagged.path,
+      older.path,
+      oldUntagged.path,
+    ]);
+  });
+
+  it("reports the active scope", async () => {
+    await openWithTaggedEntries();
+    expect(h.view.activeTagScope()).toBeNull();
+
+    await h.view.setTagScope("#Therapy");
+    // Stored bare and as typed; matching is case-insensitive.
+    expect(h.view.activeTagScope()).toBe("Therapy");
+  });
+
+  it("shows a scoped empty state rather than a blank timeline", async () => {
+    await openWithTaggedEntries();
+
+    await h.view.setTagScope("nothing-has-this");
+
+    expect(renderedPaths(h)).toEqual([]);
+    expect(timelineEl(h.view).querySelector(".journal-empty")?.textContent).toBe(
+      "No entries tagged #nothing-has-this.",
+    );
+  });
+
+  it("drops a row whose scoped tag was removed elsewhere in Obsidian", async () => {
+    const { tagged, older } = await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+    expect(renderedPaths(h)).toEqual([tagged.path, older.path]);
+
+    h.app.metadataCache.inlineTags.set(tagged.path, []);
+    h.app.metadataCache.trigger("changed", tagged);
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([older.path]));
+  });
+
+  it("does not insert a newly created entry the scope excludes", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+    const before = renderedPaths(h);
+
+    const fresh = addEntry(h, new Date(2026, 7, 13, 8, 0, 0));
+    h.app.vault.trigger("create", fresh);
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual(before));
+
+    // The assertion above holds at t=0 too, so on its own it passes just as
+    // well if the create event were dropped, the debounce never fired, or
+    // the change pipeline were broken outright. Clearing the scope and
+    // finding `fresh` at the top proves the entry really was processed and
+    // deliberately excluded, rather than never processed at all.
+    await h.view.setTagScope(null);
+    expect(renderedPaths(h)[0]).toBe(fresh.path);
+  });
+
+  it("inserts a newly created entry the scope admits", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const fresh = addEntry(h, new Date(2026, 7, 13, 8, 0, 0));
+    tagEntry(h, fresh, ["therapy"]);
+    h.app.vault.trigger("create", fresh);
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(renderedPaths(h)[0]).toBe(fresh.path));
+  });
+
+  it("composes with an anchor: the scoped tag, from that day backwards", async () => {
+    const { tagged, older, oldUntagged } = await openWithTaggedEntries();
+    const anchor = new Date(2026, 7, 11, 23, 59, 59);
+
+    // Each filter alone, first — so the intersection asserted last is
+    // provably narrower than either, and removing either one from
+    // `reloadNow` breaks this test rather than leaving it green.
+    await h.view.goToDate(anchor);
+    expect(renderedPaths(h)).toEqual([older.path, oldUntagged.path]);
+
+    await h.view.goToDate(null);
+    await h.view.setTagScope("therapy");
+    expect(renderedPaths(h)).toEqual([tagged.path, older.path]);
+
+    // Both: `tagged` carries the tag but is newer than the anchor;
+    // `oldUntagged` is older than the anchor but carries no tag. Only
+    // `older` satisfies both, and the anchor is kept — the two compose.
+    await h.view.goToDate(anchor);
+    expect(renderedPaths(h)).toEqual([older.path]);
+    expect(h.view.activeTagScope()).toBe("therapy");
+  });
+
+  function scopeBar(h: Harness): HTMLElement {
+    return internals(h.view).scopeBarEl as HTMLElement;
+  }
+
+  it("names the scope in a bar, and clears it from there", async () => {
+    await openWithTaggedEntries();
+    expect(scopeBar(h).textContent).toBe("");
+
+    await h.view.setTagScope("therapy");
+    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+
+    scopeBar(h).querySelector<HTMLButtonElement>(".journal-scope-clear")?.click();
+    await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
+    expect(scopeBar(h).textContent).toBe("");
+  });
+
+  it("survives a folder-level rebuild, which changes no tag", async () => {
+    // Product decision, deliberately pinned: a `"reload"` change must NOT
+    // clear the scope. `isJournalFolderPath` matches DESCENDANTS of the
+    // journal root, and every install has them (`Journal/2026/08`), so
+    // renaming `Journal/2026` — which touches not one entry and not one tag
+    // — would otherwise silently drop the user's filter and blink the scope
+    // bar off with no cause they could connect to what they did. See the
+    // correction block under Task 7 in the plan.
+    const { tagged, older } = await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    await internals(h.view).applyChangesNow([{ kind: "reload" }]);
+
+    expect(h.view.activeTagScope()).toBe("therapy");
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([tagged.path, older.path]));
+    expect(scopeBar(h).querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+  });
+
+  it("blames the folder, not the tag, when a real folder rename actually empties the index", async () => {
+    // Companion to "survives a folder-level rebuild" above: that test drives
+    // `applyChangesNow([{ kind: "reload" }])` directly, so the service's
+    // index is never actually touched and the scoped message stays correct
+    // by accident of the fixture, not by anything under test. This one
+    // performs a REAL rename of the journal folder itself — moving every
+    // entry out from under the still-configured "Journal" root — so
+    // `JournalService.rebuild()` (triggered by the debounced "folderReload"
+    // path, exactly as production code reaches it) really does re-scan to
+    // find nothing there.
+    //
+    // Per item 1's fix, the resulting empty state must NOT say "No entries
+    // tagged #therapy.": the tag scope had nothing to do with this. The
+    // unfiltered index is empty too, so the plain "no entries at all"
+    // message is the one that actually explains what happened.
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const vault = h.app.vault as unknown as {
+      folders: Set<string>;
+      files: Map<string, { path: string }>;
+      contents: Map<string, string>;
+    };
+    const oldRoot = h.folder;
+    const newRoot = "JournalRenamed";
+
+    // Move every folder path under the root, mirroring how Obsidian moves a
+    // renamed folder's whole subtree rather than leaving orphaned children.
+    for (const folderPath of [...vault.folders]) {
+      if (folderPath !== oldRoot && !folderPath.startsWith(`${oldRoot}/`)) continue;
+      vault.folders.delete(folderPath);
+      vault.folders.add(newRoot + folderPath.slice(oldRoot.length));
+    }
+    // Move every file with it — Obsidian mutates each TFile's `path` in
+    // place on a folder rename rather than handing back new objects, the
+    // same convention `journalService.test.ts`'s own rename fixtures follow.
+    for (const [filePath, file] of [...vault.files]) {
+      if (!filePath.startsWith(`${oldRoot}/`)) continue;
+      const newPath = newRoot + filePath.slice(oldRoot.length);
+      vault.files.delete(filePath);
+      vault.files.set(newPath, file);
+      file.path = newPath;
+      const content = vault.contents.get(filePath);
+      vault.contents.delete(filePath);
+      if (content !== undefined) vault.contents.set(newPath, content);
+    }
+
+    // Must be a real `TFolder` instance, not merely `{ path, name }` — the
+    // service's rename listener branches on `file instanceof TFolder` to
+    // tell a folder rename apart from a file rename.
+    const renamedFolder = new TFolder();
+    renamedFolder.path = newRoot;
+    renamedFolder.name = newRoot;
+    h.app.vault.trigger("rename", renamedFolder, oldRoot);
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() =>
+      expect(timelineEl(h.view).querySelector(".journal-empty")?.textContent).toBe(
+        "No journal entries yet. Use the + button above to write the first one.",
+      ),
+    );
+    expect(renderedPaths(h)).toEqual([]);
+    // The scope itself is untouched — the "reload" change does not clear it
+    // (see `applyChangesNow`'s doc) — only the message's blame changes.
+    expect(h.view.activeTagScope()).toBe("therapy");
+  });
+
+  it("lives outside the timeline, so a reload cannot wipe it", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+    const bar = scopeBar(h);
+
+    await h.view.reload();
+
+    // Structural, not just textual: `Element.empty()` (what `clearTimeline`
+    // calls) only detaches a node from ITS PARENT — it does not clear the
+    // detached node's own children. So even the exact regression this test
+    // is named for (`scopeBarEl` accidentally created as a child of
+    // `timelineEl`) would leave a detached-but-still-populated node behind,
+    // and `scopeBar(h)` re-reads the live `scopeBarEl` field, so it would
+    // never even look at that stale node — a content-only assertion here
+    // cannot fail for the reason the test claims to guard against. Asserting
+    // identity (same element across the reload), connectedness (still in the
+    // document), and non-containment (not inside `timelineEl`) is what
+    // actually pins the sibling placement.
+    expect(scopeBar(h)).toBe(bar);
+    expect(bar.isConnected).toBe(true);
+    expect(timelineEl(h.view).contains(bar)).toBe(false);
+    expect(bar.querySelector(".journal-scope-tag")?.textContent).toBe("#therapy");
+  });
+
+  it("clears the scope on Escape outside an entry", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    scopeBar(h).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await vi.waitFor(() => expect(h.view.activeTagScope()).toBeNull());
+  });
+
+  it("does not add a second Escape listener when onOpen runs again over the view's life", async () => {
+    // Pins the fix, not just its symptom: `setTagScope(null)` on an
+    // already-null scope is idempotent, so a duplicate listener firing twice
+    // for one keydown would leave `activeTagScope()` looking correct either
+    // way — asserting only that would not catch a regression back to
+    // per-`onOpen` registration. Counting calls does.
+    await openWithTaggedEntries();
+    await h.view.onOpen(); // Same instance, second call — see the constructor's own doc.
+    await h.view.setTagScope("therapy");
+
+    const spy = vi.spyOn(h.view, "setTagScope");
+    scopeBar(h).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Escape alone inside an entry, where the editor owns it", async () => {
+    const { tagged } = await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    const row = timelineEl(h.view).querySelector<HTMLElement>(
+      `.journal-entry[data-path="${tagged.path}"]`,
+    );
+    row?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(h.view.activeTagScope()).toBe("therapy");
+  });
+
+  function chips(h: Harness, path: string): string[] {
+    const row = timelineEl(h.view).querySelector<HTMLElement>(
+      `.journal-entry[data-path="${path}"]`,
+    );
+    return Array.from(row?.querySelectorAll<HTMLElement>(".journal-entry-tag") ?? []).map(
+      (el) => el.textContent ?? "",
+    );
+  }
+
+  it("chips a frontmatter tag, which the timeline otherwise hides", async () => {
+    const file = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    tagEntryInFrontmatter(h, file, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    expect(chips(h, file.path)).toEqual(["#work"]);
+  });
+
+  it("does not chip an inline tag, which live preview already shows", async () => {
+    const file = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    tagEntry(h, file, ["therapy"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    expect(chips(h, file.path)).toEqual([]);
+  });
+
+  it("chips only the frontmatter tag on an entry carrying both kinds", async () => {
+    // "does not chip an inline tag" above would pass just as well if chip
+    // rendering were broken outright (both give []). Tagging one entry with
+    // both kinds and asserting exactly one chip proves the frontmatter-only
+    // rule on its own, not merely in combination with its sibling test.
+    const file = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    tagEntry(h, file, ["therapy"]);
+    tagEntryInFrontmatter(h, file, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    expect(chips(h, file.path)).toEqual(["#work"]);
+  });
+
+  it("scopes the timeline when a chip is clicked", async () => {
+    const chipped = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    const plain = addEntry(h, new Date(2026, 7, 12, 17, 23, 41));
+    tagEntryInFrontmatter(h, chipped, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+
+    timelineEl(h.view)
+      .querySelector<HTMLButtonElement>(`.journal-entry[data-path="${chipped.path}"] .journal-entry-tag`)
+      ?.click();
+
+    // `setTagScope` sets `tagScope` synchronously but awaits `reload()`
+    // afterwards (several microtask ticks to rebuild the DOM). Waiting only
+    // on `activeTagScope()` — the spec's original assertion — resolves
+    // `vi.waitFor` on its very first, immediate check (the flag is already
+    // "work" by the time the click handler returns control), racing ahead of
+    // `reload()`'s DOM rebuild and leaving `plain` still rendered. Waiting on
+    // `renderedPaths` itself, as every other reload-driven assertion in this
+    // file already does, waits for the actually-observable effect instead.
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([chipped.path]));
+    expect(h.view.activeTagScope()).toBe("work");
+    expect(renderedPaths(h)).not.toContain(plain.path);
+  });
+
+  it("re-renders chips when frontmatter changes elsewhere in Obsidian", async () => {
+    const file = addEntry(h, new Date(2026, 7, 12, 22, 41, 52));
+    tagEntryInFrontmatter(h, file, ["work"]);
+    h.service.load();
+    await h.view.onOpen();
+    expect(chips(h, file.path)).toEqual(["#work"]);
+
+    h.app.metadataCache.frontmatter.set(file.path, { tags: ["work", "books"] });
+    h.app.metadataCache.trigger("changed", file);
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(chips(h, file.path)).toEqual(["#work", "#books"]));
+  });
+
+  it("clears the scope when a new entry is started", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+
+    await h.view.startNewEntry();
+
+    expect(h.view.activeTagScope()).toBeNull();
+    expect(internals(h.view).composer).not.toBeNull();
+  });
+
+  it("clears a scope AND an anchor together", async () => {
+    await openWithTaggedEntries();
+    await h.view.setTagScope("therapy");
+    await h.view.goToDate(new Date(2026, 7, 11, 23, 59, 59));
+
+    await h.view.startNewEntry();
+
+    expect(h.view.activeTagScope()).toBeNull();
+    expect(internals(h.view).anchorDate).toBeNull();
+  });
+
+  /**
+   * `requestTagScope` is the fire-and-forget wrapper every UI trigger uses
+   * (the clear button, Escape, a chip click, and `main.ts`'s modal
+   * callback) precisely because `setTagScope`'s own promise can genuinely
+   * reject — `reload()`'s `clearTimeline` flushes real vault writes, and
+   * `renderStatic` awaits `readBody` unguarded. None of those call sites
+   * has an `async` caller to hand a rejection to, so if this wrapper let one
+   * through it would become an unhandled rejection that never reaches the
+   * console — exactly the failure `newEntry`'s doc in `main.ts` already
+   * names for a different path. Stubbing `setTagScope` itself to reject
+   * keeps this test independent of which specific internal write happens to
+   * be the one that can fail today.
+   */
+  it("requestTagScope reports a rejection instead of leaving it unhandled", async () => {
+    await openWithTaggedEntries();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("boom");
+    const setTagScope = vi.spyOn(h.view, "setTagScope").mockRejectedValueOnce(failure);
+
+    // Not awaited on purpose: every real call site fires this the same way
+    // (a DOM handler, a modal callback), with no promise to await.
+    h.view.requestTagScope("therapy");
+    await settle();
+
+    expect(setTagScope).toHaveBeenCalledWith("therapy");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Simple Journal: could not change the tag filter",
+      failure,
+    );
+  });
+});
