@@ -301,6 +301,16 @@ embed, alias, frontmatter), and one note nothing links to.
       second panel, and not a hang. The guard is structural (`closest`), so also
       confirm the opposite half: a normal block in an ordinary note, open at the
       same time in another pane, still expands.
+
+      Do this in **both** view modes, and against a code block as well as the
+      sidebar panel. `closest` walks the rendered element's ancestors, which
+      assumes the nested block is already attached beneath the panel by the time
+      the processor runs for it. That holds in jsdom, where the test builds the
+      tree first. Whether Obsidian ever post-processes a reading-view section
+      while it is still detached is not knowable from the API — and if it does,
+      the guard misses and the panel renders itself one level deeper. That would
+      show up here as a doubled panel or a hang, and the fix would be a depth
+      signal passed down the render rather than read off the DOM.
 - [ ] **7. Changing the Journal folder setting repaints an open sidebar panel.**
       This was a real bug, fixed, and it is subtle enough to be worth confirming
       by hand. With the mentions sidebar open on Ekin's note, change the journal

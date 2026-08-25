@@ -150,6 +150,12 @@ note: [[Some Other Note]]
 
 Anything else in the block is ignored rather than treated as an error.
 
+If you would rather not write a block at all, there are two settings below that
+give you the same panel without one: in the sidebar, following whatever note you
+are reading, or automatically at the bottom of every note something mentions.
+**Open journal mentions** opens the sidebar panel whether or not that setting is
+on.
+
 The panel is **read-only**: entries render fully — links, embeds, tags,
 formatting — but you don't edit them there. Click an entry's time and the
 journal opens, anchored to that entry's day, which is where editing belongs.

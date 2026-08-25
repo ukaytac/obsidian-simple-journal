@@ -544,11 +544,12 @@ ordering rule to drift out of agreement with itself.
 `metadataCache.getFileBacklinks` is **refused**, and the refusal is the point.
 It appears in Obsidian's published developer docs but is absent from the
 installed type definitions, which makes it an undocumented internal by the
-standard `# Development Principles` sets. This plugin has exactly two internals
-exceptions, both argued for in writing and both carrying safety rules; a third
-one bought for convenience — when a fully public API does the job — would turn a
-pair of deliberate exceptions into a habit. It would also answer the wrong,
-vault-sized question at greater cost.
+standard `# Development Principles` sets. This plugin grants internals
+exceptions one at a time and in writing, with safety rules attached — there are
+two, the embedded editor and the footer below. A third one taken quietly for
+convenience, when a fully public API does the job, is how a pair of deliberate
+exceptions becomes a habit. It would also answer the wrong, vault-sized question
+at greater cost.
 
 ## Rule 3 — One renderer, three shells
 
@@ -561,10 +562,21 @@ one job: obtain a container and a target `TFile`, and delegate. They are not
 three features. A change to how mentions look or behave is a change to one file.
 
 They differ in exactly one option, and deliberately: whether an empty result
-prints a line or renders nothing at all. The code block prints one, because the
-user typed that block on purpose and silence there would read as a bug. The
-footer prints nothing, because the user did not ask for anything at the bottom
-of that note and an empty panel is pure noise.
+prints a line or renders nothing at all. The code block and the sidebar print
+one, because in both cases the user asked — by typing the block, or by opening
+the panel — and silence in answer to a question reads as a bug. The footer
+prints nothing, because nobody asked for anything at the bottom of that note and
+an empty panel there is pure noise.
+
+Staying current is the renderer's job too, through two debounced subscriptions:
+the journal's own `onChange`, and `metadataCache`'s `resolve` for a link added
+or removed. The second is **filtered to journal entries**, unlike the calendar's
+otherwise identical subscription. `resolve` fires for every file the vault
+re-resolves, including the note the panel is sitting in, on every keystroke; the
+debounce coalesces a burst into one repaint per interval, not into one repaint
+at the end of it. The calendar can skip the filter because its reaction is two
+binary searches. This one re-reads and re-renders every visible entry, so typing
+in the host note would otherwise rebuild the whole panel several times a second.
 
 ## Rule 4 — Read-only, with a way back to the timeline
 
@@ -621,6 +633,16 @@ failure as ignoring the switch. Unlike the footer it does not exclude journal
 entries: the user opened this panel deliberately, and it costs nothing to answer
 honestly for whatever file is active.
 
+Two ways in, and they must not be collapsed into one. Following the active file
+short-circuits when the file has not actually changed, because `file-open` fires
+for plenty of reasons that leave the active file where it was and a needless
+rebuild would throw away the user's expanded "Show more" state. An explicit
+refresh — what a folder-setting change drives — must repaint even then: a
+rebuild of the entry index emits nothing to `onChange` by design, and a `resolve`
+only fires if some unrelated file happens to re-resolve, so with the active file
+unchanged this is the only thing left that can bring the panel into line with
+the rebuilt index.
+
 **The footer**, under an ordinary note, **off by default**. It is the surface
 that relies on Obsidian's internal layout DOM, so nobody may end up with it
 appearing under their notes without having asked. It never attaches to a journal
@@ -633,11 +655,11 @@ observable behaviour is at the next restart teaches the user not to trust it.
 
 ## The second internals exception
 
-The footer is the second place in this codebase that touches Obsidian internals.
-The first is the embedded editor, and `# Editing` says of it, in terms, that it
+The footer is the second place in this plugin's code that reaches into Obsidian
+internals. The first is the embedded editor, and `# Editing` says of it, that it
 "does NOT license internal API usage anywhere else in the codebase". This is not
-that licence being spent. It is a separate exception, granted on its own merits,
-and it carries the same two rules.
+that licence being spent. It is a separate exception, granted on its own merits
+and held to its own rules.
 
 **Why no public API can do it.** Obsidian exposes nothing for appending content
 to the end of a note's *content flow* — the part that scrolls with the note's
@@ -658,6 +680,8 @@ one hidden rather than removed, so a single comma-separated selector would
 return whichever came first in document order — and in reading view that mounts
 the footer into a pane the user cannot see. Public API decides; document order
 does not.
+
+**The two rules that make it safe**, the same two the editor exception carries:
 
 1. **Feature detection, with a silent no-op fallback.** The lookup is allowed to
    return nothing, and every caller reads that as "this note gets no footer". No
