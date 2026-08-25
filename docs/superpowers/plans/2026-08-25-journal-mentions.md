@@ -2077,3 +2077,96 @@ git commit -m "build: rebuild for journal mentions"
 Run `npm run sync` to install into the test vault, then work through the
 "Mentions" section of `docs/manual-testing.md`. Item 1 is the one that can
 send the design back to its documented fallback; do it first.
+
+---
+
+# What actually shipped
+
+Recorded after execution, because a plan that quietly diverged from the branch
+is worse than no plan. Every item below was a deliberate decision made during
+implementation or review, not a slip.
+
+## Task structure
+
+**Tasks 5 and 6 were merged.** The settings tab commits a toggle and applies it
+in one step, through `plugin.applyMentionSettings()` — which is what places or
+removes the sidebar. Split, Task 5 could not type-check without an empty stub
+method. A setting and the surface it governs are one change.
+
+**Two tasks were added.** Neither was foreseen:
+
+* *Workspace mock and `MentionsView` tests.* `tests/obsidian-mock.ts` had no
+  workspace surface at all, so shell B shipped with zero tests. A `FakeWorkspace`
+  and the `WorkspaceLeaf` members the code actually calls were added — every one
+  checked against the real `obsidian.d.ts`, so the mock's header policy against
+  inventing surface still holds.
+* *The footer's sizer ambiguity.* See below.
+
+## Defects found by review, and fixed
+
+* **The panel's `resolve` subscription was unfiltered.** `metadataCache`'s
+  `resolve` fires for every file the vault re-resolves, the host note included,
+  and the debounce is trailing — so typing in a note holding a panel rebuilt it
+  five times a second, each rebuild re-reading and re-rendering every visible
+  entry. Now gated on `repository.isEntryFile`. `CalendarView`'s "no need to
+  inspect the change" reasoning does not transfer: its re-render is two binary
+  searches, this one is N file reads.
+* **A failed read rendered as an empty entry**, indistinguishable from an entry
+  with no text. `console.error` is not "fail visibly" (CLAUDE.md, **Error
+  Handling**); there is now a visible failure line, in `.journal-entry-error`'s
+  language rather than the empty state's faint grey.
+* **`MarkdownRenderer.render` was unguarded.** Another plugin's throwing
+  post-processor left the panel half-built with no way back, and the rejection
+  escaped as an unhandled rejection.
+* **`MentionsView.refresh()` short-circuited on the active file**, so the
+  `refreshJournal` path — a Journal-folder setting change — left the panel
+  showing mentions computed against the old folder. `rebuild()` emits nothing to
+  `onChange` by design, so nothing else repainted it. Split into a public
+  `refresh()` that always repaints in place (preserving the user's expanded
+  "Show more" state) and a private `file-open` path that keeps the short-circuit.
+* **The footer picked its sizer by document order.** A `MarkdownView` can hold
+  both `.markdown-source-view` and `.markdown-reading-view` at once with the
+  inactive one hidden, so a single comma-separated selector mounted the footer
+  into the hidden pane in reading mode. Now scoped by the view's mode.
+
+  This also **narrows the exception**, which is why it matters beyond the bug:
+  `MarkdownView.getMode()` is public documented API, so only the two class names
+  remain internal.
+* **The footer's reuse guard checked the file path alone**, so after a reading ↔
+  live preview switch it short-circuited and the note kept no footer until it was
+  closed and reopened. It now also re-checks that the container is still a child
+  of the current sizer.
+
+## Shared code extracted
+
+* `normalizeBodyForRender` in `journal/markdownDoc.ts` — `JournalView.renderStatic`
+  stripped leading blank lines and trailing whitespace before rendering and the
+  panel did not, so the same entry rendered differently in the two places.
+* `EntryRepository.readBodyCached` — the panel never writes, and Obsidian's
+  guidance is `cachedRead` for display. `readBody` keeps the uncached read for
+  the timeline path, where the value becomes an editor buffer.
+
+## Not done, deliberately
+
+* **"Show more" still re-renders every visible entry** rather than appending only
+  the new page. Making it incremental complicates the day-grouping materially,
+  and the growth is bounded by explicit user clicks. Recorded in a comment at the
+  call site.
+* **`main.ts`'s `openMentions` / `applyMentionSettings` / `ensureMentionsLeaf` /
+  `detachMentionsLeaves` are untested.** The mock's `Plugin` is an empty class,
+  so constructing the plugin needs stubs for seven registration methods, and
+  `openMentions`'s `instanceof MentionsView` check needs a view registry the mock
+  deliberately lacks — modelling Obsidian's leaf-opening and deferral scheduling
+  is the guesswork `JournalView.composer.test.ts` already refuses to build on.
+  Covered by `docs/manual-testing.md` instead.
+* **`display()`'s toggles are untested** — the mock's `Setting` is an empty class,
+  so the imperative settings path cannot be exercised at all. It type-checks
+  against the real API and is dormant on any Obsidian at or above 1.13.
+
+## Test practice
+
+Every test added after Task 4 was verified by mutation: break the thing it
+covers, observe red, restore. Two tests were found to be incapable of failing
+this way and rewritten — the panel's teardown test (satisfied by an unrelated
+guard) and the `resolve` test (which triggered on the host note, so filtering
+would have silently turned it into a no-op assertion).
