@@ -291,4 +291,48 @@ describe("MentionsView", () => {
 
     expect(shownCount(view)).toBe("2");
   });
+
+  it("repaints an already-shown file when refresh() is called after a rebuild", async () => {
+    const { app, service, view, seed } = setup({ a: 2 });
+    const noteA = fileAt(app, NOTE_A);
+    app.workspace.activeFile = noteA;
+    await view.onOpen();
+    await settle();
+    expect(shownCount(view)).toBe("2");
+
+    // Same shape as `refreshJournal`: more entries mentioning the file
+    // already on screen land in the index via `rebuild()`, which announces
+    // nothing to `onChange`. `seed` always starts from day 24, so this
+    // re-seeds the original two paths in place and adds three new ones —
+    // five distinct entries in total. The active file never changes, so this
+    // is exactly the case the `shownPath` short-circuit must NOT swallow when
+    // it is `refresh()`, rather than `file-open`, doing the calling.
+    seed(NOTE_A, 5, "21");
+    service.rebuild();
+
+    view.refresh();
+    await settle();
+
+    expect(shownCount(view)).toBe("5");
+  });
+
+  it("preserves expanded 'Show more' state when refresh() re-renders in place", async () => {
+    const { app, view } = setup({ a: 8 });
+    app.workspace.activeFile = fileAt(app, NOTE_A);
+    await view.onOpen();
+    await settle();
+
+    view.contentEl.querySelector<HTMLButtonElement>(".journal-mentions-more")?.click();
+    await settle();
+    expect(shownEntries(view)).toBe(8);
+
+    view.refresh();
+    await settle();
+
+    // A rebuild-based repaint would have gone back to `MentionsPanel`'s
+    // initial page of 5. Re-rendering the existing panel in place is what
+    // lets `visibleCount` — and so the user's expanded state — survive a
+    // `refresh()` call.
+    expect(shownEntries(view)).toBe(8);
+  });
 });

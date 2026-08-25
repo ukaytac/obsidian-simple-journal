@@ -48,7 +48,7 @@ export class MentionsView extends ItemView {
     // lifecycle — the same reasoning behind `CalendarView.onOpen`'s
     // `this.register` — so it fires even along a teardown path that skips
     // `onClose`, and a later event can never reach a detached DOM.
-    this.registerEvent(this.app.workspace.on("file-open", () => this.refresh()));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.onFileOpen()));
 
     this.refresh();
   }
@@ -58,8 +58,31 @@ export class MentionsView extends ItemView {
     this.contentEl.empty();
   }
 
-  /** Public so `main.ts`'s `refreshJournal` can drive it, as it does the calendar. */
+  /**
+   * Public so `main.ts`'s `refreshJournal` can drive it, as it does the
+   * calendar — and, unlike `onFileOpen` below, it must never let the
+   * `shownPath` guard turn into a no-op. `refreshJournal` calls this right
+   * after `journal.rebuild()`, which by design emits nothing to `onChange`
+   * (see the comment on `rebuild()` in `journalService.ts`), and a
+   * `metadataCache` "resolve" only fires if some unrelated file happens to
+   * re-resolve. When the active file is already the one shown, this is the
+   * only thing left that can repaint the panel against the rebuilt index.
+   */
   refresh(): void {
+    this.show({ forceRepaint: true });
+  }
+
+  /**
+   * `file-open` fires for plenty of reasons that leave the active file where
+   * it was, so this keeps the `shownPath` guard as a true short-circuit:
+   * forcing a repaint here would rebuild the panel and drop the user's
+   * expanded "Show more" state for no reason.
+   */
+  private onFileOpen(): void {
+    this.show({ forceRepaint: false });
+  }
+
+  private show(options: { forceRepaint: boolean }): void {
     const file = this.app.workspace.getActiveFile();
 
     if (!(file instanceof TFile)) {
@@ -71,9 +94,14 @@ export class MentionsView extends ItemView {
       return;
     }
 
-    // Rebuilding for a file already on screen would drop the user's expanded
-    // "Show more" state for no reason.
-    if (this.panel && this.shownPath === file.path) return;
+    if (this.panel && this.shownPath === file.path) {
+      // Re-render in place rather than rebuild: `MentionsPanel.render()`
+      // keeps its own `visibleCount` across calls, so this is what lets
+      // `refresh()` repaint an already-shown file without losing the user's
+      // expanded state.
+      if (options.forceRepaint) void this.panel.render();
+      return;
+    }
 
     this.teardownPanel();
     this.shownPath = file.path;
