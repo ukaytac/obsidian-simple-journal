@@ -1,6 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
+import { MentionsView, VIEW_TYPE_MENTIONS } from "./mentions/MentionsView";
 import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
@@ -29,6 +30,7 @@ export default class JournalEntriesPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
+    this.registerView(VIEW_TYPE_MENTIONS, (leaf) => new MentionsView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));
 
     // No setting gates this. A toggle that turned the processor off would
@@ -105,6 +107,16 @@ export default class JournalEntriesPlugin extends Plugin {
       },
     });
 
+    // Works whether or not `mentionsSidebar` is on: that setting governs
+    // automatic placement, and a command is how you reach a thing.
+    this.addCommand({
+      id: "open-journal-mentions",
+      name: "Open journal mentions",
+      callback: () => {
+        void this.openMentions();
+      },
+    });
+
     // Lets a phone home-screen shortcut (or any other launcher) capture a
     // thought in one tap: `obsidian://simple-journal-new` reuses the exact same
     // path as the command/ribbon icon below, just triggered externally.
@@ -138,7 +150,10 @@ export default class JournalEntriesPlugin extends Plugin {
       });
     });
 
-    this.app.workspace.onLayoutReady(() => void this.ensureCalendarLeaf());
+    this.app.workspace.onLayoutReady(() => {
+      void this.ensureCalendarLeaf();
+      this.applyMentionSettings();
+    });
   }
 
   onunload(): void {
@@ -160,6 +175,15 @@ export default class JournalEntriesPlugin extends Plugin {
 
     if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
       this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
+    }
+
+    // Same reasoning as the folder check above: `data.json` is user-editable,
+    // so a non-boolean here must not reach the code that reads it.
+    if (typeof this.settings.showMentionsUnderNotes !== "boolean") {
+      this.settings.showMentionsUnderNotes = DEFAULT_SETTINGS.showMentionsUnderNotes;
+    }
+    if (typeof this.settings.mentionsSidebar !== "boolean") {
+      this.settings.mentionsSidebar = DEFAULT_SETTINGS.mentionsSidebar;
     }
   }
 
@@ -347,6 +371,62 @@ export default class JournalEntriesPlugin extends Plugin {
   }
 
   /**
+   * Opens (or reveals) the mentions sidebar. Mirrors `openCalendar`: an
+   * existing leaf anywhere is reused, and the command path activates and
+   * reveals because the user asked for it explicitly.
+   */
+  async openMentions(): Promise<MentionsView | null> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS);
+    const leaf = existing[0] ?? this.app.workspace.getRightLeaf(false);
+    if (!leaf) return null;
+
+    if (!existing[0]) {
+      await leaf.setViewState({ type: VIEW_TYPE_MENTIONS, active: true });
+    }
+    await this.app.workspace.revealLeaf(leaf);
+
+    return leaf.view instanceof MentionsView ? leaf.view : null;
+  }
+
+  /**
+   * Brings the optional mention surfaces into line with the current settings.
+   * Called on layout-ready and after either toggle changes, so turning one on
+   * takes effect without a reload — and turning one off actually removes it
+   * rather than leaving it until the next restart.
+   */
+  applyMentionSettings(): void {
+    if (this.settings.mentionsSidebar) void this.ensureMentionsLeaf();
+    else this.detachMentionsLeaves();
+  }
+
+  /**
+   * Places a mentions leaf in the right sidebar if none exists anywhere.
+   * Identical policy to `ensureCalendarLeaf` — including never stealing
+   * focus (`active: false`) and never revealing the sidebar — except that it
+   * is gated on a setting, because unlike the calendar this surface is
+   * opt-in.
+   */
+  private async ensureMentionsLeaf(): Promise<void> {
+    try {
+      if (this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS).length > 0) return;
+
+      const rightLeaf = this.app.workspace.getRightLeaf(false);
+      if (!rightLeaf) return;
+
+      await rightLeaf.setViewState({ type: VIEW_TYPE_MENTIONS, active: false });
+    } catch (error) {
+      console.error("Simple Journal: could not place the mentions panel in the sidebar", error);
+    }
+  }
+
+  /** Turning the setting off must remove the panel, not merely stop re-placing it. */
+  private detachMentionsLeaves(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS)) {
+      leaf.detach();
+    }
+  }
+
+  /**
    * Opens (or reveals) the journal view and calls `goToDate` on it — the
    * calendar sidebar's click handler goes through this rather than reaching
    * into `openJournal`/`JournalView` itself, mirroring `newEntry`/
@@ -378,6 +458,10 @@ export default class JournalEntriesPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR)) {
       const view = leaf.view;
       if (view instanceof CalendarView) view.refresh();
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS)) {
+      const view = leaf.view;
+      if (view instanceof MentionsView) view.refresh();
     }
   }
 }
