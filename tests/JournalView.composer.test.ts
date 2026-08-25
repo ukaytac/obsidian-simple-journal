@@ -221,12 +221,13 @@ describe("JournalView composer lifecycle", () => {
    * `JournalView.onOpen()` has run, let alone finished (`initialLoad`'s doc
    * says the same from the other side).
    *
-   * This harness cannot drive that literally: `createHarness`'s
-   * `createFakeApp()` returns only `{ vault, metadataCache, fileManager }` —
-   * no `app.workspace` at all — and `obsidian-mock.ts`'s `Plugin`/
-   * `WorkspaceLeaf` are empty stubs with no `getLeaf`/`setViewState`/
-   * `revealLeaf`. Inventing a fake `setViewState` would mean guessing at
-   * real Obsidian's closed-source leaf-opening scheduling — exactly the kind
+   * This harness cannot drive that literally: `obsidian-mock.ts`'s `Plugin`
+   * is an empty stub with no `getLeaf`, and while its `FakeWorkspace`/
+   * `WorkspaceLeaf` do now carry `setViewState`/`revealLeaf` (added for the
+   * mentions sidebar's tests), `setViewState` there only records a view
+   * state — it builds no view, precisely because doing so faithfully would
+   * mean guessing at real Obsidian's closed-source leaf-opening scheduling
+   * — exactly the kind
    * of unverified assumption behind the two already-wrong fixes this bug
    * survived (Context7's official API docs describe only that `setViewState`
    * "resolves when the view state has been updated" and `onOpen()` "resolves

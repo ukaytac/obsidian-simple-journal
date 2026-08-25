@@ -521,18 +521,27 @@ export class FakeFileManager {
   }
 }
 
-/** Assembles the three fakes into something shaped like `App`. */
+/** Assembles the four fakes into something shaped like `App`. */
 export function createFakeApp(): {
   vault: FakeVault;
   metadataCache: FakeMetadataCache;
   fileManager: FakeFileManager;
+  workspace: FakeWorkspace;
 } {
   const vault = new FakeVault();
-  return {
+  const workspace = new FakeWorkspace();
+  const app = {
     vault,
     metadataCache: new FakeMetadataCache(),
     fileManager: new FakeFileManager(vault),
+    workspace,
   };
+  // Handed back so leaves this workspace mints (`getRightLeaf`, `addLeaf`)
+  // carry an app, the way a real leaf does — `ItemView`'s constructor below
+  // reads it off the leaf, so a view built on a leaf without one would see
+  // `app === undefined`.
+  workspace.app = app;
+  return app;
 }
 
 export class App {}
@@ -597,15 +606,141 @@ export abstract class SuggestModal<T> extends Modal {
 }
 
 /**
+ * The subset of Obsidian's `ViewState` this mock records. `group` is omitted
+ * deliberately — nothing under test sets it, and modelling leaf grouping
+ * would mean modelling the split tree this workspace does not have.
+ */
+export interface FakeViewState {
+  type: string;
+  state?: Record<string, unknown>;
+  active?: boolean;
+  pinned?: boolean;
+}
+
+/**
+ * Which workspace currently holds a given leaf, so `detach()` can remove
+ * itself from it. A module-level `WeakMap` rather than a field on the leaf:
+ * the real `WorkspaceLeaf` exposes no `workspace` member, and this class
+ * shadows it, so a field would be exactly the invented surface this file's
+ * header forbids.
+ */
+const leafWorkspaces = new WeakMap<WorkspaceLeaf, FakeWorkspace>();
+
+/**
  * Minimal stand-in for Obsidian's `WorkspaceLeaf`. Real Obsidian hands a leaf
  * to a registered view's constructor and the view reads `app`/other state
  * off it during construction (see `ItemView` below) — `app` is exposed here
- * for exactly that, and nothing else on the real leaf's much larger surface
- * is used by anything this mock supports.
+ * for exactly that. Everything else below is on the real class: `view`,
+ * `getViewState`, `setViewState`, `detach`.
+ *
+ * `setViewState` records the state and does NOT construct a view for it —
+ * this mock has no view registry to look one up in, and inventing the
+ * scheduling by which real Obsidian builds, opens and (since 1.7.2) defers a
+ * view would be guesswork of exactly the kind `JournalView.composer.test.ts`
+ * declines to build on. A test that needs a leaf carrying a view assigns
+ * `leaf.view` itself, or asks `FakeWorkspace.addLeaf` for one.
  */
 export class WorkspaceLeaf {
   view: unknown = null;
+  private viewState: FakeViewState = { type: "empty" };
+
   constructor(public app?: unknown) {}
+
+  getViewState(): FakeViewState {
+    // A copy: the real method hands back a fresh object, so a caller mutating
+    // it must not be able to reach back into this leaf.
+    return { ...this.viewState };
+  }
+
+  async setViewState(viewState: FakeViewState, _eState?: unknown): Promise<void> {
+    this.viewState = { ...viewState };
+  }
+
+  /**
+   * Removes the leaf from whichever `FakeWorkspace` holds it, so
+   * `getLeavesOfType` stops returning it — the observable half of the real
+   * method that anything under test can act on. The real one also destroys
+   * the leaf's view; nothing here does, because no view this mock builds owns
+   * resources outside the DOM its own `onClose` empties.
+   */
+  detach(): void {
+    leafWorkspaces.get(this)?.removeLeaf(this);
+  }
+}
+
+/**
+ * In-memory workspace, handed over as `app.workspace`.
+ *
+ * Named `FakeWorkspace`, not `Workspace`, on purpose: it therefore shadows no
+ * real Obsidian export, so the test-only state it carries (`activeFile`,
+ * `leaves`, `app`, `addLeaf`) cannot leak into production types the way the
+ * header's policy warns about. Every member a `src/` module actually calls is
+ * real `Workspace` API, with the real signatures — `revealLeaf` async,
+ * `getRightLeaf` nullable — so a caller type-checked against the real `.d.ts`
+ * behaves the same way here.
+ *
+ * Extends `FakeEvents` for `on`/`offref`, plus the test-driven `trigger`
+ * used to fire `file-open`.
+ */
+export class FakeWorkspace extends FakeEvents {
+  /** Set by `createFakeApp`, so minted leaves carry an app. */
+  app: unknown = undefined;
+  /** What `getActiveFile()` reports. A test assigns this directly. */
+  activeFile: TFile | null = null;
+  /** Every leaf currently in this workspace, in the order it was added. */
+  leaves: WorkspaceLeaf[] = [];
+
+  getActiveFile(): TFile | null {
+    return this.activeFile;
+  }
+
+  getLeavesOfType(viewType: string): WorkspaceLeaf[] {
+    return this.leaves.filter((leaf) => leaf.getViewState().type === viewType);
+  }
+
+  /**
+   * Real Obsidian returns null when there is no right sidebar to put a leaf
+   * in (and `main.ts`'s callers all handle that), so the return type says so
+   * even though this mock always has room.
+   */
+  getRightLeaf(_split: boolean): WorkspaceLeaf | null {
+    return this.addLeaf("empty");
+  }
+
+  /** Async on the real class; nothing to reveal here, but the shape matters. */
+  async revealLeaf(_leaf: WorkspaceLeaf): Promise<void> {}
+
+  /**
+   * Runs immediately. Real Obsidian defers until the layout is ready and runs
+   * it straight away afterwards; this mock is always "afterwards", and a test
+   * that needs to observe the deferral would have to model a layout this has
+   * no notion of.
+   */
+  onLayoutReady(callback: () => unknown): void {
+    callback();
+  }
+
+  /**
+   * Test-only: registers a leaf of `type`, optionally already holding `view`.
+   * The real workspace mints leaves through `setViewState`, which builds the
+   * view from the plugin's own registry — see `WorkspaceLeaf.setViewState`
+   * for why this mock does not attempt that, and hands the view over instead.
+   */
+  addLeaf(type: string, view?: unknown): WorkspaceLeaf {
+    const leaf = new WorkspaceLeaf(this.app);
+    void leaf.setViewState({ type });
+    leaf.view = view ?? null;
+    this.leaves.push(leaf);
+    leafWorkspaces.set(leaf, this);
+    return leaf;
+  }
+
+  /** Called by `WorkspaceLeaf.detach()`; not part of the real API. */
+  removeLeaf(leaf: WorkspaceLeaf): void {
+    const index = this.leaves.indexOf(leaf);
+    if (index >= 0) this.leaves.splice(index, 1);
+    leafWorkspaces.delete(leaf);
+  }
 }
 
 /**
