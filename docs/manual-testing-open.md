@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-424 automated tests cover the pure logic and, through a jsdom harness, a good
+601 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
@@ -281,3 +281,67 @@ standing between a regression and a user.
       in settings), and close the Journal tab before the rebuild finishes. The
       console should show exactly one "discarding unsaved text" line. This is
       the last unverified branch of the composer's persist-or-log guarantee.
+
+---
+
+## Session G — mentions
+
+Every one of these is new and none has run in a real Obsidian. Two of them are
+not "does the feature work" but "is an assumption the code rests on actually
+true" — those are marked as such, and the answer is worth writing down here
+either way, because nothing in the suite can settle them.
+
+- [ ] **Assumption, not a feature: frontmatter links count.** Give a note
+      `people: "[[Ekin Arslan Aytaç]]"` in its frontmatter and nothing in its
+      body. It must appear in Ekin's mentions panel. `mentionQuery.test.ts`
+      pins only what the plugin does *with* a `resolvedLinks` map, never what
+      Obsidian puts into one, so this is the sole evidence that a frontmatter
+      link is a mention at all. If it fails, the documented fallback is an
+      explicit `cache.links` + `cache.embeds` + `cache.frontmatterLinks` scan
+      resolved through `getFirstLinkpathDest` — one function, one module.
+
+- [ ] **Embeds and aliases count.** `![[Ekin Arslan Aytaç]]` and
+      `[[Ekin Arslan Aytaç|Ekin]]` both appear. Same reasoning as above: the
+      plugin never distinguishes them, but that they all reach `resolvedLinks`
+      is Obsidian's behaviour, not ours.
+
+- [ ] **Assumption, not a feature: do both view panes exist at once?** Turn on
+      "Show mentions under notes", open a mentioned note, and switch between
+      live preview and reading view several times. The panel must appear in
+      both, exactly once, at the end of the note's content, scrolling with it.
+      *Then look at the DOM*: does the view hold both `.markdown-source-view`
+      and `.markdown-reading-view` simultaneously with one hidden, or does it
+      replace one with the other? The footer now picks its sizer by
+      `getMode()`, so it is correct either way — but a `querySelector` over
+      both class names at once was the original implementation, and it would
+      have mounted into the hidden pane. **Write the answer down here.** It
+      decides whether that whole class of bug is live in this codebase.
+
+- [ ] **The footer is absent on journal entries.** Open an entry as an ordinary
+      note. No panel — its own timeline already shows this, and a panel there
+      invites the recursion the code block has to guard against.
+
+- [ ] **Turning either setting off removes its surface immediately**, with no
+      reload. Off must mean gone, not "gone after a restart".
+
+- [ ] **A nested block does not recurse.** Put a `simple-journal` block inside
+      a journal entry, then view a note that entry mentions. The panel shows the
+      entry with an inert placeholder where its block is, and Obsidian does not
+      hang. *(The guard asks whether the block's element sits beneath a
+      `.journal-mentions` ancestor, which assumes the element is already
+      attached when its processor runs. True under jsdom; not knowable from the
+      API. If it ever nests, the fix direction is a depth signal passed down
+      the render.)*
+
+- [ ] **Changing the Journal folder setting repaints an open sidebar panel.**
+      This was a real bug — `rebuild()` emits nothing to `onChange` by design,
+      and the view short-circuited on the active file, so the panel kept showing
+      mentions computed against the old folder. Fixed and unit-tested; worth one
+      confirmation with real leaves.
+
+- [ ] **Mobile — unverified, like the rest of the mobile code.** See
+      `CLAUDE.md`'s `# Target Platforms`. The footer's sizer lookup in
+      particular has never run on a device, and by design it fails silently: if
+      it finds nothing it does nothing, with no notice and no console line. So
+      on a phone a failure looks exactly like the setting being off. Check the
+      setting first, then the DOM.
