@@ -51,7 +51,13 @@ interface Setup {
   view: MentionsView;
   /** Called when the panel's `journal.onChange` unsubscribe actually runs. */
   journalUnsubscribed: ReturnType<typeof vi.fn>;
-  /** Seeds mentioning entries and returns nothing — see `seed`. */
+  /**
+   * Adds `count` entries mentioning `targetPath`, straight into the fake
+   * vault with no event fired. `setup` has already called `service.load()`,
+   * which snapshots the vault, so anything seeded through this afterwards is
+   * invisible until an explicit `service.rebuild()` — which is exactly the
+   * situation the `refresh()` test below needs.
+   */
   seed: (targetPath: string, count: number, hour: string) => void;
 }
 
@@ -62,8 +68,9 @@ interface Setup {
  * what these tests exercise below the Obsidian shell is the plugin's own
  * code, not the behaviour of a mock.
  *
- * `seed` must be called before `load()`, so pass the entry counts here rather
- * than seeding afterwards.
+ * Pass the entry counts here for a journal that should already exist when the
+ * service loads; `Setup.seed` is for entries added after that, and says what
+ * it takes to make them visible.
  */
 function setup(counts: { a?: number; b?: number } = {}): Setup {
   const app = createFakeApp();

@@ -694,6 +694,13 @@ export class FakeWorkspace extends FakeEvents {
     return this.activeFile;
   }
 
+  /**
+   * Matches on the leaf's recorded view state, not on `leaf.view`, so a leaf
+   * whose view this mock cannot build is still findable. Only leaves this
+   * workspace knows about are searched — a bare `new WorkspaceLeaf(app)` (the
+   * `journalViewHarness.ts` convention, where a view is constructed directly
+   * and no workspace is involved) is not one of them; use `addLeaf`.
+   */
   getLeavesOfType(viewType: string): WorkspaceLeaf[] {
     return this.leaves.filter((leaf) => leaf.getViewState().type === viewType);
   }
