@@ -19,6 +19,7 @@ import { JournalService } from "../src/services/journalService";
 import { createMentionsFooter, type MentionsFooter } from "../src/mentions/mentionsFooter";
 import { createMentionsPanel, destroyMentionPanels } from "../src/mentions/MentionsPanel";
 import { VIEW_TYPE_MENTIONS } from "../src/mentions/MentionsView";
+import { JournalSettingsTab } from "../src/settings/SettingsTab";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
 
@@ -145,16 +146,39 @@ describe("applyMentionSettings", () => {
     expect(mentionsLeaves(app)).toHaveLength(1);
   });
 
-  /** The unrelated toggle must not take the sidebar with it either. */
-  it("leaves it alone when some other setting change drives the same call", async () => {
+  /**
+   * The unrelated toggle must not take the sidebar with it either — driven
+   * through the real settings tab, because "the tab passes the right flag" and
+   * "the plugin does the right thing with it" are two halves of one promise
+   * and the bug lived in the join between them.
+   */
+  it("leaves it alone when the footer toggle is flipped in the settings tab", async () => {
     const { app, plugin } = setup();
     plugin.settings.mentionsSidebar = false;
     await plugin.openMentions();
+    // `saveData` belongs to the real `Plugin` base the mock does not model;
+    // what this test is about starts after the save resolves.
+    vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+    const tab = new JournalSettingsTab(plugin);
 
-    plugin.settings.showMentionsUnderNotes = false;
-    plugin.applyMentionSettings(false);
+    tab.setControlValue("showMentionsUnderNotes", false);
+    await settle();
 
+    expect(plugin.settings.showMentionsUnderNotes).toBe(false);
     expect(mentionsLeaves(app)).toHaveLength(1);
+  });
+
+  it("closes it when the sidebar toggle is switched off in the settings tab", async () => {
+    const { app, plugin } = setup();
+    plugin.settings.mentionsSidebar = true;
+    await plugin.openMentions();
+    vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+    const tab = new JournalSettingsTab(plugin);
+
+    tab.setControlValue("mentionsSidebar", false);
+    await settle();
+
+    expect(mentionsLeaves(app)).toHaveLength(0);
   });
 
   it("detaches only when the sidebar setting itself is turned off", async () => {
