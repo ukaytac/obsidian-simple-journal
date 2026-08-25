@@ -18,7 +18,7 @@ import {
   normalizeTag,
   resolveTags,
 } from "../journal/entryTags";
-import { UnsafeFrontmatterError } from "../journal/markdownDoc";
+import { normalizeBodyForRender, UnsafeFrontmatterError } from "../journal/markdownDoc";
 import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
@@ -1925,11 +1925,10 @@ export class JournalView extends ItemView {
     if (token !== rendered.opToken) return;
 
     // `body` is already separator-free (EntryRepository.readBody's job).
-    // This only trims EXTRA leading blank lines a user's own content might
-    // have, and trailing whitespace — not indentation on the first real
-    // content line — unlike a plain trim(), which would also eat a leading
-    // indented code block.
-    const strippedBody = body.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
+    // Shared with the mentions panel (see `normalizeBodyForRender`): the two
+    // render the same entry, so the rule for what counts as a leading blank
+    // line cannot live in only one of them.
+    const strippedBody = normalizeBodyForRender(body);
 
     await MarkdownRenderer.render(
       this.app,

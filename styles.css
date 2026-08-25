@@ -953,6 +953,18 @@
   color: var(--text-faint);
 }
 
+/* Stands in for an entry that could not be read or rendered (see
+   MentionsPanel.showFailure). Borrows `.journal-entry-error`'s visual
+   language rather than `.journal-mentions-empty`'s: this is a failure, not an
+   absence, and the timeline already teaches `--text-error` at
+   `--font-ui-smaller` to mean "this entry did not survive a disk operation".
+   Faint grey would read as "the entry is empty", which is exactly the
+   confusion this line exists to remove. */
+.journal-mentions-error {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-error);
+}
+
 .journal-mentions-more,
 .journal-mentions-more:hover {
   display: block;

@@ -122,6 +122,26 @@ export function preserveSeparator(frontmatter: string, existingBody: string, new
   return newBody;
 }
 
+/**
+ * Trims a separator-free body (what `EntryRepository.readBody` hands back)
+ * for READ-ONLY rendering: extra leading blank lines the user's own content
+ * may carry, and trailing whitespace.
+ *
+ * Deliberately not a `trim()`: that would also eat the leading indentation
+ * of a first line that is an indented code block, silently rendering it as a
+ * paragraph.
+ *
+ * Lives here, rather than in either caller, because the timeline
+ * (`JournalView.renderStatic`) and the mentions panel render the SAME entry
+ * and must not disagree about whether it opens with an empty paragraph. It
+ * is a rendering-time convention only — nothing here is ever written back to
+ * disk, which is why it sits beside `stripSeparator` in the convention layer
+ * and not in the byte-exact one.
+ */
+export function normalizeBodyForRender(body: string): string {
+  return body.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
+}
+
 // Matches a top-level `created` property line: anchored to the start of a
 // line (via `m`), so it only ever fires at column 0. A nested key such as
 // `context:\n  created: false` can never match here — its line starts with

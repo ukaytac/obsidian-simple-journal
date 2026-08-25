@@ -1,6 +1,7 @@
 import { Component, debounce, MarkdownRenderer, setTooltip, type TFile } from "obsidian";
 import type JournalEntriesPlugin from "../main";
 import type { JournalEntry } from "../journal/entry";
+import { normalizeBodyForRender } from "../journal/markdownDoc";
 import { dayKey, formatDayHeader, formatTime } from "../utils/dates";
 import { findMentions } from "./mentionQuery";
 
@@ -29,6 +30,13 @@ const PAGE_COUNT = 20;
  * in, so coalescing is not optional here.
  */
 const REFRESH_DEBOUNCE_MS = 200;
+
+/**
+ * `ok: false` rather than `""`: an empty body and an unreadable one look
+ * identical downstream otherwise, and only one of them should show a failure
+ * line.
+ */
+type BodyRead = { ok: true; text: string } | { ok: false };
 
 export interface MentionsPanelOptions {
   plugin: JournalEntriesPlugin;
@@ -75,7 +83,20 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
   );
 
   const unsubscribeJournal = plugin.journal.onChange(() => scheduleRefresh());
-  const resolveRef = plugin.app.metadataCache.on("resolve", () => scheduleRefresh());
+  /**
+   * Filtered to journal entries, unlike `CalendarView`'s equivalent
+   * subscription. `resolve` fires for EVERY file the vault re-resolves —
+   * including the note this panel is sitting in, on every keystroke — and
+   * the debounce above fires on a trailing edge every 200 ms of a sustained
+   * burst, not once at the end of it. The calendar can afford to skip the
+   * check because its reaction is two binary searches; this one is a read
+   * plus a full `MarkdownRenderer` pass per visible entry, so typing in the
+   * host note would rebuild the whole panel five times a second.
+   */
+  const resolveRef = plugin.app.metadataCache.on("resolve", (file) => {
+    if (!plugin.repository.isEntryFile(file)) return;
+    scheduleRefresh();
+  });
 
   async function render(): Promise<void> {
     if (destroyed) return;
@@ -99,6 +120,12 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
     owner.load();
 
     container.empty();
+    // Claimed before it is known whether there is anything to show, and
+    // deliberately never given back on the empty path — `.journal-mentions:empty`
+    // in styles.css hides a childless panel, and it also covers the case a
+    // later `addClass` could not: a re-render going from "has mentions" to
+    // "none", where the class is already on the element from the previous
+    // pass.
     container.addClass("journal-mentions");
 
     if (mentions.length === 0) {
@@ -122,6 +149,10 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
       if (key !== currentDay || dayEntriesEl === null) {
         currentDay = key;
         const dayEl = listEl.createDiv({ cls: "journal-mentions-day" });
+        // The timeline's own day-header class, not a `journal-mentions-*` one:
+        // a day header means the same thing in both surfaces and must look
+        // identical, so a theme (or a later change here) restyling one cannot
+        // leave the other behind.
         dayEl.createDiv({ cls: "journal-day-header", text: formatDayHeader(entry.created) });
         dayEntriesEl = dayEl.createDiv({ cls: "journal-mentions-day-entries" });
       }
@@ -143,8 +174,33 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
       });
 
       const bodyEl = entryEl.createDiv({ cls: "journal-mentions-body" });
-      await MarkdownRenderer.render(plugin.app, bodies[i], bodyEl, entry.file.path, owner);
-      if (destroyed || token !== renderToken) return;
+      const body = bodies[i];
+
+      if (!body.ok) {
+        showFailure(bodyEl, "could not be read");
+        continue;
+      }
+
+      try {
+        await MarkdownRenderer.render(
+          plugin.app,
+          normalizeBodyForRender(body.text),
+          bodyEl,
+          entry.file.path,
+          owner,
+        );
+        if (destroyed || token !== renderToken) return;
+      } catch (error) {
+        // A post-processor from any other plugin can throw in here. Left
+        // unguarded, that abandons the panel half-built — no "Show more", no
+        // way back — and escapes the `void render()` call sites as an
+        // unhandled rejection. Same rule the read failure above follows: one
+        // bad entry must not hide the others.
+        console.error("Simple Journal: could not render an entry in the mentions panel", error);
+        if (destroyed || token !== renderToken) return;
+        bodyEl.empty();
+        showFailure(bodyEl, "could not be rendered");
+      }
     }
 
     const remaining = mentions.length - shown.length;
@@ -154,6 +210,14 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
         text: `Show ${Math.min(remaining, PAGE_COUNT)} more`,
         attr: { type: "button" },
       });
+      // Re-renders from scratch rather than appending the new page, so every
+      // already-visible body is read and rendered again — quadratic in the
+      // number of clicks. Kept because incremental appending would have to
+      // reproduce the day-grouping state (`currentDay`/`dayEntriesEl`) across
+      // calls, and the growth is bounded by explicit user clicks on a
+      // read-only surface. Revisit only if the day grouping is extracted into
+      // something that can be resumed, or if a page ever arrives without a
+      // click behind it.
       moreEl.addEventListener("click", () => {
         visibleCount += PAGE_COUNT;
         void render();
@@ -162,17 +226,35 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
   }
 
   /**
-   * Goes through `EntryRepository.readBody` rather than reading the file
-   * directly, so frontmatter stripping stays in the one module that owns it.
-   * A read failure renders as nothing rather than aborting the whole panel:
-   * one unreadable entry must not hide the others.
+   * Fails visibly, in the DOM, rather than only in the console — the same
+   * bar `entrySave.ts`'s `.journal-entry-error` marker sets for a failed
+   * write, and the reason a failed read must not silently render as an empty
+   * body: that is indistinguishable from an entry the user genuinely left
+   * empty.
    */
-  async function readBody(entry: JournalEntry): Promise<string> {
+  function showFailure(bodyEl: HTMLElement, what: string): void {
+    bodyEl.createDiv({
+      cls: "journal-mentions-error",
+      text: `This entry ${what}.`,
+      attr: { role: "status" },
+    });
+  }
+
+  /**
+   * Goes through the repository rather than reading the file directly, so
+   * frontmatter stripping stays in the one module that owns it. `readBodyCached`,
+   * not `readBody`: this surface never writes, so a disk round trip per
+   * visible entry per refresh buys nothing.
+   *
+   * A read failure is reported, not thrown: one unreadable entry must not
+   * hide the others.
+   */
+  async function readBody(entry: JournalEntry): Promise<BodyRead> {
     try {
-      return await plugin.repository.readBody(entry.file);
+      return { ok: true, text: await plugin.repository.readBodyCached(entry.file) };
     } catch (error) {
       console.error("Simple Journal: could not read an entry for the mentions panel", error);
-      return "";
+      return { ok: false };
     }
   }
 

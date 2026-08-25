@@ -337,6 +337,20 @@ export class FakeVault extends FakeEvents {
     return this.contents.get(file.path) ?? "";
   }
 
+  /**
+   * Real `Vault.cachedRead` — not invented surface, so the header policy is
+   * satisfied. Delegates to the same content map as `read`: this mock has no
+   * staleness to model, and modelling one would only let a test assert
+   * behaviour of a cache Obsidian owns rather than of this plugin. What a
+   * test using this CAN prove is that a display-only caller went through the
+   * cached path at all (by spying on it), not that a stale value is handled.
+   * Reads the map directly rather than delegating to `read`, so a test can
+   * spy on the two independently.
+   */
+  async cachedRead(file: TFile): Promise<string> {
+    return this.contents.get(file.path) ?? "";
+  }
+
   async process(file: TFile, fn: (data: string) => string): Promise<string> {
     const next = fn(this.contents.get(file.path) ?? "");
     this.contents.set(file.path, next);
