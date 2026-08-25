@@ -171,5 +171,10 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
     for (const view of [...mounted.keys()]) unmount(view);
   }
 
+  // `destroy` is literally `unmountAll`, and deliberately leaves nothing
+  // latched: there is no state to tear down beyond the footers themselves,
+  // and a `destroyed` flag would only add a second way for a caller holding a
+  // stale reference to be surprised. `main.ts` drops its reference instead,
+  // which is the honest way to make it terminal.
   return { sync, destroy: unmountAll };
 }

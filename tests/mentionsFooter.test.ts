@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { App, TFile } from "obsidian";
+import type { App } from "obsidian";
 import {
   createFakeApp,
   installDomHelpers,
   MarkdownView as FakeMarkdownView,
+  type TFile as FakeTFile,
   type WorkspaceLeaf as FakeWorkspaceLeaf,
 } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
@@ -92,8 +93,13 @@ function setup(counts: { a?: number } = {}): Setup {
   return { app, plugin, footer: createMentionsFooter(plugin), livePanels: () => live };
 }
 
-function fileAt(app: Setup["app"], path: string): TFile {
-  return app.vault.files.get(path) as unknown as TFile;
+/**
+ * The mock's `TFile`, not `obsidian`'s: nothing here hands a file into `src/`
+ * directly — the footer reads it off `MarkdownView.file` — so keeping the
+ * mock's own type all the way through spares every call site a cast.
+ */
+function fileAt(app: Setup["app"], path: string): FakeTFile {
+  return app.vault.files.get(path) as FakeTFile;
 }
 
 type Sizer = "markdown-preview-sizer" | "cm-sizer" | "none";
@@ -105,12 +111,15 @@ type Sizer = "markdown-preview-sizer" | "cm-sizer" | "none";
  */
 function addMarkdownLeaf(
   app: Setup["app"],
-  file: TFile | null,
+  file: FakeTFile | null,
   sizer: Sizer = "markdown-preview-sizer",
 ): { leaf: FakeWorkspaceLeaf; view: FakeMarkdownView } {
   const leaf = app.workspace.addLeaf("markdown");
   const view = new FakeMarkdownView(leaf);
-  view.file = file as unknown as (typeof view)["file"];
+  view.file = file;
+  // Built inside `contentEl`, one level below the `containerEl` the footer
+  // actually searches, so the query has to descend exactly as it does in real
+  // Obsidian rather than matching a top-level child.
   if (sizer !== "none") view.contentEl.createDiv({ cls: sizer });
   leaf.view = view;
   return { leaf, view };
@@ -143,7 +152,8 @@ describe("findContentFlowEl", () => {
    * ─────────────────────────────────────────────────────────────────────────
    */
   it("does nothing and throws nothing when neither layout element exists", async () => {
-    const { app, plugin, footer, livePanels } = setup({ a: 2 });
+    const { app, footer, livePanels } = setup({ a: 2 });
+    const before = app.vault.contents.get(NOTE_A);
     const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "none");
 
     expect(() => footer.sync()).not.toThrow();
@@ -154,7 +164,10 @@ describe("findContentFlowEl", () => {
     expect(livePanels()).toBe(0);
     // Nothing was added to the view at all, not merely nothing recognisable.
     expect(view.contentEl.children).toHaveLength(0);
-    expect(plugin.app.vault.getMarkdownFiles().length).toBeGreaterThan(0);
+    // And the half of the promise that actually matters: the note on disk is
+    // byte-for-byte what it was. Losing this surface must cost the user
+    // nothing but the surface.
+    expect(app.vault.contents.get(NOTE_A)).toBe(before);
   });
 
   it("finds the reading-view sizer", () => {
@@ -305,7 +318,7 @@ describe("createMentionsFooter", () => {
     const el = footerIn(view);
     expect(el?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
 
-    view.file = fileAt(app, NOTE_B) as unknown as (typeof view)["file"];
+    view.file = fileAt(app, NOTE_B);
     footer.sync();
     await settle();
 
