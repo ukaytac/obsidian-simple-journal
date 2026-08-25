@@ -2163,6 +2163,26 @@ method. A setting and the surface it governs are one change.
   so the imperative settings path cannot be exercised at all. It type-checks
   against the real API and is dormant on any Obsidian at or above 1.13.
 
+## Two further divergences from the spec, found by the final review
+
+The "Spec corrections adopted by this plan" section at the top named two
+divergences before a line was written. Two more happened during implementation
+and were not recorded until the final review pointed them out. Both are
+improvements and both are explained where the code lives; the fault was the
+record claiming to be complete.
+
+* **The recursion guard is structural, not a counter.** Spec §5 specifies "a
+  module-level depth flag". A global counter cannot distinguish a genuinely
+  nested block from an unrelated one rendering concurrently in another note,
+  and would draw the placeholder in the wrong place. The shipped guard asks
+  whether *this* block's own ancestry runs through a `.journal-mentions`
+  element. Note the assumption it trades for: the element must already be
+  attached when its processor runs, which holds under jsdom and almost
+  certainly in practice, but is not knowable from the API. Recorded as a manual
+  check.
+* **The footer listens to `file-open` as well.** Spec §7 lists only
+  `layout-change` and `active-leaf-change`.
+
 ## Test practice
 
 Every test added after Task 4 was verified by mutation: break the thing it
