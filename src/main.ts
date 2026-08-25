@@ -1,6 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
+import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
@@ -29,6 +30,12 @@ export default class JournalEntriesPlugin extends Plugin {
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));
+
+    // No setting gates this. A toggle that turned the processor off would
+    // leave raw ```simple-journal fences visible in notes the user had
+    // already written, reading as breakage. The block is opt-in per note
+    // already: the way to not have one is to not write one.
+    registerMentionsCodeBlock(this);
 
     this.addRibbonIcon("book-open", "Open journal", () => {
       void this.openJournal();
@@ -71,6 +78,18 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Filter journal by tag",
       callback: () => {
         void this.filterByTag();
+      },
+    });
+
+    // Writes the empty fence rather than a `note:` directive: the block's
+    // default target is the note it sits in, which is what someone inserting
+    // it here almost always wants, and an unwanted directive is more work to
+    // remove than a wanted one is to add.
+    this.addCommand({
+      id: "insert-mentions-block",
+      name: "Insert journal mentions block",
+      editorCallback: (editor) => {
+        editor.replaceSelection(MENTIONS_BLOCK_SNIPPET);
       },
     });
 
