@@ -983,6 +983,17 @@
   color: var(--text-normal);
 }
 
+/* Shell C's container: the panel the plugin appends to a note's own content
+   flow (see `mentionsFooter.ts`). It carries `.journal-mentions` too, so the
+   spacing above the panel and the `:empty` collapse both already apply — all
+   this adds is clearance below, because the footer is the last thing in the
+   sizer and would otherwise sit flush against whatever the scroller ends
+   with. No border, background or width of its own: it has to read as the end
+   of the note, not as a card bolted to it. */
+.journal-mentions-footer {
+  margin-bottom: var(--size-4-4);
+}
+
 /* The recursion guard's placeholder: a `simple-journal` block that ended up
    inside a mentions panel. Inert by design — see `mentionsCodeBlock.ts`. */
 .journal-mentions-nested {

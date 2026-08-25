@@ -3,6 +3,7 @@ import { EntryRepository } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
 import { MentionsView, VIEW_TYPE_MENTIONS } from "./mentions/MentionsView";
 import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
+import { createMentionsFooter, type MentionsFooter } from "./mentions/mentionsFooter";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
@@ -16,6 +17,7 @@ export default class JournalEntriesPlugin extends Plugin {
   repository!: EntryRepository;
   editorFactory!: EntryEditorFactory;
   journal!: JournalService;
+  private mentionsFooter: MentionsFooter | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -38,6 +40,19 @@ export default class JournalEntriesPlugin extends Plugin {
     // already written, reading as breakage. The block is opt-in per note
     // already: the way to not have one is to not write one.
     registerMentionsCodeBlock(this);
+
+    // Gated on `showMentionsUnderNotes` inside `sync()` rather than here, so
+    // toggling the setting takes effect on the next event without a reload.
+    this.mentionsFooter = createMentionsFooter(this);
+    // Both of the first two are needed, not one. `active-leaf-change` covers
+    // switching tabs; `layout-change` covers splitting, closing, and
+    // switching a pane between reading view and live preview — which replaces
+    // the layout element the footer is mounted in wholesale, and fires no
+    // leaf change at all. `file-open` covers a pane that stays put while the
+    // note inside it changes.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncMentionsFooter()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncMentionsFooter()));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.syncMentionsFooter()));
 
     this.addRibbonIcon("book-open", "Open journal", () => {
       void this.openJournal();
@@ -158,6 +173,13 @@ export default class JournalEntriesPlugin extends Plugin {
 
   onunload(): void {
     // Obsidian detaches views of a plugin's registered types automatically.
+    // The mentions footer is the exception, and the reason this method is no
+    // longer empty: it is a DOM node this plugin put inside somebody else's
+    // `MarkdownView`, so nothing else will ever take it back out. Left here,
+    // it would sit under the user's notes with a dead panel behind it until
+    // the pane was closed.
+    this.mentionsFooter?.destroy();
+    this.mentionsFooter = null;
   }
 
   async loadSettings(): Promise<void> {
@@ -397,6 +419,20 @@ export default class JournalEntriesPlugin extends Plugin {
   applyMentionSettings(): void {
     if (this.settings.mentionsSidebar) void this.ensureMentionsLeaf();
     else this.detachMentionsLeaves();
+    // `sync()` reads the setting itself, so this one call covers both
+    // directions: mounting the footers when the toggle goes on, and removing
+    // them when it goes off rather than leaving them until the next restart.
+    this.syncMentionsFooter();
+  }
+
+  /**
+   * Wrapped rather than called inline so the null check — the footer does not
+   * exist until `onload` reaches it, and is dropped again in `onunload` —
+   * lives in one place. `sync()` itself never throws; if that ever changes,
+   * this is where the guard goes.
+   */
+  private syncMentionsFooter(): void {
+    this.mentionsFooter?.sync();
   }
 
   /**
