@@ -5,7 +5,11 @@ import { MarkdownRenderer } from "obsidian";
 import { createFakeApp, installDomHelpers } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
-import { createMentionsPanel } from "../src/mentions/MentionsPanel";
+import {
+  createMentionsPanel,
+  destroyMentionPanels,
+  refreshMentionPanels,
+} from "../src/mentions/MentionsPanel";
 import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
@@ -15,6 +19,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The registry `refreshMentionPanels` walks is module-level, so a panel one
+  // test leaves alive is still in it when the next one runs.
+  destroyMentionPanels();
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
@@ -375,5 +382,85 @@ describe("createMentionsPanel", () => {
 
     expect(isEntryFile).not.toHaveBeenCalled();
     expect(container.childElementCount).toBe(0);
+  });
+});
+
+/**
+ * The registry the panel keeps of itself. It exists because `journal.rebuild()`
+ * emits nothing to `onChange` (see the doc on `rebuild()` in
+ * `journalService.ts`), and two of the three shells — the footer and the code
+ * block — hold panels no leaf lookup can reach, so `main.ts` has nothing else
+ * to drive them with.
+ */
+describe("the live-panel registry", () => {
+  /** Drops the link from one entry, so a repaint has something to show. */
+  function unlink(setup: Setup, index: number): void {
+    setup.app.metadataCache.resolvedLinks[setup.entries[index].path] = {};
+  }
+
+  it("re-renders every live panel", async () => {
+    const state = setup(2);
+    const { plugin, target, container } = state;
+    const other = document.body.createDiv();
+    const a = createMentionsPanel({ plugin, container, target });
+    const b = createMentionsPanel({ plugin, container: other, target });
+    await Promise.all([a.render(), b.render()]);
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    expect(other.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+
+    unlink(state, 0);
+    refreshMentionPanels();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(1);
+    expect(other.querySelectorAll(".journal-mentions-entry")).toHaveLength(1);
+    a.destroy();
+    b.destroy();
+  });
+
+  it("forgets a panel once it is destroyed", async () => {
+    const state = setup(2);
+    const panel = createMentionsPanel({
+      plugin: state.plugin,
+      container: state.container,
+      target: state.target,
+    });
+    await panel.render();
+    panel.destroy();
+
+    // Membership has to be observed directly, not through the DOM: `render()`
+    // early-returns once the panel is destroyed, so a container assertion
+    // passes just as well for a panel the registry is still holding — and a
+    // retained one is a leak, since the closure keeps its container, its
+    // target file and the plugin alive for as long as Obsidian runs. The
+    // registry calls `render` on the very object `createMentionsPanel`
+    // returned, so a spy on that property observes membership itself. Same
+    // reasoning as the `isEntryFile` spy in the teardown tests above.
+    const render = vi.spyOn(panel, "render");
+    unlink(state, 0);
+    refreshMentionPanels();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(state.container.childElementCount).toBe(0);
+  });
+
+  it("destroys every live panel, and tolerates being asked twice", async () => {
+    const state = setup(2);
+    const panel = createMentionsPanel({
+      plugin: state.plugin,
+      container: state.container,
+      target: state.target,
+    });
+    await panel.render();
+
+    destroyMentionPanels();
+    expect(state.container.childElementCount).toBe(0);
+    expect(state.journalUnsubscribed).toHaveBeenCalledTimes(1);
+
+    // The double-destroy the plugin's `onunload` can genuinely produce: this
+    // path, then the panel's own render child unloading a moment later.
+    expect(() => panel.destroy()).not.toThrow();
+    expect(state.journalUnsubscribed).toHaveBeenCalledTimes(1);
   });
 });

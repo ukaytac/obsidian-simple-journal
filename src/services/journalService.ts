@@ -111,7 +111,18 @@ export class JournalService extends Component {
     this.selfWrites.clear();
   }
 
-  /** Rebuilds the index from scratch, e.g. after the journal folder setting changes. */
+  /**
+   * Rebuilds the index from scratch, e.g. after the journal folder setting
+   * changes.
+   *
+   * Emits NOTHING to `onChange`, by design, and callers depend on that being
+   * written down here: this replaces the whole index rather than describing a
+   * change to it, and the caller that asked for it already knows what it did.
+   * So every surface rendered from the index has to be repainted by that
+   * caller — see `main.ts`'s `refreshJournal`, which drives the journal views,
+   * the calendar, `MentionsView.refresh()` and `refreshMentionPanels()` by
+   * hand for exactly this reason. A subscription alone will never see it.
+   */
   rebuild(): void {
     this.index = this.repository.listEntries();
   }

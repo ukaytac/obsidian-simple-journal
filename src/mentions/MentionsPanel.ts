@@ -58,6 +58,53 @@ export interface MentionsPanel {
   destroy(): void;
 }
 
+/**
+ * Every panel currently alive, across all three shells.
+ *
+ * Module-level global state, and deliberately not plumbed down through the
+ * shells, because the shells do not own their panels' lifetimes in any common
+ * way: the sidebar view owns exactly one, the footer owns one per open
+ * markdown view, and a code block's panel belongs to the host note's preview
+ * component — something neither this plugin nor any of its shells holds a
+ * handle on. A registry passed down would therefore have to be threaded
+ * through Obsidian's own post-processor callback and then kept in step with
+ * three unrelated teardown paths, to reach the same set this holds with one
+ * owner. Membership is exactly `createMentionsPanel` to `destroy()`, both
+ * below, so there is nowhere else for it to drift.
+ *
+ * Safe as a module global because Obsidian loads one instance of a plugin per
+ * app: there is no second journal whose panels could land in the same set.
+ */
+const livePanels = new Set<MentionsPanel>();
+
+/**
+ * Re-renders every live panel.
+ *
+ * `main.ts`'s `refreshJournal` calls this after `journal.rebuild()`, which
+ * replaces the index without emitting to `onChange` (see the doc on
+ * `rebuild()` in `journalService.ts`) — so neither of the two subscriptions
+ * every panel holds hears about it. The sidebar has its own `refresh()` for
+ * this, driven by leaf lookup; a footer panel and a code-block panel are
+ * reachable through no leaf lookup at all, and without this they would keep
+ * listing entries resolved against the old journal folder until some
+ * unrelated entry file happened to re-resolve. Staying current is the
+ * renderer's job (CLAUDE.md § Mentions, Rule 3), so the entry point for it
+ * lives here rather than in the shells.
+ */
+export function refreshMentionPanels(): void {
+  for (const panel of livePanels) void panel.render();
+}
+
+/**
+ * Destroys every live panel. Called from the plugin's `onunload`; see the
+ * comment there for why it is belt and braces rather than a known leak.
+ *
+ * Iterates a copy: `destroy()` removes the panel from the set it is walking.
+ */
+export function destroyMentionPanels(): void {
+  for (const panel of [...livePanels]) panel.destroy();
+}
+
 export function createMentionsPanel(options: MentionsPanelOptions): MentionsPanel {
   const { plugin, container, target, emptyText } = options;
 
@@ -258,9 +305,16 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
     }
   }
 
+  /**
+   * Idempotent, and it has to be: a code-block panel can be destroyed by
+   * `destroyMentionPanels()` on unload and again by its own render child's
+   * `onunload` a moment later. The early return covers the second call
+   * entirely — and `Set.delete` on an absent member is a no-op anyway.
+   */
   function destroy(): void {
     if (destroyed) return;
     destroyed = true;
+    livePanels.delete(panel);
     scheduleRefresh.cancel();
     unsubscribeJournal();
     plugin.app.metadataCache.offref(resolveRef);
@@ -270,5 +324,7 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
     container.removeClass("journal-mentions");
   }
 
-  return { render, destroy };
+  const panel: MentionsPanel = { render, destroy };
+  livePanels.add(panel);
+  return panel;
 }

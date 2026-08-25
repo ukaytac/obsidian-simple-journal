@@ -58,7 +58,12 @@ export class JournalSettingsTab extends PluginSettingTab {
   private setToggle(key: typeof UNDER_NOTES_KEY | typeof SIDEBAR_KEY, value: boolean): void {
     if (key === UNDER_NOTES_KEY) this.plugin.settings.showMentionsUnderNotes = value;
     else this.plugin.settings.mentionsSidebar = value;
-    void this.plugin.saveSettings().then(() => this.plugin.applyMentionSettings());
+    // This toggle going off is the only event allowed to close a mentions
+    // leaf: one opened with `Open journal mentions` must survive the other
+    // toggle and every later plugin load. See `applyMentionSettings`.
+    void this.plugin
+      .saveSettings()
+      .then(() => this.plugin.applyMentionSettings(key === SIDEBAR_KEY && !value));
   }
 
   /**

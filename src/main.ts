@@ -1,6 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
+import { destroyMentionPanels, refreshMentionPanels } from "./mentions/MentionsPanel";
 import { MentionsView, VIEW_TYPE_MENTIONS } from "./mentions/MentionsView";
 import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
 import { createMentionsFooter, type MentionsFooter } from "./mentions/mentionsFooter";
@@ -180,6 +181,15 @@ export default class JournalEntriesPlugin extends Plugin {
     // the pane was closed.
     this.mentionsFooter?.destroy();
     this.mentionsFooter = null;
+    // Belt and braces rather than a known leak. A code block's panel belongs
+    // to its note's preview component, not to this plugin, and unregistering
+    // a post-processor does not by itself unload children that are already
+    // loaded — so its `metadataCache` ref and `journal.onChange` listener can
+    // outlive the plugin. Whether Obsidian force-rerenders open previews on
+    // unregister (which would tear them down anyway) is not knowable from the
+    // API, so this does not depend on the answer. `destroy()` is idempotent,
+    // so a panel Obsidian does unload a moment later costs nothing.
+    destroyMentionPanels();
   }
 
   async loadSettings(): Promise<void> {
@@ -415,10 +425,20 @@ export default class JournalEntriesPlugin extends Plugin {
    * Called on layout-ready and after either toggle changes, so turning one on
    * takes effect without a reload — and turning one off actually removes it
    * rather than leaving it until the next restart.
+   *
+   * `sidebarTurnedOff` is the ONE thing that may close a mentions leaf, and
+   * only the sidebar toggle itself passes it. This used to detach whenever the
+   * setting was off, which meant the layout-ready call — and a change to the
+   * unrelated footer toggle — silently closed a panel the user had opened with
+   * `Open journal mentions`. That command works whatever the setting says
+   * (CLAUDE.md § Mentions Rule 5: the setting governs automatic placement
+   * only), so destroying its result on the next Obsidian start is the same
+   * "permanently locks the user out" failure `ensureCalendarLeaf`'s doc
+   * describes the calendar's placement policy being rewritten to avoid.
    */
-  applyMentionSettings(): void {
+  applyMentionSettings(sidebarTurnedOff = false): void {
     if (this.settings.mentionsSidebar) void this.ensureMentionsLeaf();
-    else this.detachMentionsLeaves();
+    else if (sidebarTurnedOff) this.detachMentionsLeaves();
     // `sync()` reads the setting itself, so this one call covers both
     // directions: mounting the footers when the toggle goes on, and removing
     // them when it goes off rather than leaving them until the next restart.
@@ -455,7 +475,12 @@ export default class JournalEntriesPlugin extends Plugin {
     }
   }
 
-  /** Turning the setting off must remove the panel, not merely stop re-placing it. */
+  /**
+   * Turning the setting off must remove the panel, not merely stop re-placing
+   * it — leaving a surface the user just switched off sitting there until the
+   * next restart is the same failure as ignoring the switch. Reached only from
+   * that one transition; see `applyMentionSettings`.
+   */
   private detachMentionsLeaves(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS)) {
       leaf.detach();
@@ -499,5 +524,15 @@ export default class JournalEntriesPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof MentionsView) view.refresh();
     }
+    // The other two mention shells reach no leaf lookup at all, and need the
+    // same treatment for the same reason. Which notes get a footer depends on
+    // the journal folder, so this both drops the footer from a note that just
+    // became an entry and gives one to a note that stopped being one; the
+    // repaint below then covers every footer and code-block panel that stayed
+    // put but is now answering against the wrong folder. The sidebar's panel
+    // is repainted twice over (once above, once below) — harmless: a render
+    // is idempotent and token-guarded.
+    this.syncMentionsFooter();
+    refreshMentionPanels();
   }
 }

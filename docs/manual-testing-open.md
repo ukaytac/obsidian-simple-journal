@@ -317,6 +317,19 @@ either way, because nothing in the suite can settle them.
       have mounted into the hidden pane. **Write the answer down here.** It
       decides whether that whole class of bug is live in this codebase.
 
+- [ ] **Assumption, not a feature: does CodeMirror tolerate a foreign child of
+      the sizer?** In live preview, with the footer showing, type into the note
+      — several paragraphs, enough to make CodeMirror re-measure and rebuild.
+      The footer must still be there afterwards, still last, still scrolling
+      with the text. Then scroll a long note (a few hundred lines) to the
+      bottom and back: the scroll position must not jump and the note must not
+      end in a band of dead space. `sync()` only re-checks the footer's parent
+      on workspace events, so a removal CodeMirror does on its own is invisible
+      until the next tab switch — and CM measures heights for its own
+      viewport, which the appended div is not accounted for in. If either half
+      fails, the fix direction is reading view only for the footer, and the
+      code block for live preview.
+
 - [ ] **The footer is absent on journal entries.** Open an entry as an ordinary
       note. No panel — its own timeline already shows this, and a panel there
       invites the recursion the code block has to guard against.

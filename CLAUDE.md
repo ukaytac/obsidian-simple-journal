@@ -578,6 +578,13 @@ at the end of it. The calendar can skip the filter because its reaction is two
 binary searches. This one re-reads and re-renders every visible entry, so typing
 in the host note would otherwise rebuild the whole panel several times a second.
 
+Neither subscription hears a rebuild of the entry index, which emits nothing to
+`onChange` by design. The renderer therefore also keeps a registry of the panels
+currently alive and exposes one repaint entry point over it, which
+`refreshJournal` calls after a rebuild — because two of the three shells hold
+panels no leaf lookup can reach, and staying current is this file's job, not
+theirs.
+
 ## Rule 4 — Read-only, with a way back to the timeline
 
 Entry content goes through `MarkdownRenderer`, so wikilinks, embeds, inline tags
@@ -629,7 +636,11 @@ an unregistered type is a broken layout), and `Open journal mentions` works
 either way, because a command is how you reach a thing. Turning the setting off
 detaches the leaf rather than merely declining to re-place it — leaving a panel
 the user just switched off sitting there until the next restart is the same
-failure as ignoring the switch. Unlike the footer it does not exclude journal
+failure as ignoring the switch. **That transition is the only thing that may
+close a mentions leaf**: not a plugin load, not a change to the other setting. A
+panel opened by the command and then closed by an unrelated event is the
+calendar's "permanently locks the user out" failure again, in a surface where
+the command is the documented way in. Unlike the footer it does not exclude journal
 entries: the user opened this panel deliberately, and it costs nothing to answer
 honestly for whatever file is active.
 

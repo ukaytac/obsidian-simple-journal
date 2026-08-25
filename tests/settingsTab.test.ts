@@ -25,7 +25,7 @@ interface FakePlugin {
   };
   saveSettings: () => Promise<void>;
   refreshJournal: () => void;
-  applyMentionSettings: () => void;
+  applyMentionSettings: (sidebarTurnedOff?: boolean) => void;
 }
 
 function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
@@ -221,6 +221,35 @@ describe("mentions toggles", () => {
     tab.setControlValue("mentionsSidebar", true);
     await vi.advanceTimersByTimeAsync(0);
     expect(applyMentionSettings).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Which toggle moved, and in which direction, is the only thing that may
+   * close a mentions leaf — see `applyMentionSettings` in `main.ts`. Turning
+   * the sidebar off is the sole case that says so; a panel the user opened
+   * with `Open journal mentions` must survive everything else.
+   */
+  it("reports the sidebar being turned off, and nothing else, as such", async () => {
+    const { tab, plugin, applyMentionSettings } = setup();
+
+    plugin.settings.mentionsSidebar = true;
+    tab.setControlValue("mentionsSidebar", false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(true);
+
+    tab.setControlValue("mentionsSidebar", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
+
+    // The footer toggle, in either direction, has no business touching the
+    // sidebar at all.
+    tab.setControlValue("showMentionsUnderNotes", false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
+
+    tab.setControlValue("showMentionsUnderNotes", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
   });
 
   it("coerces a non-boolean control value rather than storing it", () => {
