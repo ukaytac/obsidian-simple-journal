@@ -223,6 +223,106 @@ regression-guarded.
       phone-width sidebar. Confirm they are comfortable, and that tapping an
       empty day does nothing at all rather than flashing.
 
+## Mentions — needs a running Obsidian, and one item needs a phone
+
+Nothing below has been run in a real Obsidian. The unit suite covers the parts
+that are honestly coverable: `mentionQuery.test.ts` exercises the query against
+hand-written `resolvedLinks` fixtures, and `mentionsPanel/CodeBlock/View/Footer`
+tests exercise the shells against jsdom and the fake app in `obsidian-mock.ts`.
+What none of them can do is tell you what real Obsidian actually puts in
+`resolvedLinks`, or where it actually puts a note's content in the DOM — and
+those two facts are the whole foundation this feature stands on.
+
+Set up once, and reuse for everything below: a note `People/Ekin Arslan Aytaç.md`,
+plus four journal entries linking to it in four different ways (body link,
+embed, alias, frontmatter), and one note nothing links to.
+
+- [ ] **1. A frontmatter link counts.** Give an entry frontmatter containing
+      `people: "[[Ekin Arslan Aytaç]]"` and **nothing in its body** that
+      mentions her. Open Ekin's note with a mentions panel on it. That entry
+      must be listed.
+
+      This is the single assumption `mentionQuery.ts` makes about Obsidian that
+      no unit test can prove. The tests hand `findMentions` a `resolvedLinks`
+      map directly, so they pin what the plugin does *with* the map; whether
+      Obsidian puts frontmatter links *into* it is Obsidian's behaviour, and
+      only Obsidian can answer. (`CachedMetadata.frontmatterLinks` exists
+      separately since 1.4.0, which is precisely why this is a real question
+      and not a pedantic one.)
+
+      **If it fails**, the documented fallback is an explicit per-entry scan of
+      `cache.links` + `cache.embeds` + `cache.frontmatterLinks`, each resolved
+      through `metadataCache.getFirstLinkpathDest`, replacing the single
+      `resolvedLinks` lookup. That is a change to one function in one module,
+      and it must stay source-blind: the three arrays are merged, and nothing
+      downstream learns which one a mention came from.
+- [ ] **2. Embeds and aliases count.** An entry whose only reference is
+      `![[Ekin Arslan Aytaç]]`, and another whose only reference is
+      `[[Ekin Arslan Aytaç|Ekin]]`, both appear. Same reasoning as above: alias
+      and shortest-path resolution happen inside Obsidian before the plugin
+      looks, so a fixture cannot vouch for either.
+- [ ] **3. The footer appears in both view modes, once, at the end of the
+      content.** With **Show mentions under notes** on, open Ekin's note and
+      switch between live preview and reading view several times, in both
+      directions, and with a note long enough to scroll. Each time: exactly one
+      panel, sitting after the last paragraph, scrolling with the text rather
+      than pinned to the bottom of the pane. Two panels, or none after a
+      switch, or one stuck to the pane bottom, are three different failures —
+      say which.
+
+      Worth recording explicitly, because it is the open question behind the
+      code: a real `MarkdownView` may keep **both** `.markdown-source-view` and
+      `.markdown-reading-view` in the DOM at the same time, with the inactive
+      one hidden rather than removed. `mentionsFooter.ts` is now written to be
+      correct either way — it asks `MarkdownView.getMode()` (public API) which
+      sizer to look for, instead of using one comma-separated selector that
+      would have taken whichever came first in document order. **Which of the
+      two is actually true has never been observed in a running Obsidian.**
+      This check is what would settle it: while switching modes, inspect the
+      view's `containerEl` in the developer tools and note whether both
+      wrappers are present. Write the answer down here either way — a later
+      reader should not have to re-derive it.
+- [ ] **4. No footer on a journal entry.** Open a journal entry as an ordinary
+      note (from the File Explorer, not from the timeline), with the setting on.
+      No panel appears under it, in either view mode.
+- [ ] **5. Turning either setting off removes its surface immediately.** With
+      both on and both visible, turn **Show mentions under notes** off: the
+      panel under the open note goes away without a reload and without closing
+      the note. Turn **Mentions sidebar** off: the sidebar leaf is detached, not
+      merely left in place until restart. Turn both back on, with the settings
+      tab still open: the footer comes back under the note behind it straight
+      away — `applyMentionSettings` re-syncs on the toggle itself, so it should
+      not need a tab switch to reappear — and the sidebar leaf is placed again
+      without stealing focus and without revealing a collapsed sidebar.
+- [ ] **6. A nested block does not recurse.** Write a ` ```simple-journal `
+      block **inside a journal entry**, and have that entry mention Ekin. Open
+      Ekin's note. The entry is listed, and where its own block would be there
+      is an inert "Journal mentions block (not expanded here)" line — not a
+      second panel, and not a hang. The guard is structural (`closest`), so also
+      confirm the opposite half: a normal block in an ordinary note, open at the
+      same time in another pane, still expands.
+- [ ] **7. Changing the Journal folder setting repaints an open sidebar panel.**
+      This was a real bug, fixed, and it is subtle enough to be worth confirming
+      by hand. With the mentions sidebar open on Ekin's note, change the journal
+      folder in settings to a folder holding different entries. The panel must
+      repaint against the new folder. `refreshJournal` calls
+      `JournalService.rebuild()`, which by design emits nothing to `onChange`,
+      and a `metadataCache` "resolve" only fires if some unrelated file happens
+      to re-resolve — so `MentionsView.refresh()` being driven explicitly from
+      `refreshJournal` is the only thing that can repaint a panel whose file has
+      not changed. Change the folder back and confirm it repaints again.
+- [ ] **8. Mobile — unverified.** In the same terms `CLAUDE.md`'s
+      `# Target Platforms` uses for the rest of the mobile code: none of this
+      has run on a device. The footer's sizer lookup in particular is a guess
+      about a DOM this repository has only ever seen on desktop — Obsidian
+      mobile may name or nest those layout elements differently, in which case
+      the footer correctly does nothing at all and the failure is invisible.
+      Check, on a phone: does the footer appear under a note in both view modes,
+      does it scroll with the text, and is the sidebar panel usable at
+      phone width? If the footer is simply absent, that is the silent no-op
+      working as designed, not a crash — but it is still a finding, and the
+      fix would be in `findContentFlowEl` and nowhere else.
+
 ## Case study: the composer that opened without a caret
 
 Worth reading before diagnosing anything in this view. It took six attempts,

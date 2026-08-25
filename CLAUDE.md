@@ -488,6 +488,207 @@ things in two different places.
 
 ---
 
+# Mentions
+
+A journal entry has no title, and that is a North Star principle. Inside the
+timeline it costs nothing: the timestamp identifies the entry and the entry's
+text is right underneath it.
+
+Outside the timeline it costs a great deal. Obsidian's backlinks pane lists a
+backlink by **filename**, and this plugin's filenames are bare timestamps like
+`2026-08-12-14-17-03`. So a person note linked from twenty entries shows twenty
+near-identical rows, and the one place in Obsidian where titlelessness takes
+something away from the user rather than saving them something is the one place
+they most need to read the entries: under the note the entries are *about*.
+
+That asymmetry is the entire justification for this feature, exactly as `# Tags`
+turns on the asymmetry between an inline tag (already visible) and a frontmatter
+tag (invisible in the timeline). Neither section is a licence to add surfaces in
+general. Each fixes one thing that is unreadable because of a decision made
+elsewhere in this document.
+
+What is shown is therefore not a list of links. It is the entries themselves,
+with their content, in the journal's own reverse-chronological shape.
+
+## Rule 1 — One query, source-blind
+
+A single module, `mentions/mentionQuery.ts`, answers "which entries mention this
+note?", exactly as `entryDate.ts` is the one place an entry's chronology is
+resolved and `entryTags.ts` the one place its tags are.
+
+A body `[[link]]`, an embed `![[link]]`, an aliased `[[link|text]]` and a
+frontmatter `people: "[[link]]"` are **one thing**. Obsidian folds all four into
+`metadataCache.resolvedLinks` before a plugin ever sees them, and its search,
+graph and backlinks pane treat them identically. So does this. Nothing
+downstream may ask which kind a reference was.
+
+Two things are deliberately **not** mentions:
+
+* An **unresolved** link. It points at no file, so there is no note for a panel
+  to be attached to in the first place.
+* A **plain-text** occurrence of the note's name. Full-text matching is semantic
+  search by another name, and that is a documented non-goal.
+
+An entry that links to the target five times appears once — `resolvedLinks`
+carries a count and the count is ignored — and an entry never lists itself.
+
+## Rule 2 — Only journal entries are searched, never the vault
+
+The question is never "what links to this note?" It is "which *journal entries*
+link to this note?" — a smaller question, and one the plugin can already answer
+cheaply, because `JournalService` holds a sorted index of every entry. The query
+is one object lookup per entry, and it returns them in the order the index gave
+them. It does not sort. A second sort would be a second place for the timeline's
+ordering rule to drift out of agreement with itself.
+
+`metadataCache.getFileBacklinks` is **refused**, and the refusal is the point.
+It appears in Obsidian's published developer docs but is absent from the
+installed type definitions, which makes it an undocumented internal by the
+standard `# Development Principles` sets. This plugin has exactly two internals
+exceptions, both argued for in writing and both carrying safety rules; a third
+one bought for convenience — when a fully public API does the job — would turn a
+pair of deliberate exceptions into a habit. It would also answer the wrong,
+vault-sized question at greater cost.
+
+## Rule 3 — One renderer, three shells
+
+`mentions/MentionsPanel.ts` is the single renderer. It owns the header and the
+count, the day grouping, the rendered entry bodies, the "Show more" control, and
+the two subscriptions that keep it current. It does not know why it was mounted.
+
+The three shells — the code block, the sidebar view, the note footer — each do
+one job: obtain a container and a target `TFile`, and delegate. They are not
+three features. A change to how mentions look or behave is a change to one file.
+
+They differ in exactly one option, and deliberately: whether an empty result
+prints a line or renders nothing at all. The code block prints one, because the
+user typed that block on purpose and silence there would read as a bug. The
+footer prints nothing, because the user did not ask for anything at the bottom
+of that note and an empty panel is pure noise.
+
+## Rule 4 — Read-only, with a way back to the timeline
+
+Entry content goes through `MarkdownRenderer`, so wikilinks, embeds, inline tags
+and formatting behave as they do anywhere else in Obsidian. Nothing in any of
+the three surfaces writes.
+
+Editing is what the timeline is for (see `# Editing`). Mounting live embedded
+editors inside an arbitrary note would put the most data-critical code in this
+plugin — the mount cap, the debounced save path, self-write suppression, the
+save tokens — behind a code-block lifecycle that nothing here controls, in a
+note this plugin does not own. The stated need is *seeing* the content. Clicking
+an entry's timestamp hands the user back to the timeline instead, through the
+same `goToDateInJournal` the calendar's day click uses.
+
+Read-only does not mean silent. An entry that cannot be read, or that a
+post-processor from some other plugin throws while rendering, says so in place.
+A failed read rendered as an empty body is indistinguishable from an entry the
+user genuinely left empty, and one bad entry must never hide the others — the
+same bar `entrySave.ts`'s "not saved" marker sets for a failed write.
+
+## Rule 5 — Three surfaces, gated differently and on purpose
+
+**The code block**, ` ```simple-journal `. The language string is effectively
+permanent once published, for the same reason the plugin id and the view types
+are: it lives inside users' notes. It understands one directive,
+`note: [[Some Note]]`; with no directive it targets the note it sits in.
+Anything else in the block is ignored rather than treated as an error, because a
+code block that renders an error message in the middle of someone's note is
+worse than one that renders the obvious default — and the obvious default is
+always available.
+
+**No setting gates the code block.** A toggle that turned the processor off
+would leave raw ` ```simple-journal ` fences showing in notes the user had
+already written, which reads as breakage rather than as an option being off. The
+block is opt-in per note already: the way to not have one is to not write one.
+
+Its recursion guard is structural, not a counter. The panel renders entry
+markdown, and an entry may itself contain a `simple-journal` block. The
+processor therefore asks whether *this* block's own ancestry runs through a
+rendered panel, and draws an inert placeholder if it does. A global depth flag
+would mistake an unrelated block rendering concurrently in another note for a
+nested one.
+
+**The sidebar**, view type `simple-journal-mentions` — fixed forever, because a
+saved workspace layout refers to it. It follows the active file. Its setting
+governs **automatic placement only**, mirroring the calendar's policy: the view
+type is always registered whatever the setting says (a saved layout referring to
+an unregistered type is a broken layout), and `Open journal mentions` works
+either way, because a command is how you reach a thing. Turning the setting off
+detaches the leaf rather than merely declining to re-place it — leaving a panel
+the user just switched off sitting there until the next restart is the same
+failure as ignoring the switch. Unlike the footer it does not exclude journal
+entries: the user opened this panel deliberately, and it costs nothing to answer
+honestly for whatever file is active.
+
+**The footer**, under an ordinary note, **off by default**. It is the surface
+that relies on Obsidian's internal layout DOM, so nobody may end up with it
+appearing under their notes without having asked. It never attaches to a journal
+entry — the entry's own timeline already shows this, and rendering entries
+inside an entry invites exactly the recursion the code block has to guard
+against.
+
+Both settings take effect immediately, without a reload. A setting whose only
+observable behaviour is at the next restart teaches the user not to trust it.
+
+## The second internals exception
+
+The footer is the second place in this codebase that touches Obsidian internals.
+The first is the embedded editor, and `# Editing` says of it, in terms, that it
+"does NOT license internal API usage anywhere else in the codebase". This is not
+that licence being spent. It is a separate exception, granted on its own merits,
+and it carries the same two rules.
+
+**Why no public API can do it.** Obsidian exposes nothing for appending content
+to the end of a note's *content flow* — the part that scrolls with the note's
+text. The public `view.contentEl` is the whole pane, so a panel appended there
+is pinned to the bottom of the window while the note scrolls underneath it. That
+is a docked strip, a different feature, and not the one this section exists for.
+The only element that sits after the last paragraph and scrolls with it is
+Obsidian's own layout element: `.markdown-preview-sizer` in reading view,
+`.cm-sizer` in source mode (which covers live preview and raw source alike —
+both are CodeMirror).
+
+**How narrow it is.** *Which* of the two to look for is decided by
+`MarkdownView.getMode()`, which is public, documented API. Only the two class
+names are internal, in exactly one `querySelector` call in the whole codebase.
+That is not merely tidier. A `MarkdownView`'s `containerEl` can hold both
+`.markdown-source-view` and `.markdown-reading-view` at once with the inactive
+one hidden rather than removed, so a single comma-separated selector would
+return whichever came first in document order — and in reading view that mounts
+the footer into a pane the user cannot see. Public API decides; document order
+does not.
+
+1. **Feature detection, with a silent no-op fallback.** The lookup is allowed to
+   return nothing, and every caller reads that as "this note gets no footer". No
+   throw, no notice, no console line. If a future Obsidian renames or
+   restructures those elements the surface simply stops appearing: no note is
+   altered, nothing is written, no journal data is at risk. Deliberately quieter
+   than the editor exception's one-time notice — that one guards the plugin's
+   core writing surface, where silence would leave the user wondering why
+   editing feels wrong; this one is an optional, off-by-default, read-only
+   convenience whose absence degrades nothing anybody depends on.
+2. **Every DOM assumption lives in `mentions/mentionsFooter.ts`.** Retreating
+   from this surface permanently, or moving to a future public API, must be a
+   one-file change.
+
+`tests/mentionsFooter.test.ts` pins rule 1: with neither layout element present,
+the footer does nothing, throws nothing, adds nothing to the view, and leaves
+the note byte-identical on disk. **That test must not be deleted.** It is the
+reason this exception may be kept at all — an exception whose safety rule is
+unenforced is not an exception, it is a hack with a paragraph attached.
+
+The footer does not assume anything else: not the sizer's internals, not its
+children, not its styling. It appends one plain div as a last child, never
+reorders or removes what Obsidian put there, and in live preview it is a sibling
+of `.cm-content` rather than inside it, so it is not part of the editable
+document and cannot reach the user's text. The one remaining assumption is that
+Obsidian will not silently discard a foreign child of the sizer — which is why
+each sync re-checks where the footer actually is rather than trusting its own
+bookkeeping, and simply mounts it again if it was removed or orphaned.
+
+---
+
 # Navigation
 
 Required commands:
@@ -503,6 +704,8 @@ Also implemented:
 ```text
 Open calendar
 Filter journal by tag
+Open journal mentions
+Insert journal mentions block
 ```
 
 Still later:
@@ -699,6 +902,14 @@ Initial settings:
 Journal folder
 ```
 
+Since added, both off by default and both covered by `# Mentions` Rule 5 —
+they gate optional surfaces rather than configure the journal itself:
+
+```text
+Show mentions under notes
+Mentions sidebar
+```
+
 Potential future settings:
 
 ```text
@@ -881,6 +1092,13 @@ src/
     JournalView.ts
     DayGroup.ts
     EntryEditor.ts
+
+  mentions/
+    mentionQuery.ts
+    MentionsPanel.ts
+    mentionsCodeBlock.ts
+    MentionsView.ts
+    mentionsFooter.ts
 
   services/
     journalService.ts
@@ -1151,8 +1369,8 @@ Anything beyond these seven requirements is secondary until they are reliable.
 
 The MVP above is met, and a few things have deliberately been built past it —
 the calendar, the capture URI, timeline anchoring, correcting an entry's time,
-and the tag scope. Each is documented in its own section as a product
-decision, not left as an undocumented feature.
+the tag scope, and the three mention surfaces. Each is documented in its own
+section as a product decision, not left as an undocumented feature.
 
 Still NOT to implement:
 
@@ -1177,6 +1395,18 @@ Still NOT to implement:
 * alternative sort modes
 * single-day filtering — clicking a calendar day anchors the timeline rather
   than filtering it; see the calendar section for why
+
+And, specific to `# Mentions`:
+
+* filtering a mentions panel by tag, or by date range
+* querying more than one note at a time — one panel answers for one note
+* a sort-order option for the panel; it is the journal's order, which is a
+  North Star principle and not a preference
+* editing an entry from inside a panel — see `# Mentions` Rule 4
+* a "new entry mentioning this note" button
+* counting plain-text occurrences of a note's name as mentions
+* replacing or modifying Obsidian's own backlinks pane. Mentions sit beside it
+  and answer a narrower question; the pane keeps working exactly as it did
 
 Mobile is no longer a non-goal, but it is still **not a separate UI**: see
 `# Target Platforms`. The same timeline and the same code paths, adapted, never
