@@ -109,10 +109,11 @@ type Sizer = "markdown-preview-sizer" | "cm-sizer";
  *
  * It is a subclass here rather than a settable field on the mock's
  * `MarkdownView` because `tests/obsidian-mock.ts`'s header forbids inventing
- * surface the real class lacks on a class standing in for it: under `tsc` that
- * mock resolves to the real Obsidian type, and a `mode` field would vanish.
- * `mode` on this local subclass is reached only through this local type, in
- * both resolutions, so the mismatch cannot arise.
+ * surface the real class lacks on a class standing in for it: `tsc` resolves
+ * `obsidian` to the real package, so such a field type-checks under vitest and
+ * then fails the moment anything reaches it through a real-typed reference.
+ * This class is the test's own, named nowhere in `obsidian`, so `mode` is
+ * reached through this same declaration under both resolutions.
  */
 class ModeableMarkdownView extends FakeMarkdownView {
   mode: MarkdownViewModeType = "preview";
@@ -126,7 +127,7 @@ class ModeableMarkdownView extends FakeMarkdownView {
  * Registers a markdown leaf holding a `MarkdownView` over `file`, in `mode`,
  * with `sizers` standing in for whichever layout elements the real reading or
  * live preview mode would have built — more than one when the case under test
- * is a view holding both panes at once.
+ * is a view holding both panes at once, and `[]` for a pane holding neither.
  */
 function addMarkdownLeaf(
   app: Setup["app"],

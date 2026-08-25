@@ -52,11 +52,11 @@ import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
  * ### Rule 2 — every DOM assumption lives in this file
  *
  * The two class names appear in exactly ONE `querySelector` call in the whole
- * codebase, in `findContentFlowEl` below — and they are now all that is left
- * of the assumption, the mode having moved to public API. Retreating from this
- * surface, or moving to a future public API, is therefore a one-file change — and
- * `tests/mentionsFooter.test.ts` pins the no-op behaviour so the retreat
- * cannot be discovered by a user instead of by the test suite.
+ * codebase, in `findContentFlowEl` below — and, the mode having moved to
+ * public API, they are all that is left of the assumption. Retreating from
+ * this surface, or moving to a future public API, is therefore a one-file
+ * change — and `tests/mentionsFooter.test.ts` pins the no-op behaviour so the
+ * retreat cannot be discovered by a user instead of by the test suite.
  *
  * ### What this does NOT assume
  *
