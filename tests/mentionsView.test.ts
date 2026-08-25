@@ -294,8 +294,7 @@ describe("MentionsView", () => {
 
   it("repaints an already-shown file when refresh() is called after a rebuild", async () => {
     const { app, service, view, seed } = setup({ a: 2 });
-    const noteA = fileAt(app, NOTE_A);
-    app.workspace.activeFile = noteA;
+    app.workspace.activeFile = fileAt(app, NOTE_A);
     await view.onOpen();
     await settle();
     expect(shownCount(view)).toBe("2");
