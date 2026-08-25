@@ -714,6 +714,17 @@ git commit -m "feat(mentions): render a read-only mentions panel"
   margin-top: var(--size-4-8);
 }
 
+/* The panel claims its container's class before it knows whether it has
+   anything to show, and the automatic footer mounts on every eligible note
+   whether or not one exists. Without this, every note with no mentions would
+   carry a class-bearing, childless div at the end of its content — and the
+   `margin-top` above would render as an unexplained gap. `:empty` matches
+   exactly that case and nothing else: an empty-state message is a child, so a
+   panel showing one still lays out normally. */
+.journal-mentions:empty {
+  display: none;
+}
+
 .journal-mentions-header {
   display: flex;
   align-items: center;

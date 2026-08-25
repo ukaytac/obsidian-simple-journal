@@ -862,3 +862,119 @@
 .journal-entry-header .journal-entry-tag:focus-visible {
   box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }
+
+/* ── Mentions ─────────────────────────────────────────────────────────────
+   The panel repeats the timeline's visual language (`.journal-day-header` is
+   literally reused) so a reader does not learn a second interface. What is
+   NOT reused is anything that assumes a view container: this panel lives
+   inside an arbitrary note, sometimes inside the note's own text column, so
+   it sets no max-width and no page padding of its own. */
+
+.journal-mentions {
+  margin-top: var(--size-4-8);
+}
+
+/* The panel claims its container's class before it knows whether it has
+   anything to show, and the automatic footer mounts on every eligible note
+   whether or not one exists. Without this, every note with no mentions would
+   carry a class-bearing, childless div at the end of its content — and the
+   `margin-top` above would render as an unexplained gap. `:empty` matches
+   exactly that case and nothing else: an empty-state message is a child, so a
+   panel showing one still lays out normally. */
+.journal-mentions:empty {
+  display: none;
+}
+
+.journal-mentions-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: var(--size-4-2);
+}
+
+/* A hairline, not a border box: this is a writing surface, and the panel has
+   to read as a continuation of the note rather than a card stuck to it. */
+.journal-mentions-header::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background-color: var(--background-modifier-border);
+}
+
+.journal-mentions-count {
+  font-variant-numeric: tabular-nums;
+  order: 1;
+}
+
+.journal-mentions-entry {
+  margin-bottom: var(--size-4-4);
+}
+
+/* Same reset as `.journal-entry-header .journal-entry-time` above: Obsidian's
+   base button styling would otherwise render a filled chip where a quiet
+   timestamp belongs, and `.mobile-tap` would flash that chip back for the
+   duration of every touch. Two classes so a theme's later `button` rule does
+   not win on load order. */
+.journal-mentions-entry .journal-mentions-time,
+.journal-mentions-entry .journal-mentions-time:hover,
+.journal-mentions-entry .journal-mentions-time.mobile-tap {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+  height: auto;
+  cursor: pointer;
+}
+
+.journal-mentions-entry .journal-mentions-time:hover,
+.journal-mentions-entry .journal-mentions-time:focus-visible {
+  color: var(--text-normal);
+}
+
+/* The rendered entry brings its own first/last block margins, which would
+   otherwise double up with the row spacing above. */
+.journal-mentions-body > :first-child {
+  margin-top: 0;
+}
+
+.journal-mentions-body > :last-child {
+  margin-bottom: 0;
+}
+
+.journal-mentions-empty {
+  font-size: var(--font-ui-small);
+  color: var(--text-faint);
+}
+
+.journal-mentions-more,
+.journal-mentions-more:hover {
+  display: block;
+  margin: var(--size-4-2) 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.journal-mentions-more:hover,
+.journal-mentions-more:focus-visible {
+  color: var(--text-normal);
+}
+
+/* The recursion guard's placeholder: a `simple-journal` block that ended up
+   inside a mentions panel. Inert by design — see `mentionsCodeBlock.ts`. */
+.journal-mentions-nested {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-style: italic;
+}

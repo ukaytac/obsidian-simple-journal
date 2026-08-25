@@ -388,7 +388,19 @@ export class FakeMetadataCache extends FakeEvents {
    */
   resolvedLinks: Record<string, Record<string, number>> = {};
 
-  getFirstLinkpathDest(linkpath: string, _sourcePath: string): TFile | null {
+  /**
+   * NOT MODELLED — always null, deliberately, and that is not "no match
+   * found". No test resolves a linkpath: `findMentions` needs only
+   * `resolvedLinks`, and the one caller that does resolve one
+   * (`mentionsCodeBlock`'s `note:` directive) has its parser tested directly
+   * instead, because resolution itself is Obsidian's job, not this plugin's.
+   *
+   * This exists only so modules calling it type-check against the mock. A
+   * later test that genuinely needs resolution must make this map
+   * linkpath → TFile the way `resolvedLinks` above is seeded — silently
+   * accepting "nothing ever resolves" would make such a test prove nothing.
+   */
+  getFirstLinkpathDest(_linkpath: string, _sourcePath: string): TFile | null {
     return null;
   }
 
@@ -761,12 +773,28 @@ export class MarkdownRenderer {
   }
 }
 
+/**
+ * Stand-in for the class `mentionsCodeBlock.ts` subclasses to hand its panel's
+ * lifecycle to Obsidian. Shape matches the real one exactly (a single
+ * `containerEl` constructor parameter, `Component` as the base), so nothing
+ * here is invented surface — see this file's header policy.
+ */
 export class MarkdownRenderChild extends Component {
   constructor(public containerEl: HTMLElement) {
     super();
   }
 }
 
+/**
+ * Stand-in for the class `mentionsFooter.ts` narrows leaf views with. It
+ * exists so that module can be imported and its `instanceof` check can
+ * compile; no test constructs one.
+ *
+ * SHORTCUT, documented so the next reader need not verify it: the real
+ * `MarkdownView` reaches `ItemView` through `FileView` → `EditableFileView` →
+ * `TextFileView`, and inherits `file: TFile | null` from `FileView`. Skipping
+ * those three is safe because nothing under test touches anything they add.
+ */
 export class MarkdownView extends ItemView {
   file: TFile | null = null;
 }
