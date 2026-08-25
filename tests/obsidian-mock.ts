@@ -214,6 +214,10 @@ class FakeEvents {
   trigger(name: string, ...args: any[]): void {
     for (const callback of this.listeners.get(name) ?? []) callback(...args);
   }
+
+  offref(ref: FakeEventRef): void {
+    ref.unregister();
+  }
 }
 
 /**
@@ -376,6 +380,17 @@ export class FakeMetadataCache extends FakeEvents {
   frontmatter = new Map<string, Record<string, unknown>>();
   /** Inline tags per path, WITHOUT the leading `#`. */
   inlineTags = new Map<string, string[]>();
+  /**
+   * Source path → destination path → link count, exactly as Obsidian's own
+   * `resolvedLinks`. Obsidian folds body links, embeds, aliased links and
+   * frontmatter links into this one map before a plugin ever sees them, so a
+   * test seeds it directly rather than trying to model the four kinds.
+   */
+  resolvedLinks: Record<string, Record<string, number>> = {};
+
+  getFirstLinkpathDest(linkpath: string, _sourcePath: string): TFile | null {
+    return null;
+  }
 
   getFileCache(file: TFile): FakeFileCache | null {
     const fm = this.frontmatter.get(file.path);
@@ -744,6 +759,16 @@ export class MarkdownRenderer {
   ): Promise<void> {
     el.textContent = markdown;
   }
+}
+
+export class MarkdownRenderChild extends Component {
+  constructor(public containerEl: HTMLElement) {
+    super();
+  }
+}
+
+export class MarkdownView extends ItemView {
+  file: TFile | null = null;
 }
 
 /** `Platform.isMobile` is read once, at `JournalView`'s module load, so
