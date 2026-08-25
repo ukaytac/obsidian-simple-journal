@@ -441,10 +441,13 @@ export class EntryRepository {
    * reads back as `""`, not `"\n"`.
    *
    * Uses `vault.read`, NOT `vault.cachedRead`, deliberately: every caller of
-   * this reads in order to write back (the editor mount path, the composer's
-   * "is this empty?" check), and Obsidian's cached read may hand back a
-   * value that predates a write made outside the plugin — which would then
-   * be echoed back to disk, silently reverting it. Display-only callers want
+   * this is on the timeline's own path, where the value read becomes an
+   * editor's buffer (`mountLifecycle`, `changeApplication.refreshEntryContent`)
+   * or the static rendering of a row that can be remounted into one
+   * (`JournalView.renderStatic`) — and in either case the baseline the next
+   * write is compared against. A cached read that predated a change made
+   * outside the plugin would therefore be echoed back to disk, silently
+   * reverting it. A caller that genuinely only displays wants
    * `readBodyCached` below.
    */
   async readBody(file: TFile): Promise<string> {
