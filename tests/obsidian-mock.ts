@@ -941,10 +941,13 @@ export class MarkdownRenderChild extends Component {
   }
 }
 
+/** Mirrors the real module's exported alias for `MarkdownView.getMode()`. */
+export type MarkdownViewModeType = "source" | "preview";
+
 /**
- * Stand-in for the class `mentionsFooter.ts` narrows leaf views with. It
- * exists so that module can be imported and its `instanceof` check can
- * compile; no test constructs one.
+ * Stand-in for the class `mentionsFooter.ts` narrows leaf views with, and
+ * which `tests/mentionsFooter.test.ts` constructs to stand in for a note's
+ * pane.
  *
  * SHORTCUT, documented so the next reader need not verify it: the real
  * `MarkdownView` reaches `ItemView` through `FileView` → `EditableFileView` →
@@ -953,6 +956,16 @@ export class MarkdownRenderChild extends Component {
  */
 export class MarkdownView extends ItemView {
   file: TFile | null = null;
+
+  /**
+   * Real, documented Obsidian API, so no header exception applies — but it is
+   * deliberately a fixed return rather than a settable `mode` field. A field
+   * the real class does not have is exactly the mismatch this file's header
+   * forbids; a test that needs the other mode subclasses this instead.
+   */
+  getMode(): MarkdownViewModeType {
+    return "preview";
+  }
 }
 
 /** `Platform.isMobile` is read once, at `JournalView`'s module load, so

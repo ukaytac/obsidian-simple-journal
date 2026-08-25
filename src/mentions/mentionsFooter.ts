@@ -1,4 +1,4 @@
-import { MarkdownView } from "obsidian";
+import { MarkdownView, type MarkdownViewModeType } from "obsidian";
 import type JournalEntriesPlugin from "../main";
 import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
 
@@ -20,7 +20,19 @@ import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
  * underneath it. That is a different feature (a docked strip), and not the
  * one asked for. The only way to sit after the last paragraph, scrolling with
  * it, is Obsidian's own layout element: `.markdown-preview-sizer` in reading
- * view, `.cm-sizer` in live preview.
+ * view, `.cm-sizer` in source mode (which covers live preview and raw source
+ * alike — both are CodeMirror).
+ *
+ * ### How narrow the exception is
+ *
+ * *Which* of the two to look for is decided by `MarkdownView.getMode()`, which
+ * is public, documented API. Only the two class names are internal. That is
+ * not merely tidier: a `MarkdownView`'s `containerEl` can hold both
+ * `.markdown-source-view` and `.markdown-reading-view` at once, the inactive
+ * one hidden rather than removed, so one comma-separated selector would return
+ * whichever came first in document order — and in reading view that mounts the
+ * footer into a pane the user cannot see. Public API decides; document order
+ * does not.
  *
  * ### Rule 1 — feature detection, with a SILENT no-op fallback
  *
@@ -40,8 +52,9 @@ import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
  * ### Rule 2 — every DOM assumption lives in this file
  *
  * The two class names appear in exactly ONE `querySelector` call in the whole
- * codebase, in `findContentFlowEl` below. Retreating from this surface, or
- * moving to a future public API, is therefore a one-file change — and
+ * codebase, in `findContentFlowEl` below — and they are now all that is left
+ * of the assumption, the mode having moved to public API. Retreating from this
+ * surface, or moving to a future public API, is therefore a one-file change — and
  * `tests/mentionsFooter.test.ts` pins the no-op behaviour so the retreat
  * cannot be discovered by a user instead of by the test suite.
  *
@@ -65,8 +78,13 @@ import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
  * Exported only so `tests/mentionsFooter.test.ts` can pin the null case —
  * production code reaches it through `sync()`.
  */
-export function findContentFlowEl(containerEl: HTMLElement): HTMLElement | null {
-  return containerEl.querySelector<HTMLElement>(".markdown-preview-sizer, .cm-sizer");
+export function findContentFlowEl(
+  containerEl: HTMLElement,
+  mode: MarkdownViewModeType,
+): HTMLElement | null {
+  return containerEl.querySelector<HTMLElement>(
+    mode === "preview" ? ".markdown-preview-sizer" : ".cm-sizer",
+  );
 }
 
 /** The footer's own container class; `MentionsPanel` adds `.journal-mentions` to it. */
@@ -122,13 +140,14 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
         continue;
       }
 
-      const flowEl = findContentFlowEl(view.containerEl);
+      const flowEl = findContentFlowEl(view.containerEl, view.getMode());
       const existing = mounted.get(view);
 
       // The parent check is not redundant with the path check. Switching
-      // between reading view and live preview replaces the sizer wholesale
-      // while the file stays put, so a path-only guard would short-circuit
-      // and leave the note with no footer until it was closed and reopened.
+      // between reading view and live preview moves the note's content flow
+      // to the other mode's sizer while the file stays put, so a path-only
+      // guard would short-circuit and leave the note's visible pane with no
+      // footer until it was closed and reopened.
       if (existing && existing.path === file.path && existing.container.parentElement === flowEl) {
         continue;
       }

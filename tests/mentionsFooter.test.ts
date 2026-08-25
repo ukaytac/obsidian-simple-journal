@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { App } from "obsidian";
+import type { App, MarkdownViewModeType } from "obsidian";
 import {
   createFakeApp,
   installDomHelpers,
@@ -102,25 +102,48 @@ function fileAt(app: Setup["app"], path: string): FakeTFile {
   return app.vault.files.get(path) as FakeTFile;
 }
 
-type Sizer = "markdown-preview-sizer" | "cm-sizer" | "none";
+type Sizer = "markdown-preview-sizer" | "cm-sizer";
 
 /**
- * Registers a markdown leaf holding a `MarkdownView` over `file`, with
- * `sizer` standing in for whichever layout element the real reading or live
- * preview mode would have built.
+ * A `MarkdownView` whose mode the test can move.
+ *
+ * It is a subclass here rather than a settable field on the mock's
+ * `MarkdownView` because `tests/obsidian-mock.ts`'s header forbids inventing
+ * surface the real class lacks on a class standing in for it: under `tsc` that
+ * mock resolves to the real Obsidian type, and a `mode` field would vanish.
+ * `mode` on this local subclass is reached only through this local type, in
+ * both resolutions, so the mismatch cannot arise.
+ */
+class ModeableMarkdownView extends FakeMarkdownView {
+  mode: MarkdownViewModeType = "preview";
+
+  getMode(): MarkdownViewModeType {
+    return this.mode;
+  }
+}
+
+/**
+ * Registers a markdown leaf holding a `MarkdownView` over `file`, in `mode`,
+ * with `sizers` standing in for whichever layout elements the real reading or
+ * live preview mode would have built — more than one when the case under test
+ * is a view holding both panes at once.
  */
 function addMarkdownLeaf(
   app: Setup["app"],
   file: FakeTFile | null,
-  sizer: Sizer = "markdown-preview-sizer",
-): { leaf: FakeWorkspaceLeaf; view: FakeMarkdownView } {
+  sizers: Sizer | Sizer[] = "markdown-preview-sizer",
+  mode: MarkdownViewModeType = "preview",
+): { leaf: FakeWorkspaceLeaf; view: ModeableMarkdownView } {
   const leaf = app.workspace.addLeaf("markdown");
-  const view = new FakeMarkdownView(leaf);
+  const view = new ModeableMarkdownView(leaf);
   view.file = file;
+  view.mode = mode;
   // Built inside `contentEl`, one level below the `containerEl` the footer
   // actually searches, so the query has to descend exactly as it does in real
   // Obsidian rather than matching a top-level child.
-  if (sizer !== "none") view.contentEl.createDiv({ cls: sizer });
+  for (const cls of Array.isArray(sizers) ? sizers : [sizers]) {
+    view.contentEl.createDiv({ cls });
+  }
   leaf.view = view;
   return { leaf, view };
 }
@@ -154,12 +177,12 @@ describe("findContentFlowEl", () => {
   it("does nothing and throws nothing when neither layout element exists", async () => {
     const { app, footer, livePanels } = setup({ a: 2 });
     const before = app.vault.contents.get(NOTE_A);
-    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "none");
+    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
 
     expect(() => footer.sync()).not.toThrow();
     await settle();
 
-    expect(findContentFlowEl(view.containerEl)).toBeNull();
+    expect(findContentFlowEl(view.containerEl, view.getMode())).toBeNull();
     expect(footerEls()).toHaveLength(0);
     expect(livePanels()).toBe(0);
     // Nothing was added to the view at all, not merely nothing recognisable.
@@ -170,16 +193,22 @@ describe("findContentFlowEl", () => {
     expect(app.vault.contents.get(NOTE_A)).toBe(before);
   });
 
-  it("finds the reading-view sizer", () => {
+  it("finds the reading-view sizer in preview mode, and only then", () => {
     const container = document.createElement("div");
     const sizer = container.createDiv({ cls: "markdown-preview-sizer" });
-    expect(findContentFlowEl(container)).toBe(sizer);
+    expect(findContentFlowEl(container, "preview")).toBe(sizer);
+    // A reading-view sizer is not source mode's content flow, however alone
+    // it happens to be in the pane — mounting into it would be mounting into
+    // the pane the user is not looking at.
+    expect(findContentFlowEl(container, "source")).toBeNull();
   });
 
-  it("finds the live-preview sizer", () => {
+  it("finds the CodeMirror sizer in source mode, and only then", () => {
     const container = document.createElement("div");
     const sizer = container.createDiv({ cls: "cm-sizer" });
-    expect(findContentFlowEl(container)).toBe(sizer);
+    // "source" is both live preview and raw source; both are CodeMirror.
+    expect(findContentFlowEl(container, "source")).toBe(sizer);
+    expect(findContentFlowEl(container, "preview")).toBeNull();
   });
 });
 
@@ -193,18 +222,63 @@ describe("createMentionsFooter", () => {
 
     const el = footerIn(view);
     expect(el).not.toBeNull();
-    expect(el?.parentElement).toBe(findContentFlowEl(view.containerEl));
+    expect(el?.parentElement).toBe(findContentFlowEl(view.containerEl, "preview"));
     expect(el?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
   });
 
   it("mounts a panel into the live-preview sizer", async () => {
     const { app, footer } = setup({ a: 2 });
-    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "cm-sizer");
+    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "cm-sizer", "source");
 
     footer.sync();
     await settle();
 
-    expect(footerIn(view)?.parentElement).toBe(findContentFlowEl(view.containerEl));
+    expect(footerIn(view)?.parentElement).toBe(findContentFlowEl(view.containerEl, "source"));
+  });
+
+  /**
+   * A `MarkdownView` can hold `.markdown-source-view` and
+   * `.markdown-reading-view` at the same time, the inactive one hidden rather
+   * than removed — so both sizers can be in the DOM at once, with `.cm-sizer`
+   * first in document order. A single comma-separated selector would then
+   * hand back whichever came first, and in reading view the footer would be
+   * mounted into a hidden pane where the user never sees it. The view's own
+   * mode decides, not document order.
+   */
+  it("mounts into the reading-view sizer in preview mode though a cm-sizer precedes it", async () => {
+    const { app, footer } = setup({ a: 2 });
+    const { view } = addMarkdownLeaf(
+      app,
+      fileAt(app, NOTE_A),
+      ["cm-sizer", "markdown-preview-sizer"],
+      "preview",
+    );
+
+    footer.sync();
+    await settle();
+
+    const el = footerIn(view);
+    expect(el).not.toBeNull();
+    expect(el?.parentElement).toBe(view.contentEl.querySelector(".markdown-preview-sizer"));
+    expect(el?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+  });
+
+  it("mounts into the live-preview sizer in source mode though both sizers exist", async () => {
+    const { app, footer } = setup({ a: 2 });
+    const { view } = addMarkdownLeaf(
+      app,
+      fileAt(app, NOTE_A),
+      ["cm-sizer", "markdown-preview-sizer"],
+      "source",
+    );
+
+    footer.sync();
+    await settle();
+
+    const el = footerIn(view);
+    expect(el).not.toBeNull();
+    expect(el?.parentElement).toBe(view.contentEl.querySelector(".cm-sizer"));
+    expect(el?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
   });
 
   it("mounts nothing while the setting is off", async () => {
@@ -336,15 +410,44 @@ describe("createMentionsFooter", () => {
     await settle();
     expect(footerIn(view)).not.toBeNull();
 
-    // What switching between reading view and live preview does: the old
-    // layout element goes away wholesale, taking the footer's container with
-    // it, and a different one takes its place.
+    // One shape a mode switch can take: the old layout element goes away
+    // wholesale, taking the footer's container with it, and the other mode's
+    // takes its place.
     view.contentEl.empty();
     view.contentEl.createDiv({ cls: "cm-sizer" });
+    view.mode = "source";
     footer.sync();
     await settle();
 
-    expect(footerIn(view)?.parentElement).toBe(findContentFlowEl(view.containerEl));
+    expect(footerIn(view)?.parentElement).toBe(findContentFlowEl(view.containerEl, "source"));
+    expect(footerEls()).toHaveLength(1);
+    expect(livePanels()).toBe(1);
+  });
+
+  it("moves the footer to the other sizer on a mode switch that keeps both panes", async () => {
+    const { app, footer, livePanels } = setup({ a: 2 });
+    // The other shape: nothing is removed, the inactive pane is merely
+    // hidden, so the footer has to be taken out of a sizer that is still
+    // there rather than being orphaned by its removal.
+    const { view } = addMarkdownLeaf(
+      app,
+      fileAt(app, NOTE_A),
+      ["cm-sizer", "markdown-preview-sizer"],
+      "preview",
+    );
+    const preview = view.contentEl.querySelector<HTMLElement>(".markdown-preview-sizer");
+    const source = view.contentEl.querySelector<HTMLElement>(".cm-sizer");
+
+    footer.sync();
+    await settle();
+    expect(footerIn(view)?.parentElement).toBe(preview);
+
+    view.mode = "source";
+    footer.sync();
+    await settle();
+
+    expect(footerIn(view)?.parentElement).toBe(source);
+    expect(preview?.querySelector(".journal-mentions-footer")).toBeNull();
     expect(footerEls()).toHaveLength(1);
     expect(livePanels()).toBe(1);
   });
@@ -371,7 +474,7 @@ describe("createMentionsFooter", () => {
   it("destroy() removes every footer and releases every panel", async () => {
     const { app, footer, livePanels } = setup({ a: 2 });
     const { view: first } = addMarkdownLeaf(app, fileAt(app, NOTE_A));
-    const { view: second } = addMarkdownLeaf(app, fileAt(app, NOTE_B), "cm-sizer");
+    const { view: second } = addMarkdownLeaf(app, fileAt(app, NOTE_B), "cm-sizer", "source");
 
     footer.sync();
     await settle();
