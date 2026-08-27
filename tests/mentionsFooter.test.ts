@@ -16,14 +16,59 @@ import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
 
+/**
+ * jsdom's own `MutationObserver`, wrapped so a test can count the ones still
+ * connected.
+ *
+ * A wrapper rather than a fake: the footer waits for Obsidian to build a
+ * pane's sizer by observing for it, so the regression test below needs a real
+ * DOM mutation to really wake it. Only the bookkeeping is added — every
+ * observer here is the genuine article, delivering asynchronously.
+ *
+ * Nothing in `src/` builds a `MutationObserver` except `mentionsFooter.ts`, so
+ * the count is unambiguous.
+ */
+const RealMutationObserver = window.MutationObserver;
+
+let observersLive = 0;
+
+class CountingMutationObserver extends RealMutationObserver {
+  /** So a repeated `observe()` on one instance is still one live observer. */
+  private counted = false;
+
+  observe(target: Node, options?: MutationObserverInit): void {
+    if (!this.counted) {
+      this.counted = true;
+      observersLive++;
+    }
+    super.observe(target, options);
+  }
+
+  disconnect(): void {
+    if (this.counted) {
+      this.counted = false;
+      observersLive--;
+    }
+    super.disconnect();
+  }
+}
+
+/** How many observers the footer has started and not disconnected. */
+function liveObservers(): number {
+  return observersLive;
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
+  observersLive = 0;
+  window.MutationObserver = CountingMutationObserver;
 });
 
 afterEach(() => {
   // The registry a collapse toggle repaints through is module-level, so a
   // panel one test leaves mounted is still in it when the next one clicks.
   destroyMentionPanels();
+  window.MutationObserver = RealMutationObserver;
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
@@ -475,6 +520,171 @@ describe("createMentionsFooter", () => {
     expect(preview?.querySelector(".journal-mentions-footer")).toBeNull();
     expect(footerEls()).toHaveLength(1);
     expect(livePanels()).toBe(1);
+  });
+
+  /**
+   * The pane Obsidian has not built yet.
+   *
+   * Switching into reading view fires `layout-change` *before*
+   * `.markdown-preview-sizer` exists, so the sync it drives finds nothing and
+   * — per rule 1 — mounts nothing; before the footer watched for the element,
+   * nothing re-triggered and the note stayed bare until some unrelated
+   * workspace event happened to fire. Found in a real vault, not by this
+   * suite: every other test here builds the sizer before it calls `sync()`.
+   */
+  describe("a content flow that arrives after the sync", () => {
+    /**
+     * A mutation is delivered on its own microtask and the sync it wakes then
+     * renders, so the mount lands a turn after the DOM changed.
+     */
+    async function settleAfterMutation(): Promise<void> {
+      await settle();
+      await settle();
+    }
+
+    it("mounts the footer when the sizer appears, with no further workspace event", async () => {
+      const { app, footer } = setup({ a: 2 });
+      // The first switch into reading view: the event that brings us here has
+      // already fired, and the pane it announced is not built.
+      const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(footerIn(view)).toBeNull();
+
+      // Obsidian builds the pane. Nothing else happens: no `layout-change`,
+      // no `active-leaf-change`, no `file-open`, no second `sync()`.
+      const sizer = view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+
+      expect(footerIn(view)?.parentElement).toBe(sizer);
+      expect(footerIn(view)?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    });
+
+    it("stops watching once the footer has mounted", async () => {
+      const { app, footer } = setup({ a: 2 });
+      const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(1);
+
+      view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+
+      expect(footerIn(view)).not.toBeNull();
+      // Otherwise the footer's own writes into the sizer would keep waking an
+      // observer that has nothing left to wait for.
+      expect(liveObservers()).toBe(0);
+    });
+
+    it("watches a view once however many times it is synced", async () => {
+      const { app, footer } = setup({ a: 2 });
+      addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      // `sync()` runs on three frequently-firing workspace events, so an
+      // observer per call would be a real leak, not a tidiness point.
+      footer.sync();
+      footer.sync();
+      footer.sync();
+      await settle();
+
+      expect(liveObservers()).toBe(1);
+    });
+
+    it("does not watch a view that must never have a footer", async () => {
+      const { app, footer } = setup({ a: 2 });
+      const { view: entry } = addMarkdownLeaf(app, fileAt(app, ENTRY), []);
+      const { view: empty } = addMarkdownLeaf(app, null, []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(0);
+
+      // And the sizer arriving changes nothing, which is the half a bare
+      // observer count cannot prove.
+      entry.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      empty.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+
+      expect(footerEls()).toHaveLength(0);
+    });
+
+    it("stops watching a view whose note turned into one it must not footer", async () => {
+      const { app, footer } = setup({ a: 2 });
+      const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(1);
+
+      // The pane was still building when the user navigated it to a journal
+      // entry. What it eventually builds is no longer anything to wait for.
+      view.file = fileAt(app, ENTRY);
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(0);
+
+      view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+      expect(footerEls()).toHaveLength(0);
+    });
+
+    it("stops watching a view that disappeared before its sizer arrived", async () => {
+      const { app, footer } = setup({ a: 2 });
+      const { leaf, view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(1);
+
+      leaf.detach();
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(0);
+
+      // A closed tab whose DOM is still reachable must not be written into.
+      view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+      expect(footerEls()).toHaveLength(0);
+    });
+
+    it("stops watching when the setting is turned off", async () => {
+      const { app, plugin, footer } = setup({ a: 2 });
+      const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(1);
+
+      plugin.settings.showMentionsUnderNotes = false;
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(0);
+
+      // Off must mean gone, including gone from anything still pending.
+      view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+      expect(footerEls()).toHaveLength(0);
+    });
+
+    it("destroy() stops watching too", async () => {
+      const { app, footer } = setup({ a: 2 });
+      const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), []);
+
+      footer.sync();
+      await settle();
+      expect(liveObservers()).toBe(1);
+
+      footer.destroy();
+      expect(liveObservers()).toBe(0);
+
+      // `main.ts` drops its reference after this, so a footer mounted now
+      // would be one nothing could ever take down again.
+      view.contentEl.createDiv({ cls: "markdown-preview-sizer" });
+      await settleAfterMutation();
+      expect(footerEls()).toHaveLength(0);
+    });
   });
 
   it("releases the panel of a view that disappeared between syncs", async () => {

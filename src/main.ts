@@ -51,6 +51,11 @@ export default class JournalEntriesPlugin extends Plugin {
     // the layout element the footer is mounted in wholesale, and fires no
     // leaf change at all. `file-open` covers a pane that stays put while the
     // note inside it changes.
+    //
+    // None of the three is enough on its own to know the new pane has been
+    // *built*: they announce the switch, and Obsidian renders afterwards. The
+    // footer closes that gap itself, by waiting for the element rather than
+    // for another event — see `watch()` in `mentions/mentionsFooter.ts`.
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncMentionsFooter()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncMentionsFooter()));
     this.registerEvent(this.app.workspace.on("file-open", () => this.syncMentionsFooter()));

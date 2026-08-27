@@ -330,6 +330,18 @@ either way, because nothing in the suite can settle them.
       plugin never distinguishes them, but that they all reach `resolvedLinks`
       is Obsidian's behaviour, not ours.
 
+- [ ] **The very first switch into reading view shows the panel.** Not the
+      second, not after a tab switch: the first. This was a real bug, found in
+      a real vault and not by the suite — Obsidian builds the reading pane
+      *after* the workspace event fires, so the footer looked for a sizer that
+      did not exist yet and, correctly, mounted nothing; nothing then re-asked
+      until some unrelated event happened to fire. The footer now waits for the
+      element instead of guessing when it arrives, so watch specifically for a
+      note that switches into reading view with no panel and grows one a while
+      later. Do it on a cold pane (a note not opened this session) and on a long
+      note, where the pane takes longest to build. Then switch back to live
+      preview and in again a few times: still exactly one panel each time.
+
 - [ ] **Assumption, not a feature: do both view panes exist at once?** Turn on
       "Show mentions under notes", open a mentioned note, and switch between
       live preview and reading view several times. The panel must appear in

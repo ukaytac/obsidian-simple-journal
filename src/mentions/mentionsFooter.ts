@@ -42,6 +42,13 @@ import { createMentionsPanel, type MentionsPanel } from "./MentionsPanel";
  * stops appearing; no note is altered, nothing is written, and no journal
  * data is at risk.
  *
+ * A null has two causes, though, and `watch()` below separates them: the
+ * element may be gone for good, or it may merely not have been built yet —
+ * switching a pane into reading view fires the workspace event *before*
+ * Obsidian builds the pane. Watching for it settles which one it was without
+ * touching the promise above: a watcher that never fires is indistinguishable
+ * from no watcher at all.
+ *
  * Deliberately quieter than the editor exception, which does show a one-time
  * notice when it falls back. That one guards the plugin's core writing
  * surface, where silence would leave the user wondering why editing feels
@@ -112,6 +119,68 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
    */
   const mounted = new Map<MarkdownView, MountedFooter>();
 
+  /**
+   * Views whose content flow has not been built yet, each with the observer
+   * waiting for it. Keyed the same way as `mounted`, and disjoint from it:
+   * mounting disconnects, so no view is ever in both.
+   */
+  const watching = new Map<MarkdownView, MutationObserver>();
+
+  /**
+   * Waits for a view's content flow to appear, rather than guessing when.
+   *
+   * Switching a pane into reading view fires `layout-change` *before*
+   * Obsidian has built `.markdown-preview-sizer`, so the `sync()` that event
+   * drives looks for an element that does not exist yet and — correctly, per
+   * rule 1 — mounts nothing. Nothing then re-triggered, so the note kept no
+   * footer until some unrelated workspace event happened to fire: the first
+   * switch into reading view showed no panel, a later visit did. Reported
+   * from a real vault; the suite could not have found it, because a test
+   * builds the sizer before it calls `sync()`.
+   *
+   * The alternative, and the reason it was rejected: a timed retry — a
+   * `setTimeout`, one or two animation frames, a short poll. Each is a guess
+   * at Obsidian's own render timing, and a guess of exactly that shape has
+   * already cost this codebase days (the focus race in
+   * `docs/manual-testing.md`, and the still-unverified mobile timings in
+   * CLAUDE.md § Target Platforms). A guess is also unfalsifiable here: too
+   * short and the bug survives on a slow vault, too long and the panel
+   * visibly pops in. Watching has no timing to be wrong about. It fires when
+   * the element exists, whenever that is, and terminates itself then.
+   *
+   * And it does not weaken rule 1. If the element never appears — because a
+   * future Obsidian renamed it — the observer simply never fires: still no
+   * throw, no notice, no console line, nothing written. Watching can turn
+   * "not built yet" into "built"; it cannot turn "absent" into anything.
+   */
+  function watch(view: MarkdownView): void {
+    if (watching.has(view)) return;
+    // Built from the view's own window so this still works for a leaf dragged
+    // into an Obsidian popout, which is a separate browsing context — the
+    // same reason `JournalView` builds its IntersectionObservers from
+    // `el.win`. In the main window `win === window`, so this is
+    // behaviour-identical there. `Window` is not typed with constructor
+    // globals, hence the cast naming the one being reached for.
+    const win = view.containerEl.win as Window & { MutationObserver: typeof MutationObserver };
+    const observer = new win.MutationObserver(() => {
+      // One `querySelector` per batch of Obsidian's render mutations, and
+      // nothing at all until the element is really there. Disconnecting is
+      // deliberately left to `sync()`, which re-decides the whole question
+      // anyway and may conclude this view should still be waiting (the mode
+      // moved again, the note is now a journal entry) — a callback that
+      // disconnected first would have to re-derive all of that itself.
+      if (!findContentFlowEl(view.containerEl, view.getMode())) return;
+      sync();
+    });
+    observer.observe(view.containerEl, { childList: true, subtree: true });
+    watching.set(view, observer);
+  }
+
+  function unwatch(view: MarkdownView): void {
+    watching.get(view)?.disconnect();
+    watching.delete(view);
+  }
+
   function sync(): void {
     if (!plugin.settings.showMentionsUnderNotes) {
       unmountAll();
@@ -137,6 +206,9 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
       // `mentionsCodeBlock.ts` guards against.
       if (!file || plugin.repository.isEntryFile(file)) {
         unmount(view);
+        // Nothing to wait for: this view must never have a footer, whatever
+        // it builds next.
+        unwatch(view);
         continue;
       }
 
@@ -153,9 +225,18 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
       }
 
       unmount(view);
-      // Rule 1: no element, no footer, no complaint.
-      if (!flowEl) continue;
+      // Rule 1: no element, no footer, no complaint — and a watch, in case
+      // the element is one Obsidian has not finished building rather than one
+      // that is gone.
+      if (!flowEl) {
+        watch(view);
+        continue;
+      }
 
+      // Before the mount, not after: the footer's own writes land inside the
+      // subtree being observed, and a watcher still connected here would wake
+      // on them.
+      unwatch(view);
       const container = flowEl.createDiv({ cls: FOOTER_CLASS });
       // No `emptyText`: the user did not ask for anything here, so a note
       // with no mentions must render nothing at all. The panel still mounts,
@@ -176,8 +257,13 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
     // closed tab, a detached leaf. Its DOM is beyond reach by now, but its
     // panel still holds vault subscriptions, and those are this plugin's to
     // release.
-    for (const view of [...mounted.keys()]) {
-      if (!seen.has(view)) unmount(view);
+    for (const view of [...mounted.keys(), ...watching.keys()]) {
+      if (seen.has(view)) continue;
+      unmount(view);
+      // A watch on a view that has gone is the same leak in a different
+      // currency: no DOM, but a live subscription to a detached tree that
+      // would otherwise be held until the plugin unloads.
+      unwatch(view);
     }
   }
 
@@ -192,8 +278,10 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
     footer.container.remove();
   }
 
+  /** Everything this shell has out there: both the footers and the waiting. */
   function unmountAll(): void {
     for (const view of [...mounted.keys()]) unmount(view);
+    for (const view of [...watching.keys()]) unwatch(view);
   }
 
   // `destroy` is literally `unmountAll`, and deliberately leaves nothing

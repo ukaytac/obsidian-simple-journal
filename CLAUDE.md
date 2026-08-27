@@ -758,6 +758,28 @@ does not.
    core writing surface, where silence would leave the user wondering why
    editing feels wrong; this one is an optional, off-by-default, read-only
    convenience whose absence degrades nothing anybody depends on.
+
+   A missing element has two causes, though, and only one of them is "absent".
+   Switching a pane into reading view fires the workspace event *before*
+   Obsidian builds the pane, so the lookup runs against a DOM that has no sizer
+   in it yet. Silence was the right answer to that and still left the user with
+   no panel at all on the first switch, because nothing re-asked. So when a note
+   that should have a footer has no content flow, the footer **watches that
+   view's `containerEl` for one to appear** and syncs again when it does: one
+   `MutationObserver` per view at most, disconnected the moment the footer
+   mounts, and equally when the view goes away, the setting goes off, or the
+   surface is destroyed.
+
+   Watching is not a hole in this rule, it is what makes the rule's promise
+   honest. An observer that never fires is indistinguishable from no observer:
+   still no throw, no notice, no console line, nothing written, no note altered,
+   and the surface still simply does not appear. It can turn "not built yet"
+   into "built"; it cannot turn "absent" into anything. The rejected alternative
+   was a timed retry — a `setTimeout`, a couple of frames, a poll — which is a
+   guess at Obsidian's own render timing, the exact class of guess
+   `# Target Platforms` and the focus-race case study in `docs/manual-testing.md`
+   both warn about, and unfalsifiable besides: too short and the bug survives on
+   a slow vault, too long and the panel visibly pops in.
 2. **Every DOM *lookup* lives in `mentions/mentionsFooter.ts`.** Retreating
    from this surface permanently, or moving to a future public API, must be a
    one-file change.
