@@ -885,6 +885,12 @@
   display: none;
 }
 
+/* `--text-muted`, not `--text-faint`. Faint is the timeline's register for
+   things the eye should slide past — a timestamp, an entry's tag chips — and
+   it was wrong here: at the very bottom of someone's note this header is the
+   only thing announcing that a new section has started, and in a real vault
+   it read as page furniture rather than as a heading. Muted is still quiet
+   enough not to compete with the note's own text. */
 .journal-mentions-header {
   display: flex;
   align-items: center;
@@ -892,8 +898,8 @@
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
   letter-spacing: 0.06em;
-  color: var(--text-faint);
-  margin-bottom: var(--size-4-2);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-3);
 }
 
 /* A hairline, not a border box: this is a writing surface, and the panel has
@@ -991,7 +997,36 @@
    with. No border, background or width of its own: it has to read as the end
    of the note, not as a card bolted to it. */
 .journal-mentions-footer {
+  margin-top: var(--size-4-12);
   margin-bottom: var(--size-4-4);
+}
+
+/* Align the footer with the note's TEXT, which is not the same thing as
+   aligning it with the element it was appended to.
+
+   In CodeMirror, Obsidian applies the readable line width to each `.cm-line`
+   individually — not to `.cm-content`, and not to `.cm-sizer`. So a child of
+   the sizer is correctly aligned with the content *container* and still twice
+   the width of every visible paragraph above it. Measured in a real vault:
+   `.cm-content` and the footer both spanned 355..1444 while the note's lines
+   sat in a 42rem column inside that.
+
+   Guarded on `.is-readable-line-width` rather than applied unconditionally,
+   because `--file-line-width` keeps its value when the setting is off — an
+   unguarded rule would indent the footer away from text that is deliberately
+   full-bleed.
+
+   In reading view Obsidian constrains `.markdown-preview-sizer` itself, so
+   this resolves to the width the footer already had. Harmless there, and one
+   rule beats two that have to be kept in agreement.
+
+   This is the only place outside `mentionsFooter.ts` that knows an Obsidian
+   layout class, and it is styling rather than lookup — the same shape as the
+   `.journal-entry-embed .cm-sizer` rules the editor exception already carries
+   above. See CLAUDE.md, "# Mentions". */
+.is-readable-line-width .journal-mentions-footer {
+  max-width: var(--file-line-width);
+  margin-inline: auto;
 }
 
 /* The recursion guard's placeholder: a `simple-journal` block that ended up
