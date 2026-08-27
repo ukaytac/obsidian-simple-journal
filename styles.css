@@ -997,8 +997,31 @@
    with. No border, background or width of its own: it has to read as the end
    of the note, not as a card bolted to it. */
 .journal-mentions-footer {
-  margin-top: var(--size-4-12);
+  margin-top: var(--size-4-8);
   margin-bottom: var(--size-4-4);
+}
+
+/* Cap the editor's empty click area on a note that has a footer.
+
+   Obsidian pads `.cm-content` below the last line so you can click well past
+   the text and keep writing, and it sizes that padding to fill the viewport —
+   measured at 521px on a short note. The footer sits after the content
+   container, so on exactly the notes this surface is for (a person note: some
+   properties, little or no body) it lands most of a screen below the text.
+   Obsidian's own `.embedded-backlinks` sits in the same place and has the same
+   problem, which is why this is a deliberate departure rather than a fix for
+   something we broke.
+
+   Capped rather than removed, and that is the whole point of the rule. Zeroing
+   it would read better and would take away click-below-to-write on every note
+   a journal entry happens to link to — including one the user actively writes
+   in. 6rem keeps a few lines' worth.
+
+   `!important` because Obsidian computes the value inline. `:has()` so this
+   reaches only sizers that actually carry a footer: with the setting off, or
+   on a note with no mentions, the editor is untouched. */
+.cm-sizer:has(> .journal-mentions-footer) .cm-content {
+  padding-bottom: 6rem !important;
 }
 
 /* Align the footer with the note's TEXT, which is not the same thing as

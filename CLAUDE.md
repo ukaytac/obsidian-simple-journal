@@ -707,17 +707,33 @@ does not.
    from this surface permanently, or moving to a future public API, must be a
    one-file change.
 
-   One rule in `styles.css` is the exception to that sentence, and it is named
-   here rather than left to be discovered. The footer has to align with the
-   note's **text**, which is not the same as the element it was appended to:
-   in CodeMirror, Obsidian applies the readable line width to each `.cm-line`
-   individually, so a child of `.cm-sizer` correctly matches the content
-   container and is still twice the width of every paragraph above it. Fixing
-   that needs `.is-readable-line-width` in a selector. It is styling, not a
-   lookup — nothing branches on it, and if the class ever disappears the panel
-   is misaligned rather than absent — and it sits beside the
+   Two rules in `styles.css` are the exception to that sentence, and they are
+   named here rather than left to be discovered. Both are styling, not lookup:
+   nothing branches on them, and if the classes disappear the panel is
+   misaligned or over-spaced rather than absent. They sit beside the
    `.journal-entry-embed .cm-sizer` rules the editor exception already carries
-   in the same file. Keep it to that one rule.
+   in the same file. **Two is the budget. A third needs its own paragraph
+   here, or a different approach.**
+
+   * *Alignment.* The footer has to line up with the note's **text**, which is
+     not the same as the element it was appended to: in CodeMirror, Obsidian
+     applies the readable line width to each `.cm-line` individually, so a
+     child of `.cm-sizer` correctly matches the content container and is still
+     twice the width of every paragraph above it. Needs
+     `.is-readable-line-width`.
+   * *Spacing.* Obsidian pads `.cm-content` below the last line so you can
+     click past the text and keep writing, sized to fill the viewport — 521px
+     on a short note, measured. On exactly the notes this surface exists for,
+     that puts the panel most of a screen below the text. The rule caps that
+     padding, and **caps rather than removes it**: zeroing it would look
+     better and would take click-below-to-write away from every note a journal
+     entry happens to link to, including one the user is writing in. The
+     writing surface wins over the reading convenience; that is the same
+     ordering the rest of this document uses.
+
+   Obsidian's own `.embedded-backlinks` sits in the same place, under the same
+   padding, and is misaligned the same way — so neither rule is repairing
+   something this plugin broke.
 
 `tests/mentionsFooter.test.ts` pins rule 1: with neither layout element present,
 the footer does nothing, throws nothing, adds nothing to the view, and leaves
