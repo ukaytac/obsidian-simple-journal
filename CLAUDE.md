@@ -393,8 +393,9 @@ having typed something first: a blur nobody caused (leaf activation churn) is
 indistinguishable from the user leaving, which is why that gate exists, while
 a keypress is an unambiguous instruction. It never touches a composer whose
 text is already on its way to disk — a claimed-and-committing composer is a
-file being created, and `# Error Handling` outranks the convenience. Nothing
-Escape closes has ever held meaningful text, so nothing is lost by closing it.
+file being created, and `# Error Handling` outranks the convenience. Nor one
+that still holds meaningful text: what Escape closes is always empty, so
+closing it loses nothing.
 
 ---
 

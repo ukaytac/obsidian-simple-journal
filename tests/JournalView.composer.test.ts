@@ -551,6 +551,16 @@ describe("JournalView composer: Escape", () => {
     expect(pressEscape(h.view)).not.toBe(false);
   });
 
+  it("hangs the view's scope off the app's, so a declined key still has somewhere to go", async () => {
+    // The second half of falling through: declining the key only reaches the
+    // rest of Obsidian if this scope has the app scope as its parent, which
+    // is `View.scope`'s own documented pattern. Without the parent, "not
+    // handled" and "handled" would look the same from outside.
+    const h = createHarness();
+
+    expect(internals(h.view).scope.parent).toBe(h.app.scope);
+  });
+
   it("does not discard a composer holding meaningful text", async () => {
     const h = createHarness();
     h.service.load();

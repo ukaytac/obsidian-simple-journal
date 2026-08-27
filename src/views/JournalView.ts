@@ -2821,6 +2821,13 @@ export class JournalView extends ItemView {
    * closed it. One keypress must not do two different things depending on
    * where an invisible async chain happens to be at that instant, and `false`
    * on its own destroys nothing.
+   *
+   * `onContentKeyDown`'s own Escape (clearing a tag scope) is a separate DOM
+   * listener and is NOT suppressed by that `false` — the two are different
+   * mechanisms, so one keypress can both close a composer and clear a scope.
+   * Left alone deliberately: the combination is only reachable by scoping
+   * *after* opening a composer (`startNewEntry` clears the scope first), and
+   * both halves mean the same thing — back out of a transient state.
    */
   private onEscape(): false | undefined {
     // A keystroke has already claimed this composer and a file is being
