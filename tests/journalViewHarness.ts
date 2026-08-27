@@ -12,7 +12,12 @@
  * exercising real domain logic, not merely the behaviour of a fake.
  */
 import type { App, TFile, WorkspaceLeaf as ObsidianWorkspaceLeaf } from "obsidian";
-import { createFakeApp, installDomHelpers, WorkspaceLeaf as FakeWorkspaceLeaf } from "./obsidian-mock";
+import {
+  createFakeApp,
+  installDomHelpers,
+  type Scope as FakeScope,
+  WorkspaceLeaf as FakeWorkspaceLeaf,
+} from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
 import { JournalView } from "../src/views/JournalView";
@@ -119,6 +124,31 @@ export function tagEntryInFrontmatter(harness: Harness, file: TFile, tags: strin
  */
 export function internals(view: JournalView): any {
   return view;
+}
+
+/**
+ * Presses Escape at the view's own keymap scope — the path a real Escape
+ * takes, since `JournalView`'s constructor registers there (`View.scope`)
+ * rather than on `contentEl`.
+ *
+ * Invokes the registered handler directly. Real Obsidian owns the scope stack
+ * and decides which scope sees a keypress; no jsdom `KeyboardEvent` can
+ * reproduce that, so a test that dispatched one would be asserting against a
+ * dispatch mechanism this repo invented rather than against Obsidian's. What
+ * this pins is what the handler decides, and its return value — `false` means
+ * "handled, preventDefault", anything else means the key carries on to the
+ * parent scope (see `KeymapEventListener`).
+ */
+export function pressEscape(view: JournalView): unknown {
+  const scope = internals(view).scope as FakeScope | null;
+  const handler = scope?.handlers.find((registered) => registered.key === "Escape");
+  if (!handler) throw new Error("no Escape handler registered on the view's scope");
+
+  return handler.func(new KeyboardEvent("keydown", { key: "Escape" }), {
+    modifiers: "",
+    key: "Escape",
+    vkey: "Escape",
+  });
 }
 
 /**

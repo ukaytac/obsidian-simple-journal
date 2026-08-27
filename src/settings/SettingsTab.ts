@@ -2,11 +2,19 @@ import { debounce, PluginSettingTab, Setting, type SettingDefinitionItem } from 
 import type JournalEntriesPlugin from "../main";
 import { DEFAULT_SETTINGS } from "./settings";
 
-/** The one control key this tab declares. */
+/** The control keys this tab declares. */
 const FOLDER_KEY = "journalFolder";
+const UNDER_NOTES_KEY = "showMentionsUnderNotes";
+const SIDEBAR_KEY = "mentionsSidebar";
 
 const FOLDER_NAME = "Journal folder";
 const FOLDER_DESC = "Vault folder that holds journal entries. Created when the first entry is written.";
+const UNDER_NOTES_NAME = "Show mentions under notes";
+const UNDER_NOTES_DESC =
+  "Add a panel at the bottom of a note listing the journal entries that link to it.";
+const SIDEBAR_NAME = "Mentions sidebar";
+const SIDEBAR_DESC =
+  "Keep a journal mentions panel in the sidebar, following the active note.";
 
 export class JournalSettingsTab extends PluginSettingTab {
   /**
@@ -43,6 +51,22 @@ export class JournalSettingsTab extends PluginSettingTab {
   }
 
   /**
+   * Unlike the folder field there is nothing to debounce here — a toggle has
+   * no half-typed state — so this commits immediately and applies the change
+   * to the live surfaces right away.
+   */
+  private setToggle(key: typeof UNDER_NOTES_KEY | typeof SIDEBAR_KEY, value: boolean): void {
+    if (key === UNDER_NOTES_KEY) this.plugin.settings.showMentionsUnderNotes = value;
+    else this.plugin.settings.mentionsSidebar = value;
+    // This toggle going off is the only event allowed to close a mentions
+    // leaf: one opened with `Open journal mentions` must survive the other
+    // toggle and every later plugin load. See `applyMentionSettings`.
+    void this.plugin
+      .saveSettings()
+      .then(() => this.plugin.applyMentionSettings(key === SIDEBAR_KEY && !value));
+  }
+
+  /**
    * The declarative path, used from Obsidian 1.13.0 on. Its real benefit is
    * not the rendering: a declared setting is indexed by Obsidian's settings
    * search, so someone looking for "journal folder" finds it without knowing
@@ -67,24 +91,41 @@ export class JournalSettingsTab extends PluginSettingTab {
           placeholder: DEFAULT_SETTINGS.journalFolder,
         },
       },
+      {
+        name: UNDER_NOTES_NAME,
+        desc: UNDER_NOTES_DESC,
+        control: { type: "toggle", key: UNDER_NOTES_KEY },
+      },
+      {
+        name: SIDEBAR_NAME,
+        desc: SIDEBAR_DESC,
+        control: { type: "toggle", key: SIDEBAR_KEY },
+      },
     ];
   }
 
   /**
    * Deliberately does not delegate unknown keys to `super`: this tab declares
-   * exactly one, and the base-class implementations do not exist before
-   * 1.13.0, so a `super` call would be a latent crash on the older versions
-   * `minAppVersion` still admits.
+   * exactly the keys below, and the base-class implementations do not exist
+   * before 1.13.0, so a `super` call would be a latent crash on the older
+   * versions `minAppVersion` still admits.
    */
   getControlValue(key: string): unknown {
     if (key === FOLDER_KEY) return this.plugin.settings.journalFolder;
+    if (key === UNDER_NOTES_KEY) return this.plugin.settings.showMentionsUnderNotes;
+    if (key === SIDEBAR_KEY) return this.plugin.settings.mentionsSidebar;
     return undefined;
   }
 
   setControlValue(key: string, value: unknown): void {
-    if (key !== FOLDER_KEY) return;
-    this.pendingFolder = normalizeFolder(value);
-    this.saveAndRefresh();
+    if (key === FOLDER_KEY) {
+      this.pendingFolder = normalizeFolder(value);
+      this.saveAndRefresh();
+      return;
+    }
+    if (key === UNDER_NOTES_KEY || key === SIDEBAR_KEY) {
+      this.setToggle(key, value === true);
+    }
   }
 
   /**
@@ -110,6 +151,24 @@ export class JournalSettingsTab extends PluginSettingTab {
             this.pendingFolder = normalizeFolder(value);
             this.saveAndRefresh();
           }),
+      );
+
+    new Setting(containerEl)
+      .setName(UNDER_NOTES_NAME)
+      .setDesc(UNDER_NOTES_DESC)
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.showMentionsUnderNotes)
+          .onChange((value) => this.setToggle(UNDER_NOTES_KEY, value)),
+      );
+
+    new Setting(containerEl)
+      .setName(SIDEBAR_NAME)
+      .setDesc(SIDEBAR_DESC)
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.mentionsSidebar)
+          .onChange((value) => this.setToggle(SIDEBAR_KEY, value)),
       );
   }
 

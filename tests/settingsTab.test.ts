@@ -18,23 +18,35 @@ const DEBOUNCE_MS = 500;
 
 interface FakePlugin {
   app: unknown;
-  settings: { journalFolder: string };
+  settings: {
+    journalFolder: string;
+    showMentionsUnderNotes: boolean;
+    mentionsSidebar: boolean;
+  };
   saveSettings: () => Promise<void>;
   refreshJournal: () => void;
+  applyMentionSettings: (sidebarTurnedOff?: boolean) => void;
 }
 
 function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
   const saveSettings = vi.fn(() => Promise.resolve());
   const refreshJournal = vi.fn();
+  const applyMentionSettings = vi.fn();
   const plugin: FakePlugin = {
     app: {},
-    settings: { journalFolder: initialFolder },
+    settings: {
+      journalFolder: initialFolder,
+      showMentionsUnderNotes: false,
+      mentionsSidebar: false,
+    },
     saveSettings,
     refreshJournal,
+    applyMentionSettings,
   };
-  // The tab only ever touches app/settings/saveSettings/refreshJournal.
+  // The tab only ever touches app/settings/saveSettings/refreshJournal/
+  // applyMentionSettings.
   const tab = new JournalSettingsTab(plugin as never);
-  return { tab, plugin, saveSettings, refreshJournal };
+  return { tab, plugin, saveSettings, refreshJournal, applyMentionSettings };
 }
 
 describe("JournalSettingsTab, declarative path", () => {
@@ -46,12 +58,11 @@ describe("JournalSettingsTab, declarative path", () => {
     vi.useRealTimers();
   });
 
-  it("declares one searchable text control bound to the journal folder", () => {
+  it("declares a searchable text control bound to the journal folder", () => {
     const { tab } = setup();
 
     const items = tab.getSettingDefinitions();
 
-    expect(items).toHaveLength(1);
     const item = items[0] as { name: string; desc: string; control: { type: string; key: string } };
     expect(item.name).toBe("Journal folder");
     expect(item.desc).toContain("Created when the first entry is written");
@@ -165,5 +176,85 @@ describe("JournalSettingsTab, declarative path", () => {
 
     expect(plugin.settings.journalFolder).toBe("Journal");
     expect(saveSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("mentions toggles", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("declares all three settings, so Obsidian's settings search indexes them", () => {
+    const { tab } = setup();
+    expect(tab.getSettingDefinitions().map((d) => (d as { name: string }).name)).toEqual([
+      "Journal folder",
+      "Show mentions under notes",
+      "Mentions sidebar",
+    ]);
+  });
+
+  it("reads a toggle's current value", () => {
+    const { tab, plugin } = setup();
+    plugin.settings.mentionsSidebar = true;
+    expect(tab.getControlValue("mentionsSidebar")).toBe(true);
+  });
+
+  /**
+   * The folder field is debounced because a half-typed value must never reach
+   * `plugin.settings`. A toggle has no half-typed state, so it commits at
+   * once — asserted here without advancing any timer, which is the whole
+   * distinction.
+   */
+  it("commits a toggle immediately, with no debounce", () => {
+    const { tab, plugin, saveSettings } = setup();
+    tab.setControlValue("showMentionsUnderNotes", true);
+    expect(plugin.settings.showMentionsUnderNotes).toBe(true);
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the change to the live surfaces after saving", async () => {
+    const { tab, applyMentionSettings } = setup();
+    tab.setControlValue("mentionsSidebar", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Which toggle moved, and in which direction, is the only thing that may
+   * close a mentions leaf — see `applyMentionSettings` in `main.ts`. Turning
+   * the sidebar off is the sole case that says so; a panel the user opened
+   * with `Open journal mentions` must survive everything else.
+   */
+  it("reports the sidebar being turned off, and nothing else, as such", async () => {
+    const { tab, plugin, applyMentionSettings } = setup();
+
+    plugin.settings.mentionsSidebar = true;
+    tab.setControlValue("mentionsSidebar", false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(true);
+
+    tab.setControlValue("mentionsSidebar", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
+
+    // The footer toggle, in either direction, has no business touching the
+    // sidebar at all.
+    tab.setControlValue("showMentionsUnderNotes", false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
+
+    tab.setControlValue("showMentionsUnderNotes", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applyMentionSettings).toHaveBeenLastCalledWith(false);
+  });
+
+  it("coerces a non-boolean control value rather than storing it", () => {
+    const { tab, plugin } = setup();
+    tab.setControlValue("mentionsSidebar", "yes");
+    expect(plugin.settings.mentionsSidebar).toBe(false);
   });
 });

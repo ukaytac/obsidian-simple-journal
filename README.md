@@ -35,6 +35,9 @@ files.
   a single thread back — still newest first, still continuous. Nothing is
   hidden permanently: the filter names itself at the top of the timeline and
   is gone the moment you clear it or restart.
+- **Readable from the other side.** Link a note from an entry and that note can
+  show the entries themselves, with their text — not a column of timestamps,
+  which is all a backlinks pane can make of titleless files.
 - **Reacts to changes made elsewhere.** Edit an entry from another pane,
   rename it, delete it, or change its `created` property — the timeline
   updates to match.
@@ -65,6 +68,8 @@ added. Two entries created in the same second get a numeric suffix
 | `Go to today` | Scrolls the timeline back to the top |
 | `Open calendar` | Reveals the calendar in the sidebar |
 | `Filter journal by tag` | Narrows the timeline to one tag |
+| `Open journal mentions` | Reveals the mentions panel in the sidebar |
+| `Insert journal mentions block` | Writes a mentions block at the cursor |
 
 `obsidian://simple-journal-new` starts a new entry too, so a phone
 home-screen shortcut can capture a thought in one tap.
@@ -109,6 +114,53 @@ The filter is never saved. Restart Obsidian and the journal comes back whole —
 a filter restored at startup would hide most of your journal with no visible
 reason.
 
+## Mentions
+
+Link a note from an entry — `[[Ekin Arslan Aytaç]]` — and that note can show
+you the entries themselves, with their text, newest first, the way the timeline
+shows them.
+
+Obsidian's own backlinks pane can't do this, through no fault of its own: it
+lists a backlink by filename, and these filenames are bare timestamps. Twenty
+entries about the same person come out as twenty near-identical rows.
+
+A **mention** is a real link. A link in the body, an embedded `![[note]]`, an
+aliased `[[note|Ekin]]`, and a link in the properties (`people: "[[Ekin
+Arslan Aytaç]]"`) all count equally, because Obsidian treats them as the same
+thing. Two things do not count: a link to a note that doesn't exist yet, and
+your typing someone's name as plain text. Only journal entries are ever
+listed — this is not a second backlinks pane for your whole vault.
+
+Put the panel inside a note by writing a block:
+
+````markdown
+```simple-journal
+```
+````
+
+**Insert journal mentions block** writes that at the cursor for you. An empty
+block means "entries that mention this note". To ask about a different note,
+give it one line:
+
+````markdown
+```simple-journal
+note: [[Some Other Note]]
+```
+````
+
+Anything else in the block is ignored rather than treated as an error.
+
+If you would rather not write a block at all, there are two settings below that
+give you the same panel without one: in the sidebar, following whatever note you
+are reading, or automatically at the bottom of every note something mentions.
+**Open journal mentions** opens the sidebar panel whether or not that setting is
+on.
+
+The panel is **read-only**: entries render fully — links, embeds, tags,
+formatting — but you don't edit them there. Click an entry's time and the
+journal opens, anchored to that entry's day, which is where editing belongs.
+Five entries show at first; **Show more** adds twenty at a time.
+
 ## Entry actions
 
 Hover an entry (or long-press it on mobile) to reveal its actions menu:
@@ -127,6 +179,22 @@ follows the plugin's own naming convention.
 
 **Journal folder** — the vault folder that holds journal entries. Defaults to
 `Journal`, and is created automatically when the first entry is written.
+
+**Show mentions under notes** — off by default. Adds the mentions panel to the
+bottom of a note automatically, after its text, scrolling with it, without your
+having to write a block. A note nothing mentions shows nothing at all, and
+journal entries never get one — the timeline already is the journal. Click its
+header to fold the panel down to that one line and the count; click again to
+bring the entries back. Folded or not, it stays that way for every note until
+you change it. The panel in the sidebar and the one you write as a block don't
+fold: you opened those on purpose.
+
+**Mentions sidebar** — off by default. Keeps a mentions panel in the sidebar
+that follows whichever note you are reading. This governs whether the panel is
+placed there for you; **Open journal mentions** opens it either way.
+
+Both take effect immediately — no reload — and turning either off takes its
+panel away again.
 
 ## Platforms
 

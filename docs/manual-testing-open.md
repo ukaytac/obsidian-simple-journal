@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-424 automated tests cover the pure logic and, through a jsdom harness, a good
+638 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
@@ -133,6 +133,31 @@ Failure in any of these is a real defect, not a rough edge.
 - [ ] **`[[` autocomplete in a timeline entry.** Already confirmed against a
       probe embed during the API spike; this is the same check inside a real
       mounted entry.
+
+- [ ] **Escape in the composer, with vim mode on.** Turn on Vim key bindings
+      (Settings → Editor), run `New journal entry`, type nothing, press Escape.
+      Then do it again with the caret in an ordinary entry's editor, in insert
+      mode. Write down what happens in each case. *(Unverified, and not
+      knowable from the source: the composer's Escape handler sits on the
+      view's keymap scope, and whether CodeMirror's vim keymap consumes the
+      key before Obsidian's scope stack reaches that handler is Obsidian's
+      decision, not this plugin's. If vim consumes it, a vim user simply
+      leaves insert mode and the composer stays open — nothing is lost. If it
+      does not, a vim user gets the composer closed where they expected normal
+      mode. Either answer is worth recording; the second one is a product
+      question to reopen, not a bug to patch blind. Nothing is at risk of
+      being lost either way: Escape never closes a composer holding text.)*
+
+- [ ] **What Escape does with no composer open must not have changed.** Open
+      the journal in a tab that already had a note in it, press Escape with
+      nothing being composed. Obsidian should navigate back to that note,
+      exactly as it did before this handler existed. *(That "goes back to the
+      previous note" is the observed behaviour reported from a real vault —
+      not "the journal view closes", which is what it looks like and what an
+      earlier commit message wrongly said. The handler returns a non-`false`
+      value in this case precisely so Obsidian's own behaviour, whatever it
+      turns out to be, is left alone; this check is what proves the fall-through
+      works rather than the view scope swallowing the key unconditionally.)*
 
 - [ ] **An entry cannot be renamed from the timeline.** Confirm there is
       nothing focusable or editable in an entry that would rename the file.
@@ -281,3 +306,93 @@ standing between a regression and a user.
       in settings), and close the Journal tab before the rebuild finishes. The
       console should show exactly one "discarding unsaved text" line. This is
       the last unverified branch of the composer's persist-or-log guarantee.
+
+---
+
+## Session G — mentions
+
+Every one of these is new and none has run in a real Obsidian. Two of them are
+not "does the feature work" but "is an assumption the code rests on actually
+true" — those are marked as such, and the answer is worth writing down here
+either way, because nothing in the suite can settle them.
+
+- [ ] **Assumption, not a feature: frontmatter links count.** Give a note
+      `people: "[[Ekin Arslan Aytaç]]"` in its frontmatter and nothing in its
+      body. It must appear in Ekin's mentions panel. `mentionQuery.test.ts`
+      pins only what the plugin does *with* a `resolvedLinks` map, never what
+      Obsidian puts into one, so this is the sole evidence that a frontmatter
+      link is a mention at all. If it fails, the documented fallback is an
+      explicit `cache.links` + `cache.embeds` + `cache.frontmatterLinks` scan
+      resolved through `getFirstLinkpathDest` — one function, one module.
+
+- [ ] **Embeds and aliases count.** `![[Ekin Arslan Aytaç]]` and
+      `[[Ekin Arslan Aytaç|Ekin]]` both appear. Same reasoning as above: the
+      plugin never distinguishes them, but that they all reach `resolvedLinks`
+      is Obsidian's behaviour, not ours.
+
+- [ ] **Assumption, not a feature: do both view panes exist at once?** Turn on
+      "Show mentions under notes", open a mentioned note, and switch between
+      live preview and reading view several times. The panel must appear in
+      both, exactly once, at the end of the note's content, scrolling with it.
+      *Then look at the DOM*: does the view hold both `.markdown-source-view`
+      and `.markdown-reading-view` simultaneously with one hidden, or does it
+      replace one with the other? The footer now picks its sizer by
+      `getMode()`, so it is correct either way — but a `querySelector` over
+      both class names at once was the original implementation, and it would
+      have mounted into the hidden pane. **Write the answer down here.** It
+      decides whether that whole class of bug is live in this codebase.
+
+- [ ] **Assumption, not a feature: does CodeMirror tolerate a foreign child of
+      the sizer?** In live preview, with the footer showing, type into the note
+      — several paragraphs, enough to make CodeMirror re-measure and rebuild.
+      The footer must still be there afterwards, still last, still scrolling
+      with the text. Then scroll a long note (a few hundred lines) to the
+      bottom and back: the scroll position must not jump and the note must not
+      end in a band of dead space. `sync()` only re-checks the footer's parent
+      on workspace events, so a removal CodeMirror does on its own is invisible
+      until the next tab switch — and CM measures heights for its own
+      viewport, which the appended div is not accounted for in. If either half
+      fails, the fix direction is reading view only for the footer, and the
+      code block for live preview.
+
+- [ ] **The footer is absent on journal entries.** Open an entry as an ordinary
+      note. No panel — its own timeline already shows this, and a panel there
+      invites the recursion the code block has to guard against.
+
+- [ ] **Turning either setting off removes its surface immediately**, with no
+      reload. Off must mean gone, not "gone after a restart".
+
+- [ ] **Collapsing the footer holds, everywhere and across a restart.** Click a
+      footer's header: the entries go, the header and its count stay, the
+      chevron turns. Open a second mentioned note in a split — its footer must
+      already be folded too, not still showing entries. Reopen Obsidian: still
+      folded. Then expand, page in with **Show more**, fold and unfold: the
+      pages you had asked for must come back, not the first five. Do it in live
+      preview as well as reading view — there the header sits inside
+      CodeMirror's own scroller, where a click could in principle be taken for
+      a click into the document. Only the
+      footer folds — the sidebar panel and a `simple-journal` block stay put
+      through all of it. Tab to the header and press Enter and Space: both must
+      work, and the focus ring must be visible in your theme.
+
+- [ ] **A nested block does not recurse.** Put a `simple-journal` block inside
+      a journal entry, then view a note that entry mentions. The panel shows the
+      entry with an inert placeholder where its block is, and Obsidian does not
+      hang. *(The guard asks whether the block's element sits beneath a
+      `.journal-mentions` ancestor, which assumes the element is already
+      attached when its processor runs. True under jsdom; not knowable from the
+      API. If it ever nests, the fix direction is a depth signal passed down
+      the render.)*
+
+- [ ] **Changing the Journal folder setting repaints an open sidebar panel.**
+      This was a real bug — `rebuild()` emits nothing to `onChange` by design,
+      and the view short-circuited on the active file, so the panel kept showing
+      mentions computed against the old folder. Fixed and unit-tested; worth one
+      confirmation with real leaves.
+
+- [ ] **Mobile — unverified, like the rest of the mobile code.** See
+      `CLAUDE.md`'s `# Target Platforms`. The footer's sizer lookup in
+      particular has never run on a device, and by design it fails silently: if
+      it finds nothing it does nothing, with no notice and no console line. So
+      on a phone a failure looks exactly like the setting being off. Check the
+      setting first, then the DOM.

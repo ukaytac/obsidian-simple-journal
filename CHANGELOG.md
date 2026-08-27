@@ -3,6 +3,80 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.2.0
+
+### Mentions
+
+You can now read the journal entries that mention a note, on the note itself.
+
+Obsidian's backlinks pane could never do this for a journal. It lists a backlink
+by filename, and these filenames are bare timestamps — so a person you had
+written about twenty times showed up as twenty near-identical rows. The one
+place where titleless entries cost you something was the one place you most
+wanted to read them.
+
+What you get is not a list of links. It is the entries themselves, with their
+text, in the journal's own newest-first shape.
+
+- **Write ` ```simple-journal ` in any note** and it fills with the entries that
+  link to that note. `Insert journal mentions block` writes the block for you.
+  Point it somewhere else with `note: [[Some Other Note]]` inside the block.
+- **`Open journal mentions`** puts the same panel in the sidebar, following
+  whatever note you are reading.
+- **`Show mentions under notes`** adds it to the bottom of a note automatically.
+  Off by default. Its header folds the panel away and remembers that you folded
+  it, keeping the count on screen so you can always see there is something
+  there.
+- **A mention is a real link** — in the text, an embed, or a property like
+  `people: "[[Ekin]]"`. Obsidian treats all three as the same thing and so does
+  this. A note whose name merely appears as text is not a mention, and neither
+  is a link to a note that does not exist.
+- **The panel is read-only.** Click an entry's time and the journal opens at
+  that entry, which is where editing belongs. Five entries show at first, twenty
+  more per click.
+- **Nothing is written.** No new property, no change to any entry, no new file.
+  This release adds no writes at all.
+
+### Escape closes the composer
+
+Pressing `Esc` in a new, empty entry now closes it instead of navigating away
+from the journal. With no entry being composed the key behaves exactly as it
+did. It never closes a composer whose text is already on its way to disk.
+
+### Known limitations
+
+- **None of this has run on a phone or tablet**, as with the rest of this
+  plugin's mobile support. The note-footer panel in particular depends on the
+  editor's layout, which has never been observed on a device.
+- **The note footer is the one surface that reaches into Obsidian's own
+  layout.** No public API can put content at the end of a note's text where it
+  scrolls with the note. If a future Obsidian changes that layout, the panel
+  quietly stops appearing — no error, no notice, and nothing in your notes
+  altered. That silence is deliberate, but on a phone it is indistinguishable
+  from the setting being off.
+- **The footer shortens the empty click area under a short note.** Obsidian
+  leaves a screenful of space below the last line so you can click there and
+  keep writing; on a note with a footer that space is capped, so the panel is
+  not stranded a screen away. Clicking below the text still works, with less
+  room.
+- **Folding the footer is one switch for the whole vault**, not one per note.
+  Fold it under one note and it starts folded under all of them.
+- **"Show more" re-renders what is already on screen** rather than only adding
+  the new entries. Harmless at ordinary sizes; noticeable if you page through
+  hundreds.
+- **Whether property links are counted has not been confirmed in a real
+  vault.** The plugin asks Obsidian which links a note has and trusts the
+  answer; that answer is expected to include links written in properties, but
+  it has only been reasoned about, not observed.
+- **With Vim key bindings on, `Esc` in a new entry is unverified.** It will
+  either leave insert mode as usual or close the empty entry, depending on
+  which handler Obsidian reaches first. Nothing is at risk either way — `Esc`
+  never closes an entry that has text in it.
+
+### Requirements
+
+Unchanged: Obsidian 1.7.2 or newer, desktop and mobile.
+
 ## 1.1.0
 
 ### Tags

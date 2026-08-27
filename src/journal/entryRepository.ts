@@ -35,6 +35,17 @@ function normalizeNfc(value: string): string {
 }
 
 /**
+ * The frontmatter handling shared by `readBody` and `readBodyCached`. Only
+ * the vault call differs between those two, and it must stay that way: a
+ * second copy of the split/strip pair is a second place the separator
+ * convention could drift.
+ */
+function splitBody(data: string): string {
+  const { frontmatter, body } = splitFrontmatter(data);
+  return stripSeparator(frontmatter, body);
+}
+
+/**
  * Owns every interaction with journal entry files. Knows about the vault.
  * Knows nothing about the UI.
  */
@@ -428,10 +439,32 @@ export class EntryRepository {
    *
    * A brand-new entry (`createEntry`'s `---\n...\n---\n\n` template) therefore
    * reads back as `""`, not `"\n"`.
+   *
+   * Uses `vault.read`, NOT `vault.cachedRead`, deliberately: every caller of
+   * this is on the timeline's own path, where the value read becomes an
+   * editor's buffer (`mountLifecycle`, `changeApplication.refreshEntryContent`)
+   * or the static rendering of a row that can be remounted into one
+   * (`JournalView.renderStatic`) — and in either case the baseline the next
+   * write is compared against. A cached read that predated a change made
+   * outside the plugin would therefore be echoed back to disk, silently
+   * reverting it. A caller that genuinely only displays wants
+   * `readBodyCached` below.
    */
   async readBody(file: TFile): Promise<string> {
-    const { frontmatter, body } = splitFrontmatter(await this.app.vault.read(file));
-    return stripSeparator(frontmatter, body);
+    return splitBody(await this.app.vault.read(file));
+  }
+
+  /**
+   * `readBody` for a caller that will never write the file back — currently
+   * only the mentions panel, which is read-only by design and re-reads every
+   * visible entry on each refresh. Obsidian's guidance is `cachedRead`
+   * whenever the file is not about to be modified: it avoids a disk round
+   * trip per entry, and a momentarily stale body in a read-only surface
+   * costs nothing, since the metadata/vault event that made it stale also
+   * triggers the panel's own refresh.
+   */
+  async readBodyCached(file: TFile): Promise<string> {
+    return splitBody(await this.app.vault.cachedRead(file));
   }
 
   /**

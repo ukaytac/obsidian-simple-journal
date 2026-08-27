@@ -1,6 +1,10 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { EntryRepository } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
+import { destroyMentionPanels, refreshMentionPanels } from "./mentions/MentionsPanel";
+import { MentionsView, VIEW_TYPE_MENTIONS } from "./mentions/MentionsView";
+import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
+import { createMentionsFooter, type MentionsFooter } from "./mentions/mentionsFooter";
 import { JournalService } from "./services/journalService";
 import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
@@ -14,6 +18,7 @@ export default class JournalEntriesPlugin extends Plugin {
   repository!: EntryRepository;
   editorFactory!: EntryEditorFactory;
   journal!: JournalService;
+  private mentionsFooter: MentionsFooter | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -28,7 +33,27 @@ export default class JournalEntriesPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
+    this.registerView(VIEW_TYPE_MENTIONS, (leaf) => new MentionsView(leaf, this));
     this.addSettingTab(new JournalSettingsTab(this));
+
+    // No setting gates this. A toggle that turned the processor off would
+    // leave raw ```simple-journal fences visible in notes the user had
+    // already written, reading as breakage. The block is opt-in per note
+    // already: the way to not have one is to not write one.
+    registerMentionsCodeBlock(this);
+
+    // Gated on `showMentionsUnderNotes` inside `sync()` rather than here, so
+    // toggling the setting takes effect on the next event without a reload.
+    this.mentionsFooter = createMentionsFooter(this);
+    // Both of the first two are needed, not one. `active-leaf-change` covers
+    // switching tabs; `layout-change` covers splitting, closing, and
+    // switching a pane between reading view and live preview — which replaces
+    // the layout element the footer is mounted in wholesale, and fires no
+    // leaf change at all. `file-open` covers a pane that stays put while the
+    // note inside it changes.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncMentionsFooter()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncMentionsFooter()));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.syncMentionsFooter()));
 
     this.addRibbonIcon("book-open", "Open journal", () => {
       void this.openJournal();
@@ -74,6 +99,18 @@ export default class JournalEntriesPlugin extends Plugin {
       },
     });
 
+    // Writes the empty fence rather than a `note:` directive: the block's
+    // default target is the note it sits in, which is what someone inserting
+    // it here almost always wants, and an unwanted directive is more work to
+    // remove than a wanted one is to add.
+    this.addCommand({
+      id: "insert-mentions-block",
+      name: "Insert journal mentions block",
+      editorCallback: (editor) => {
+        editor.replaceSelection(MENTIONS_BLOCK_SNIPPET);
+      },
+    });
+
     // No ribbon icon for this — the ribbon already has two (Open journal,
     // New journal entry), and CLAUDE.md warns against ribbon/UI clutter.
     // Not opened automatically alongside the journal, either: this is an
@@ -83,6 +120,16 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Open calendar",
       callback: () => {
         void this.openCalendar();
+      },
+    });
+
+    // Works whether or not `mentionsSidebar` is on: that setting governs
+    // automatic placement, and a command is how you reach a thing.
+    this.addCommand({
+      id: "open-journal-mentions",
+      name: "Open journal mentions",
+      callback: () => {
+        void this.openMentions();
       },
     });
 
@@ -119,11 +166,30 @@ export default class JournalEntriesPlugin extends Plugin {
       });
     });
 
-    this.app.workspace.onLayoutReady(() => void this.ensureCalendarLeaf());
+    this.app.workspace.onLayoutReady(() => {
+      void this.ensureCalendarLeaf();
+      this.applyMentionSettings();
+    });
   }
 
   onunload(): void {
     // Obsidian detaches views of a plugin's registered types automatically.
+    // The mentions footer is the exception, and the reason this method is no
+    // longer empty: it is a DOM node this plugin put inside somebody else's
+    // `MarkdownView`, so nothing else will ever take it back out. Left here,
+    // it would sit under the user's notes with a dead panel behind it until
+    // the pane was closed.
+    this.mentionsFooter?.destroy();
+    this.mentionsFooter = null;
+    // Belt and braces rather than a known leak. A code block's panel belongs
+    // to its note's preview component, not to this plugin, and unregistering
+    // a post-processor does not by itself unload children that are already
+    // loaded — so its `metadataCache` ref and `journal.onChange` listener can
+    // outlive the plugin. Whether Obsidian force-rerenders open previews on
+    // unregister (which would tear them down anyway) is not knowable from the
+    // API, so this does not depend on the answer. `destroy()` is idempotent,
+    // so a panel Obsidian does unload a moment later costs nothing.
+    destroyMentionPanels();
   }
 
   async loadSettings(): Promise<void> {
@@ -141,6 +207,21 @@ export default class JournalEntriesPlugin extends Plugin {
 
     if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
       this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
+    }
+
+    // Same reasoning as the folder check above: `data.json` is user-editable,
+    // so a non-boolean here must not reach the code that reads it.
+    if (typeof this.settings.showMentionsUnderNotes !== "boolean") {
+      this.settings.showMentionsUnderNotes = DEFAULT_SETTINGS.showMentionsUnderNotes;
+    }
+    if (typeof this.settings.mentionsSidebar !== "boolean") {
+      this.settings.mentionsSidebar = DEFAULT_SETTINGS.mentionsSidebar;
+    }
+    // Remembered UI state rather than a configured setting, but it is written
+    // to the same `data.json` and read by the same code, so it gets the same
+    // check: nothing here may reach a panel as a non-boolean.
+    if (typeof this.settings.mentionsFooterCollapsed !== "boolean") {
+      this.settings.mentionsFooterCollapsed = DEFAULT_SETTINGS.mentionsFooterCollapsed;
     }
   }
 
@@ -328,6 +409,91 @@ export default class JournalEntriesPlugin extends Plugin {
   }
 
   /**
+   * Opens (or reveals) the mentions sidebar. Mirrors `openCalendar`: an
+   * existing leaf anywhere is reused, and the command path activates and
+   * reveals because the user asked for it explicitly.
+   */
+  async openMentions(): Promise<MentionsView | null> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS);
+    const leaf = existing[0] ?? this.app.workspace.getRightLeaf(false);
+    if (!leaf) return null;
+
+    if (!existing[0]) {
+      await leaf.setViewState({ type: VIEW_TYPE_MENTIONS, active: true });
+    }
+    await this.app.workspace.revealLeaf(leaf);
+
+    return leaf.view instanceof MentionsView ? leaf.view : null;
+  }
+
+  /**
+   * Brings the optional mention surfaces into line with the current settings.
+   * Called on layout-ready and after either toggle changes, so turning one on
+   * takes effect without a reload — and turning one off actually removes it
+   * rather than leaving it until the next restart.
+   *
+   * `sidebarTurnedOff` is the ONE thing that may close a mentions leaf, and
+   * only the sidebar toggle itself passes it. This used to detach whenever the
+   * setting was off, which meant the layout-ready call — and a change to the
+   * unrelated footer toggle — silently closed a panel the user had opened with
+   * `Open journal mentions`. That command works whatever the setting says
+   * (CLAUDE.md § Mentions Rule 5: the setting governs automatic placement
+   * only), so destroying its result on the next Obsidian start is the same
+   * "permanently locks the user out" failure `ensureCalendarLeaf`'s doc
+   * describes the calendar's placement policy being rewritten to avoid.
+   */
+  applyMentionSettings(sidebarTurnedOff = false): void {
+    if (this.settings.mentionsSidebar) void this.ensureMentionsLeaf();
+    else if (sidebarTurnedOff) this.detachMentionsLeaves();
+    // `sync()` reads the setting itself, so this one call covers both
+    // directions: mounting the footers when the toggle goes on, and removing
+    // them when it goes off rather than leaving them until the next restart.
+    this.syncMentionsFooter();
+  }
+
+  /**
+   * Wrapped rather than called inline so the null check — the footer does not
+   * exist until `onload` reaches it, and is dropped again in `onunload` —
+   * lives in one place. `sync()` itself never throws; if that ever changes,
+   * this is where the guard goes.
+   */
+  private syncMentionsFooter(): void {
+    this.mentionsFooter?.sync();
+  }
+
+  /**
+   * Places a mentions leaf in the right sidebar if none exists anywhere.
+   * Identical policy to `ensureCalendarLeaf` — including never stealing
+   * focus (`active: false`) and never revealing the sidebar — except that it
+   * is gated on a setting, because unlike the calendar this surface is
+   * opt-in.
+   */
+  private async ensureMentionsLeaf(): Promise<void> {
+    try {
+      if (this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS).length > 0) return;
+
+      const rightLeaf = this.app.workspace.getRightLeaf(false);
+      if (!rightLeaf) return;
+
+      await rightLeaf.setViewState({ type: VIEW_TYPE_MENTIONS, active: false });
+    } catch (error) {
+      console.error("Simple Journal: could not place the mentions panel in the sidebar", error);
+    }
+  }
+
+  /**
+   * Turning the setting off must remove the panel, not merely stop re-placing
+   * it — leaving a surface the user just switched off sitting there until the
+   * next restart is the same failure as ignoring the switch. Reached only from
+   * that one transition; see `applyMentionSettings`.
+   */
+  private detachMentionsLeaves(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS)) {
+      leaf.detach();
+    }
+  }
+
+  /**
    * Opens (or reveals) the journal view and calls `goToDate` on it — the
    * calendar sidebar's click handler goes through this rather than reaching
    * into `openJournal`/`JournalView` itself, mirroring `newEntry`/
@@ -360,5 +526,19 @@ export default class JournalEntriesPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof CalendarView) view.refresh();
     }
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MENTIONS)) {
+      const view = leaf.view;
+      if (view instanceof MentionsView) view.refresh();
+    }
+    // The other two mention shells reach no leaf lookup at all, and need the
+    // same treatment for the same reason. Which notes get a footer depends on
+    // the journal folder, so this both drops the footer from a note that just
+    // became an entry and gives one to a note that stopped being one; the
+    // repaint below then covers every footer and code-block panel that stayed
+    // put but is now answering against the wrong folder. The sidebar's panel
+    // is repainted twice over (once above, once below) — harmless: a render
+    // is idempotent and token-guarded.
+    this.syncMentionsFooter();
+    refreshMentionPanels();
   }
 }

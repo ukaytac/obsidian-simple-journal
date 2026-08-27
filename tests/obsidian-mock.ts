@@ -13,11 +13,11 @@
  * test harness or the test itself, never on a class standing in for a real
  * one.
  *
- * This file is not yet fully compliant with that rule. Three pre-existing
- * exceptions predate it, and each is safe today only because every access to
- * its extra surface goes through a mock-typed reference or an explicit cast
- * — never through a real-typed one, which is the only way the mismatch above
- * could actually bite:
+ * This file is not yet fully compliant with that rule. Four exceptions stand,
+ * and each is safe today only because every access to its extra surface goes
+ * through a mock-typed reference or an explicit cast — never through a
+ * real-typed one, which is the only way the mismatch above could actually
+ * bite:
  *
  * - `Menu`'s `items`/`shown`/`findItem` (below) — inspection surface the real
  *   `Menu` doesn't have. Safe because no test currently references `Menu` at
@@ -29,6 +29,14 @@
  * - `WorkspaceLeaf`'s `app` field (below) — not on the real class's public
  *   surface. Safe because it is only ever read through this mock's `ItemView`
  *   constructor, itself mock-typed.
+ * - `Scope`'s `handlers` field (below) — inspection surface the real `Scope`
+ *   keeps private. Unavoidable rather than convenient: real Obsidian owns the
+ *   scope stack and decides which scope a keypress reaches, so there is no
+ *   jsdom event a test could dispatch to reach a handler registered on
+ *   `View.scope`, and no public way to ask a `Scope` what it holds. Safe
+ *   because the only reader is `journalViewHarness.ts`'s `pressEscape`, which
+ *   reaches it through `internals(view)` — `any`-typed — never through a
+ *   real-typed `Scope`.
  */
 export class TAbstractFile {
   // Typed `any` so mock instances remain structurally assignable to the real
@@ -214,6 +222,10 @@ class FakeEvents {
   trigger(name: string, ...args: any[]): void {
     for (const callback of this.listeners.get(name) ?? []) callback(...args);
   }
+
+  offref(ref: FakeEventRef): void {
+    ref.unregister();
+  }
 }
 
 /**
@@ -333,6 +345,20 @@ export class FakeVault extends FakeEvents {
     return this.contents.get(file.path) ?? "";
   }
 
+  /**
+   * Real `Vault.cachedRead` — not invented surface, so the header policy is
+   * satisfied. Delegates to the same content map as `read`: this mock has no
+   * staleness to model, and modelling one would only let a test assert
+   * behaviour of a cache Obsidian owns rather than of this plugin. What a
+   * test using this CAN prove is that a display-only caller went through the
+   * cached path at all (by spying on it), not that a stale value is handled.
+   * Reads the map directly rather than delegating to `read`, so a test can
+   * spy on the two independently.
+   */
+  async cachedRead(file: TFile): Promise<string> {
+    return this.contents.get(file.path) ?? "";
+  }
+
   async process(file: TFile, fn: (data: string) => string): Promise<string> {
     const next = fn(this.contents.get(file.path) ?? "");
     this.contents.set(file.path, next);
@@ -376,6 +402,29 @@ export class FakeMetadataCache extends FakeEvents {
   frontmatter = new Map<string, Record<string, unknown>>();
   /** Inline tags per path, WITHOUT the leading `#`. */
   inlineTags = new Map<string, string[]>();
+  /**
+   * Source path → destination path → link count, exactly as Obsidian's own
+   * `resolvedLinks`. Obsidian folds body links, embeds, aliased links and
+   * frontmatter links into this one map before a plugin ever sees them, so a
+   * test seeds it directly rather than trying to model the four kinds.
+   */
+  resolvedLinks: Record<string, Record<string, number>> = {};
+
+  /**
+   * NOT MODELLED — always null, deliberately, and that is not "no match
+   * found". No test resolves a linkpath: `findMentions` needs only
+   * `resolvedLinks`, and the one caller that does resolve one
+   * (`mentionsCodeBlock`'s `note:` directive) has its parser tested directly
+   * instead, because resolution itself is Obsidian's job, not this plugin's.
+   *
+   * This exists only so modules calling it type-check against the mock. A
+   * later test that genuinely needs resolution must make this map
+   * linkpath → TFile the way `resolvedLinks` above is seeded — silently
+   * accepting "nothing ever resolves" would make such a test prove nothing.
+   */
+  getFirstLinkpathDest(_linkpath: string, _sourcePath: string): TFile | null {
+    return null;
+  }
 
   getFileCache(file: TFile): FakeFileCache | null {
     const fm = this.frontmatter.get(file.path);
@@ -480,18 +529,32 @@ export class FakeFileManager {
   }
 }
 
-/** Assembles the three fakes into something shaped like `App`. */
+/** Assembles the four fakes into something shaped like `App`. */
 export function createFakeApp(): {
   vault: FakeVault;
   metadataCache: FakeMetadataCache;
   fileManager: FakeFileManager;
+  workspace: FakeWorkspace;
+  scope: Scope;
 } {
   const vault = new FakeVault();
-  return {
+  const workspace = new FakeWorkspace();
+  const app = {
     vault,
     metadataCache: new FakeMetadataCache(),
     fileManager: new FakeFileManager(vault),
+    workspace,
+    // The app-wide keymap scope. Present because `JournalView`'s constructor
+    // passes it as the parent of the view's own scope, exactly as `View.scope`'s
+    // own documented example does.
+    scope: new Scope(),
   };
+  // Handed back so leaves this workspace mints (`getRightLeaf`, `addLeaf`)
+  // carry an app, the way a real leaf does — `ItemView`'s constructor below
+  // reads it off the leaf, so a view built on a leaf without one would see
+  // `app === undefined`.
+  workspace.app = app;
+  return app;
 }
 
 export class App {}
@@ -556,15 +619,190 @@ export abstract class SuggestModal<T> extends Modal {
 }
 
 /**
+ * The subset of Obsidian's `ViewState` this mock records. `group` is omitted
+ * deliberately — nothing under test sets it, and modelling leaf grouping
+ * would mean modelling the split tree this workspace does not have.
+ */
+export interface FakeViewState {
+  type: string;
+  state?: Record<string, unknown>;
+  active?: boolean;
+  pinned?: boolean;
+}
+
+/**
+ * Which workspace currently holds a given leaf, so `detach()` can remove
+ * itself from it. A module-level `WeakMap` rather than a field on the leaf:
+ * the real `WorkspaceLeaf` exposes no `workspace` member, and this class
+ * shadows it, so a field would be exactly the invented surface this file's
+ * header forbids.
+ */
+const leafWorkspaces = new WeakMap<WorkspaceLeaf, FakeWorkspace>();
+
+/**
  * Minimal stand-in for Obsidian's `WorkspaceLeaf`. Real Obsidian hands a leaf
  * to a registered view's constructor and the view reads `app`/other state
  * off it during construction (see `ItemView` below) — `app` is exposed here
- * for exactly that, and nothing else on the real leaf's much larger surface
- * is used by anything this mock supports.
+ * for exactly that. Everything else below is on the real class: `view`,
+ * `getViewState`, `setViewState`, `detach`.
+ *
+ * `setViewState` records the state and does NOT construct a view for it —
+ * this mock has no view registry to look one up in, and inventing the
+ * scheduling by which real Obsidian builds, opens and (since 1.7.2) defers a
+ * view would be guesswork of exactly the kind `JournalView.composer.test.ts`
+ * declines to build on. A test that needs a leaf carrying a view assigns
+ * `leaf.view` itself, or asks `FakeWorkspace.addLeaf` for one.
  */
 export class WorkspaceLeaf {
   view: unknown = null;
+  private viewState: FakeViewState = { type: "empty" };
+
   constructor(public app?: unknown) {}
+
+  getViewState(): FakeViewState {
+    // A copy: the real method hands back a fresh object, so a caller mutating
+    // it must not be able to reach back into this leaf.
+    return { ...this.viewState };
+  }
+
+  async setViewState(viewState: FakeViewState, _eState?: unknown): Promise<void> {
+    this.viewState = { ...viewState };
+  }
+
+  /**
+   * Removes the leaf from whichever `FakeWorkspace` holds it, so
+   * `getLeavesOfType` stops returning it — the observable half of the real
+   * method that anything under test can act on. The real one also destroys
+   * the leaf's view; nothing here does, because no view this mock builds owns
+   * resources outside the DOM its own `onClose` empties.
+   */
+  detach(): void {
+    leafWorkspaces.get(this)?.removeLeaf(this);
+  }
+}
+
+/**
+ * In-memory workspace, handed over as `app.workspace`.
+ *
+ * Named `FakeWorkspace`, not `Workspace`, on purpose: it therefore shadows no
+ * real Obsidian export, so the test-only state it carries (`activeFile`,
+ * `leaves`, `app`, `addLeaf`) cannot leak into production types the way the
+ * header's policy warns about. Every member a `src/` module actually calls is
+ * real `Workspace` API, with the real signatures — `revealLeaf` async,
+ * `getRightLeaf` nullable — so a caller type-checked against the real `.d.ts`
+ * behaves the same way here.
+ *
+ * Extends `FakeEvents` for `on`/`offref`, plus the test-driven `trigger`
+ * used to fire `file-open`.
+ */
+export class FakeWorkspace extends FakeEvents {
+  /** Set by `createFakeApp`, so minted leaves carry an app. */
+  app: unknown = undefined;
+  /** What `getActiveFile()` reports. A test assigns this directly. */
+  activeFile: TFile | null = null;
+  /** Every leaf currently in this workspace, in the order it was added. */
+  leaves: WorkspaceLeaf[] = [];
+
+  getActiveFile(): TFile | null {
+    return this.activeFile;
+  }
+
+  /**
+   * Matches on the leaf's recorded view state, not on `leaf.view`, so a leaf
+   * whose view this mock cannot build is still findable. Only leaves this
+   * workspace knows about are searched — a bare `new WorkspaceLeaf(app)` (the
+   * `journalViewHarness.ts` convention, where a view is constructed directly
+   * and no workspace is involved) is not one of them; use `addLeaf`.
+   */
+  getLeavesOfType(viewType: string): WorkspaceLeaf[] {
+    return this.leaves.filter((leaf) => leaf.getViewState().type === viewType);
+  }
+
+  /**
+   * Real Obsidian returns null when there is no right sidebar to put a leaf
+   * in (and `main.ts`'s callers all handle that), so the return type says so
+   * even though this mock always has room.
+   */
+  getRightLeaf(_split: boolean): WorkspaceLeaf | null {
+    return this.addLeaf("empty");
+  }
+
+  /** Async on the real class; nothing to reveal here, but the shape matters. */
+  async revealLeaf(_leaf: WorkspaceLeaf): Promise<void> {}
+
+  /**
+   * Runs immediately. Real Obsidian defers until the layout is ready and runs
+   * it straight away afterwards; this mock is always "afterwards", and a test
+   * that needs to observe the deferral would have to model a layout this has
+   * no notion of.
+   */
+  onLayoutReady(callback: () => unknown): void {
+    callback();
+  }
+
+  /**
+   * Test-only: registers a leaf of `type`, optionally already holding `view`.
+   * The real workspace mints leaves through `setViewState`, which builds the
+   * view from the plugin's own registry — see `WorkspaceLeaf.setViewState`
+   * for why this mock does not attempt that, and hands the view over instead.
+   */
+  addLeaf(type: string, view?: unknown): WorkspaceLeaf {
+    const leaf = new WorkspaceLeaf(this.app);
+    void leaf.setViewState({ type });
+    leaf.view = view ?? null;
+    this.leaves.push(leaf);
+    leafWorkspaces.set(leaf, this);
+    return leaf;
+  }
+
+  /** Called by `WorkspaceLeaf.detach()`; not part of the real API. */
+  removeLeaf(leaf: WorkspaceLeaf): void {
+    const index = this.leaves.indexOf(leaf);
+    if (index >= 0) this.leaves.splice(index, 1);
+    leafWorkspaces.delete(leaf);
+  }
+}
+
+/** What this mock's `Scope.register` stores and hands back. */
+export interface FakeKeymapHandler {
+  modifiers: string[] | null;
+  key: string | null;
+  func: (evt: KeyboardEvent, ctx: { modifiers: string | null; key: string | null; vkey: string }) => unknown;
+}
+
+/**
+ * Minimal stand-in for Obsidian's `Scope` — the view-level keymap
+ * `JournalView`'s constructor registers Escape on (`View.scope`, `@since
+ * 1.5.7`).
+ *
+ * Nothing here dispatches, because nothing here could: real Obsidian owns the
+ * scope stack and decides which scope sees a given keypress, and that is
+ * exactly the part a fake cannot honestly reproduce. Tests therefore invoke a
+ * registered handler directly (`journalViewHarness.ts`'s `pressEscape`), which
+ * pins what the handler decides and deliberately claims nothing about when
+ * Obsidian calls it — see `docs/manual-testing-open.md` for the one ordering
+ * question left open to a person.
+ */
+export class Scope {
+  /** Inspection surface the real `Scope` lacks — see this file's header. */
+  handlers: FakeKeymapHandler[] = [];
+
+  constructor(public parent?: Scope) {}
+
+  register(
+    modifiers: string[] | null,
+    key: string | null,
+    func: FakeKeymapHandler["func"],
+  ): FakeKeymapHandler {
+    const handler: FakeKeymapHandler = { modifiers, key, func };
+    this.handlers.push(handler);
+    return handler;
+  }
+
+  unregister(handler: FakeKeymapHandler): void {
+    const index = this.handlers.indexOf(handler);
+    if (index >= 0) this.handlers.splice(index, 1);
+  }
 }
 
 /**
@@ -581,6 +819,8 @@ export class WorkspaceLeaf {
  */
 export class ItemView extends Component {
   app: unknown;
+  /** `@since 1.5.7`. Real Obsidian defaults this to null; a view assigns it. */
+  scope: Scope | null = null;
   leaf: WorkspaceLeaf;
   containerEl: HTMLElement;
   contentEl: HTMLElement;
@@ -726,6 +966,16 @@ export function setTooltip(
 }
 
 /**
+ * Stand-in for Obsidian's real `setIcon`, which injects an `<svg>` from its
+ * own icon registry — something no jsdom test has or needs. Recording the id
+ * on `dataset` matches what `ButtonComponent.setIcon` above already does, so a
+ * test that cares which icon was asked for reads it the same way either way.
+ */
+export function setIcon(el: HTMLElement, iconId: string): void {
+  el.dataset.icon = iconId;
+}
+
+/**
  * Stand-in for Obsidian's `MarkdownRenderer.render`. Real rendering produces
  * fully-formatted HTML (lists, embeds, callouts, ...); this mock cannot and
  * does not attempt that — it only proves `renderStatic` reached this call
@@ -743,6 +993,45 @@ export class MarkdownRenderer {
     _component: unknown,
   ): Promise<void> {
     el.textContent = markdown;
+  }
+}
+
+/**
+ * Stand-in for the class `mentionsCodeBlock.ts` subclasses to hand its panel's
+ * lifecycle to Obsidian. Shape matches the real one exactly (a single
+ * `containerEl` constructor parameter, `Component` as the base), so nothing
+ * here is invented surface — see this file's header policy.
+ */
+export class MarkdownRenderChild extends Component {
+  constructor(public containerEl: HTMLElement) {
+    super();
+  }
+}
+
+/** Mirrors the real module's exported alias for `MarkdownView.getMode()`. */
+export type MarkdownViewModeType = "source" | "preview";
+
+/**
+ * Stand-in for the class `mentionsFooter.ts` narrows leaf views with, and
+ * which `tests/mentionsFooter.test.ts` constructs to stand in for a note's
+ * pane.
+ *
+ * SHORTCUT, documented so the next reader need not verify it: the real
+ * `MarkdownView` reaches `ItemView` through `FileView` → `EditableFileView` →
+ * `TextFileView`, and inherits `file: TFile | null` from `FileView`. Skipping
+ * those three is safe because nothing under test touches anything they add.
+ */
+export class MarkdownView extends ItemView {
+  file: TFile | null = null;
+
+  /**
+   * Real, documented Obsidian API, so no header exception applies — but it is
+   * deliberately a fixed return rather than a settable `mode` field. A field
+   * the real class does not have is exactly the mismatch this file's header
+   * forbids; a test that needs the other mode subclasses this instead.
+   */
+  getMode(): MarkdownViewModeType {
+    return "preview";
   }
 }
 

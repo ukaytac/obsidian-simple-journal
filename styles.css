@@ -862,3 +862,321 @@
 .journal-entry-header .journal-entry-tag:focus-visible {
   box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }
+
+/* ── Mentions ─────────────────────────────────────────────────────────────
+   The panel repeats the timeline's visual language (`.journal-day-header` is
+   literally reused) so a reader does not learn a second interface. What is
+   NOT reused is anything that assumes a view container: this panel lives
+   inside an arbitrary note, sometimes inside the note's own text column, so
+   it sets no max-width and no page padding of its own. */
+
+.journal-mentions {
+  margin-top: var(--size-4-8);
+}
+
+/* The panel claims its container's class before it knows whether it has
+   anything to show, and the automatic footer mounts on every eligible note
+   whether or not one exists. Without this, every note with no mentions would
+   carry a class-bearing, childless div at the end of its content — and the
+   `margin-top` above would render as an unexplained gap. `:empty` matches
+   exactly that case and nothing else: an empty-state message is a child, so a
+   panel showing one still lays out normally. */
+.journal-mentions:empty {
+  display: none;
+}
+
+/* `--text-muted`, not `--text-faint`. Faint is the timeline's register for
+   things the eye should slide past — a timestamp, an entry's tag chips — and
+   it was wrong here: at the very bottom of someone's note this header is the
+   only thing announcing that a new section has started, and in a real vault
+   it read as page furniture rather than as a heading. Muted is still quiet
+   enough not to compete with the note's own text. */
+.journal-mentions-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-3);
+}
+
+/* A hairline, not a border box: this is a writing surface, and the panel has
+   to read as a continuation of the note rather than a card stuck to it. */
+.journal-mentions-header::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background-color: var(--background-modifier-border);
+}
+
+/* The footer's header, and only the footer's, is a real <button> that
+   collapses the panel to this one row (see `MentionsPanel.renderHeader`). The
+   same reset `.journal-entry-time` and `.journal-mentions-more` need, and for
+   the same reason: Obsidian's button base would otherwise render a filled,
+   padded chip where a quiet section heading belongs, and `.mobile-tap` would
+   flash that chip back for the duration of every touch. `:hover` and
+   `.mobile-tap` are spelled out rather than left to this rule's specificity,
+   so a theme's own `button:hover`-style rule cannot flip the tie.
+
+   `width: 100%` because the row is the control: the hairline runs the width of
+   the note, and a target that stopped short of it would leave most of what
+   looks clickable inert. `line-height: inherit` because a button's `normal`
+   would make this header a hair shorter than the identical-looking one the
+   other two shells render as a div.
+
+   Not reset, unlike `.journal-entry-time`'s: `user-select`. That one had to
+   stay selectable because it is part of an entry a reader might copy. This is
+   a control, and text you cannot accidentally drag-select is what every other
+   collapsible header in Obsidian does. */
+button.journal-mentions-header,
+button.journal-mentions-header:hover,
+button.journal-mentions-header.mobile-tap {
+  width: 100%;
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  height: auto;
+  text-align: left;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+button.journal-mentions-header:hover,
+button.journal-mentions-header:focus-visible {
+  color: var(--text-normal);
+}
+
+/* `box-shadow: none` above also erases Obsidian's own `button:focus-visible`
+   ring, leaving keyboard focus marked by the much weaker colour shift alone.
+   Reinstated with the variable Obsidian's own rings use — same fix, and same
+   forced-colors fallback, as `.journal-entry-time` above. */
+button.journal-mentions-header:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+@media (forced-colors: active) {
+  button.journal-mentions-header:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
+/* The collapse affordance. Obsidian's own chevron, at its own icon size, and
+   nothing else: every collapsible section the user already knows — backlinks,
+   outline, callouts — is marked exactly this way, so it needs no explaining
+   and adds no border, background or second row to a header whose whole design
+   is a hairline and two words. Without it the row is pure typography, which
+   is precisely what the two non-collapsible shells' headers also are, and a
+   control nobody can tell apart from a label is not a control. */
+.journal-mentions-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  --icon-size: var(--icon-s);
+}
+
+.journal-mentions-count {
+  font-variant-numeric: tabular-nums;
+  order: 1;
+}
+
+.journal-mentions-entry {
+  margin-bottom: var(--size-4-4);
+}
+
+/* Same reset as `.journal-entry-header .journal-entry-time` above: Obsidian's
+   base button styling would otherwise render a filled chip where a quiet
+   timestamp belongs, and `.mobile-tap` would flash that chip back for the
+   duration of every touch. Two classes so a theme's later `button` rule does
+   not win on load order. */
+.journal-mentions-entry .journal-mentions-time,
+.journal-mentions-entry .journal-mentions-time:hover,
+.journal-mentions-entry .journal-mentions-time.mobile-tap {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+  height: auto;
+  cursor: pointer;
+}
+
+.journal-mentions-entry .journal-mentions-time:hover,
+.journal-mentions-entry .journal-mentions-time:focus-visible {
+  color: var(--text-normal);
+}
+
+/* The rendered entry brings its own first/last block margins, which would
+   otherwise double up with the row spacing above. */
+.journal-mentions-body > :first-child {
+  margin-top: 0;
+}
+
+.journal-mentions-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Sidebar typography, and the SIDEBAR ONLY.
+
+   The other two shells render inside a note, where the entry body has to match
+   the prose around it — shrinking it there would make a mentioned entry look
+   like a different kind of content than the paragraph above it. The sidebar
+   has no surrounding prose to match, and it is a narrow column: note-sized
+   text wraps every five or six words and reads as a cramped block. Obsidian's
+   own backlinks and outline panes make the same trade.
+
+   Smaller AND looser, not merely smaller. Shrinking the type while keeping the
+   ratio makes the column tighter in absolute terms, which is the opposite of
+   the complaint. The raw 1.6 is deliberate and is the one number in this file
+   not taken from an Obsidian variable: Obsidian exposes `--line-height-normal`
+   (1.5) and `--line-height-tight`, and nothing looser, so there is no variable
+   to reach for. It is a ratio rather than a length, so it still scales with
+   whatever font size a theme resolves.
+
+   The `p`/`li` selectors are not redundant: `.markdown-rendered` sets its own
+   line height on block elements, which would otherwise win over the container. */
+.journal-mentions-view .journal-mentions-body,
+.journal-mentions-view .journal-mentions-body p,
+.journal-mentions-view .journal-mentions-body li {
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+}
+
+.journal-mentions-empty {
+  font-size: var(--font-ui-small);
+  color: var(--text-faint);
+}
+
+/* Stands in for an entry that could not be read or rendered (see
+   MentionsPanel.showFailure). Borrows `.journal-entry-error`'s visual
+   language rather than `.journal-mentions-empty`'s: this is a failure, not an
+   absence, and the timeline already teaches `--text-error` at
+   `--font-ui-smaller` to mean "this entry did not survive a disk operation".
+   Faint grey would read as "the entry is empty", which is exactly the
+   confusion this line exists to remove. */
+.journal-mentions-error {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-error);
+}
+
+/* Chained to `.journal-mentions` on purpose, and this is the third time this
+   file has had to learn it. A lone `.journal-mentions-more` ties on
+   specificity with core's and a theme's own `button` rules and therefore
+   loses to whichever stylesheet loads last — which is how this shipped as a
+   filled grey chip sitting under a panel that has no other chrome in it. Two
+   classes wins on specificity instead of on load order. Same fix, and same
+   reasoning, as `.journal-entry-header .journal-entry-time` and
+   `button.journal-mentions-header` above; `.mobile-tap` is listed for the
+   same reason it is there — Obsidian tags whatever a finger is pressing with
+   that class, one step ahead of the base reset. */
+.journal-mentions .journal-mentions-more,
+.journal-mentions .journal-mentions-more:hover,
+.journal-mentions .journal-mentions-more.mobile-tap {
+  display: block;
+  margin: var(--size-4-3) auto 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  height: auto;
+  cursor: pointer;
+}
+
+.journal-mentions .journal-mentions-more:hover,
+.journal-mentions .journal-mentions-more:focus-visible {
+  color: var(--text-normal);
+}
+
+/* `box-shadow: none` above erases Obsidian's own `button:focus-visible` ring,
+   which would leave keyboard focus marked by the colour shift alone. Same
+   reinstatement, and same forced-colors fallback, as the header button. */
+.journal-mentions .journal-mentions-more:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+@media (forced-colors: active) {
+  .journal-mentions .journal-mentions-more:focus-visible {
+    outline: 2px solid;
+    outline-offset: 2px;
+  }
+}
+
+/* Shell C's container: the panel the plugin appends to a note's own content
+   flow (see `mentionsFooter.ts`). It carries `.journal-mentions` too, so the
+   spacing above the panel and the `:empty` collapse both already apply — all
+   this adds is clearance below, because the footer is the last thing in the
+   sizer and would otherwise sit flush against whatever the scroller ends
+   with. No border, background or width of its own: it has to read as the end
+   of the note, not as a card bolted to it. */
+.journal-mentions-footer {
+  margin-top: var(--size-4-8);
+  margin-bottom: var(--size-4-4);
+}
+
+/* Cap the editor's empty click area on a note that has a footer.
+
+   Obsidian pads `.cm-content` below the last line so you can click well past
+   the text and keep writing, and it sizes that padding to fill the viewport —
+   measured at 521px on a short note. The footer sits after the content
+   container, so on exactly the notes this surface is for (a person note: some
+   properties, little or no body) it lands most of a screen below the text.
+   Obsidian's own `.embedded-backlinks` sits in the same place and has the same
+   problem, which is why this is a deliberate departure rather than a fix for
+   something we broke.
+
+   Capped rather than removed, and that is the whole point of the rule. Zeroing
+   it would read better and would take away click-below-to-write on every note
+   a journal entry happens to link to — including one the user actively writes
+   in. 6rem keeps a few lines' worth.
+
+   `!important` because Obsidian computes the value inline. `:has()` so this
+   reaches only sizers that actually carry a footer: with the setting off, or
+   on a note with no mentions, the editor is untouched. */
+.cm-sizer:has(> .journal-mentions-footer) .cm-content {
+  padding-bottom: 6rem !important;
+}
+
+/* Align the footer with the note's TEXT, which is not the same thing as
+   aligning it with the element it was appended to.
+
+   In CodeMirror, Obsidian applies the readable line width to each `.cm-line`
+   individually — not to `.cm-content`, and not to `.cm-sizer`. So a child of
+   the sizer is correctly aligned with the content *container* and still twice
+   the width of every visible paragraph above it. Measured in a real vault:
+   `.cm-content` and the footer both spanned 355..1444 while the note's lines
+   sat in a 42rem column inside that.
+
+   Guarded on `.is-readable-line-width` rather than applied unconditionally,
+   because `--file-line-width` keeps its value when the setting is off — an
+   unguarded rule would indent the footer away from text that is deliberately
+   full-bleed.
+
+   In reading view Obsidian constrains `.markdown-preview-sizer` itself, so
+   this resolves to the width the footer already had. Harmless there, and one
+   rule beats two that have to be kept in agreement.
+
+   This is the only place outside `mentionsFooter.ts` that knows an Obsidian
+   layout class, and it is styling rather than lookup — the same shape as the
+   `.journal-entry-embed .cm-sizer` rules the editor exception already carries
+   above. See CLAUDE.md, "# Mentions". */
+.is-readable-line-width .journal-mentions-footer {
+  max-width: var(--file-line-width);
+  margin-inline: auto;
+}
+
+/* The recursion guard's placeholder: a `simple-journal` block that ended up
+   inside a mentions panel. Inert by design — see `mentionsCodeBlock.ts`. */
+.journal-mentions-nested {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-style: italic;
+}
