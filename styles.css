@@ -1044,7 +1044,7 @@ button.journal-mentions-header:focus-visible {
 .journal-mentions-view .journal-mentions-body,
 .journal-mentions-view .journal-mentions-body p,
 .journal-mentions-view .journal-mentions-body li {
-  font-size: var(--font-ui-medium);
+  font-size: var(--font-ui-small);
   line-height: 1.6;
 }
 
@@ -1065,22 +1065,49 @@ button.journal-mentions-header:focus-visible {
   color: var(--text-error);
 }
 
-.journal-mentions-more,
-.journal-mentions-more:hover {
+/* Chained to `.journal-mentions` on purpose, and this is the third time this
+   file has had to learn it. A lone `.journal-mentions-more` ties on
+   specificity with core's and a theme's own `button` rules and therefore
+   loses to whichever stylesheet loads last — which is how this shipped as a
+   filled grey chip sitting under a panel that has no other chrome in it. Two
+   classes wins on specificity instead of on load order. Same fix, and same
+   reasoning, as `.journal-entry-header .journal-entry-time` and
+   `button.journal-mentions-header` above; `.mobile-tap` is listed for the
+   same reason it is there — Obsidian tags whatever a finger is pressing with
+   that class, one step ahead of the base reset. */
+.journal-mentions .journal-mentions-more,
+.journal-mentions .journal-mentions-more:hover,
+.journal-mentions .journal-mentions-more.mobile-tap {
   display: block;
-  margin: var(--size-4-2) 0 0 auto;
+  margin: var(--size-4-3) 0 0 auto;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   background-color: transparent;
   box-shadow: none;
   border: none;
+  border-radius: 0;
   padding: 0;
+  height: auto;
   cursor: pointer;
 }
 
-.journal-mentions-more:hover,
-.journal-mentions-more:focus-visible {
+.journal-mentions .journal-mentions-more:hover,
+.journal-mentions .journal-mentions-more:focus-visible {
   color: var(--text-normal);
+}
+
+/* `box-shadow: none` above erases Obsidian's own `button:focus-visible` ring,
+   which would leave keyboard focus marked by the colour shift alone. Same
+   reinstatement, and same forced-colors fallback, as the header button. */
+.journal-mentions .journal-mentions-more:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+@media (forced-colors: active) {
+  .journal-mentions .journal-mentions-more:focus-visible {
+    outline: 2px solid;
+    outline-offset: 2px;
+  }
 }
 
 /* Shell C's container: the panel the plugin appends to a note's own content
