@@ -599,6 +599,16 @@ is one the user already has. A scope also composes with an anchor and can
 silently combine into a near-empty timeline; there is nothing for this boolean
 to compound with.
 
+One more thing differs, and it is styling rather than an option: the sidebar
+renders entry bodies a step smaller and a shade looser than the other two. The
+same reasoning that governs the options governs this. A panel inside a note has
+prose around it to match, and an entry that used its own type size there would
+read as a foreign object in the middle of someone's writing. The sidebar has
+nothing to match and is a narrow column, where note-sized text wraps every few
+words. Obsidian's own backlinks and outline panes make the same trade. Keep it
+to typography: if a shell ever needs to differ in *what it shows*, that is a
+third option and belongs above, argued.
+
 Staying current is the renderer's job too, through two debounced subscriptions:
 the journal's own `onChange`, and `metadataCache`'s `resolve` for a link added
 or removed. The second is **filtered to journal entries**, unlike the calendar's

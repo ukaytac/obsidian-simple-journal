@@ -1022,6 +1022,32 @@ button.journal-mentions-header:focus-visible {
   margin-bottom: 0;
 }
 
+/* Sidebar typography, and the SIDEBAR ONLY.
+
+   The other two shells render inside a note, where the entry body has to match
+   the prose around it — shrinking it there would make a mentioned entry look
+   like a different kind of content than the paragraph above it. The sidebar
+   has no surrounding prose to match, and it is a narrow column: note-sized
+   text wraps every five or six words and reads as a cramped block. Obsidian's
+   own backlinks and outline panes make the same trade.
+
+   Smaller AND looser, not merely smaller. Shrinking the type while keeping the
+   ratio makes the column tighter in absolute terms, which is the opposite of
+   the complaint. The raw 1.6 is deliberate and is the one number in this file
+   not taken from an Obsidian variable: Obsidian exposes `--line-height-normal`
+   (1.5) and `--line-height-tight`, and nothing looser, so there is no variable
+   to reach for. It is a ratio rather than a length, so it still scales with
+   whatever font size a theme resolves.
+
+   The `p`/`li` selectors are not redundant: `.markdown-rendered` sets its own
+   line height on block elements, which would otherwise win over the container. */
+.journal-mentions-view .journal-mentions-body,
+.journal-mentions-view .journal-mentions-body p,
+.journal-mentions-view .journal-mentions-body li {
+  font-size: var(--font-ui-medium);
+  line-height: 1.6;
+}
+
 .journal-mentions-empty {
   font-size: var(--font-ui-small);
   color: var(--text-faint);
