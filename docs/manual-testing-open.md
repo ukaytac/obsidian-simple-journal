@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-638 automated tests cover the pure logic and, through a jsdom harness, a good
+646 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
