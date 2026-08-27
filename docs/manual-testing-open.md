@@ -342,7 +342,10 @@ either way, because nothing in the suite can settle them.
       chevron turns. Open a second mentioned note in a split — its footer must
       already be folded too, not still showing entries. Reopen Obsidian: still
       folded. Then expand, page in with **Show more**, fold and unfold: the
-      pages you had asked for must come back, not the first five. Only the
+      pages you had asked for must come back, not the first five. Do it in live
+      preview as well as reading view — there the header sits inside
+      CodeMirror's own scroller, where a click could in principle be taken for
+      a click into the document. Only the
       footer folds — the sidebar panel and a `simple-journal` block stay put
       through all of it. Tab to the header and press Enter and Space: both must
       work, and the focus ring must be visible in your theme.

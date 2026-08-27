@@ -916,12 +916,20 @@
    same reset `.journal-entry-time` and `.journal-mentions-more` need, and for
    the same reason: Obsidian's button base would otherwise render a filled,
    padded chip where a quiet section heading belongs, and `.mobile-tap` would
-   flash that chip back for the duration of every touch. Two selectors so a
-   theme's later `button` rule cannot win on load order.
+   flash that chip back for the duration of every touch. `:hover` and
+   `.mobile-tap` are spelled out rather than left to this rule's specificity,
+   so a theme's own `button:hover`-style rule cannot flip the tie.
 
    `width: 100%` because the row is the control: the hairline runs the width of
    the note, and a target that stopped short of it would leave most of what
-   looks clickable inert. */
+   looks clickable inert. `line-height: inherit` because a button's `normal`
+   would make this header a hair shorter than the identical-looking one the
+   other two shells render as a div.
+
+   Not reset, unlike `.journal-entry-time`'s: `user-select`. That one had to
+   stay selectable because it is part of an entry a reader might copy. This is
+   a control, and text you cannot accidentally drag-select is what every other
+   collapsible header in Obsidian does. */
 button.journal-mentions-header,
 button.journal-mentions-header:hover,
 button.journal-mentions-header.mobile-tap {
@@ -934,6 +942,7 @@ button.journal-mentions-header.mobile-tap {
   height: auto;
   text-align: left;
   font-family: inherit;
+  line-height: inherit;
   cursor: pointer;
 }
 

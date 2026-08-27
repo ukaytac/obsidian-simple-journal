@@ -408,6 +408,16 @@ describe("a collapsible panel", () => {
     return container.querySelector<HTMLElement>(".journal-mentions-header");
   }
 
+  /**
+   * Which chevron the header is showing. The mock records the id rather than
+   * injecting an SVG (jsdom has no icon registry), which is all this needs:
+   * the discoverability decision is that the direction tracks the state, and a
+   * chevron stuck pointing down through a collapse is the failure.
+   */
+  function chevron(container: HTMLElement): string | undefined {
+    return container.querySelector<HTMLElement>(".journal-mentions-chevron")?.dataset.icon;
+  }
+
   it("is expanded when nothing has been stored yet", async () => {
     const { plugin, target, container } = setup(2);
     const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
@@ -416,6 +426,7 @@ describe("a collapsible panel", () => {
     // The justification for this whole surface is seeing entry CONTENT rather
     // than a list of links; starting collapsed would quietly undo that.
     expect(header(container)?.getAttribute("aria-expanded")).toBe("true");
+    expect(chevron(container)).toBe("chevron-down");
     expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
     panel.destroy();
   });
@@ -462,6 +473,7 @@ describe("a collapsible panel", () => {
     expect(plugin.settings.mentionsFooterCollapsed).toBe(true);
     expect(saveSettings).toHaveBeenCalledTimes(1);
     expect(header(container)?.getAttribute("aria-expanded")).toBe("false");
+    expect(chevron(container)).toBe("chevron-right");
     expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
 
     header(container)?.click();

@@ -344,6 +344,13 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
    * what makes a second open note's footer agree with the one that was
    * clicked; the write to disk is remembering, not applying, and making the
    * user wait on it would be making them wait for nothing.
+   *
+   * The registry repaints panels that cannot collapse as well, which is a
+   * re-render they did not need. Accepted rather than filtered: a click on one
+   * header, at human speed, is not the load this renderer is careful about
+   * (that is the `resolve` burst its subscription filters), and a second way
+   * of reaching only some of the live panels is exactly the parallel mechanism
+   * the registry exists to make unnecessary.
    */
   function toggleCollapsed(): void {
     plugin.settings.mentionsFooterCollapsed = !plugin.settings.mentionsFooterCollapsed;
