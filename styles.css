@@ -1079,7 +1079,7 @@ button.journal-mentions-header:focus-visible {
 .journal-mentions .journal-mentions-more:hover,
 .journal-mentions .journal-mentions-more.mobile-tap {
   display: block;
-  margin: var(--size-4-3) 0 0 auto;
+  margin: var(--size-4-3) auto 0;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   background-color: transparent;
