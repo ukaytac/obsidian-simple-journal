@@ -6,6 +6,7 @@ import {
   Menu,
   Notice,
   Platform,
+  Scope,
   setTooltip,
   type TFile,
   WorkspaceLeaf,
@@ -514,6 +515,31 @@ export class JournalView extends ItemView {
     // the mobile timing guesses elsewhere in this file — see CLAUDE.md's
     // Target Platforms section.
     this.contentEl.addEventListener("keydown", (event) => this.onContentKeyDown(event));
+
+    // Escape closes an uncommitted composer — see CLAUDE.md's "Creating a New
+    // Entry", and `onEscape` for what it does and does not touch.
+    //
+    // On the view's own keymap scope (`View.scope`, `@since 1.5.7`, public and
+    // documented; this plugin's `minAppVersion` is 1.7.2), NOT as a third
+    // `contentEl` keydown listener. Obsidian owns the scope stack and decides
+    // what a keypress reaches and in which order; a hand-rolled DOM listener
+    // racing a mounted CodeMirror for the same key would be this plugin
+    // guessing at that ordering, and guessed event ordering is what cost six
+    // attempts to diagnose the composer focus race (see the case study in
+    // `docs/manual-testing.md`). The registered listener returns `false` only
+    // when it actually handled the key, which is Obsidian's own documented way
+    // to say "swallow this"; anything else and the key carries on to
+    // `this.app.scope` exactly as it does today.
+    //
+    // Registered here rather than in `onOpen`, for the same reason as the
+    // listener above: `onOpen` can run more than once over a view's life, and
+    // each call would add another handler to the same scope.
+    //
+    // Deliberately `[]` and not `null`: `null` would capture Escape with any
+    // modifier held, and Ctrl/Shift+Escape is not the "close this" gesture the
+    // user asked for.
+    this.scope = new Scope(this.app.scope);
+    this.scope.register([], "Escape", () => this.onEscape());
   }
 
   getViewType(): string {
@@ -2745,8 +2771,28 @@ export class JournalView extends ItemView {
     // that focus was activation churn rather than the user's own click —
     // discards a composer nobody has touched, which is worse than leaving
     // an untouched one open.
+    //
+    // Specific to blur, and therefore checked HERE rather than in
+    // `teardownComposer`: `onEscape` deliberately closes a composer nobody
+    // has typed into, because a keypress is not ambiguous the way a blur is.
     if (!this.composerHasInput) return;
 
+    this.teardownComposer(rendered);
+  }
+
+  /**
+   * Closes an uncommitted composer: the DOM, the editor and the timers go,
+   * and the timeline is put back into a coherent state. Shared by the two
+   * ways a composer can be closed without ever becoming a file — an
+   * abandoning blur (`discardEmptyComposer`) and Escape (`onEscape`) — so
+   * the two can decide differently about *whether* to close and never drift
+   * about *how*.
+   *
+   * Assumes both callers' checks have already run: this is `this.composer`,
+   * and it holds nothing meaningful. It does not re-check either, so nothing
+   * may call it without doing so.
+   */
+  private teardownComposer(rendered: RenderedEntry): void {
     this.clearMobileTimers(rendered);
     rendered.editor?.destroy();
     rendered.el.remove();
@@ -2760,6 +2806,42 @@ export class JournalView extends ItemView {
     // would leave a blank pane with no way back to the message short of a
     // manual reload.
     if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.tagScope);
+  }
+
+  /**
+   * Escape, at the view's own keymap scope (registered in the constructor).
+   * Closes an uncommitted composer; with no composer to close it declines the
+   * key, so Escape everywhere else in the journal behaves exactly as it did —
+   * including inside a mounted entry's editor, where vim mode, an open
+   * autocomplete or a selection own it (the same boundary
+   * `onContentKeyDown` draws for the tag scope).
+   *
+   * Returns `false` — Obsidian's documented "handled, preventDefault" — for
+   * every state where a composer is on screen, whether or not this actually
+   * closed it. One keypress must not do two different things depending on
+   * where an invisible async chain happens to be at that instant, and `false`
+   * on its own destroys nothing.
+   */
+  private onEscape(): false | undefined {
+    // A keystroke has already claimed this composer and a file is being
+    // created for it (see `pendingComposerCommit`). Nothing here may touch
+    // that: the user's text is mid-flight to disk, and CLAUDE.md's "Error
+    // Handling" outranks the convenience this method exists for.
+    if (this.pendingComposerCommit) return false;
+
+    const composer = this.composer;
+    if (!composer) return undefined;
+
+    // `onComposerInput` claims `this.composer` (nulling it) synchronously on
+    // the first meaningful keystroke, so a composer still reachable here is
+    // normally known-empty and discarding it loses nothing. NORMALLY, not
+    // always: `reestablishComposer` re-opens a composer seeded with a
+    // snapshot's text and only claims it an await later, so a meaningful one
+    // genuinely is reachable in that window. Never destroy text.
+    if (isMeaningful(composer.editor?.getValue() ?? "")) return false;
+
+    this.teardownComposer(composer);
+    return false;
   }
 
   /**

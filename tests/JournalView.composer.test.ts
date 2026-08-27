@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addEntry, createHarness, internals, settle, tagEntry } from "./journalViewHarness";
+import { addEntry, createHarness, internals, pressEscape, settle, tagEntry } from "./journalViewHarness";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -508,5 +508,96 @@ describe("JournalView composer lifecycle", () => {
 
     const indexed = h.service.getEntries().find((e: { file: { path: string } }) => e.file.path === file.path);
     expect(indexed?.tags).toEqual(["work"]);
+  });
+});
+
+/**
+ * Escape closes an uncommitted composer (CLAUDE.md, "Creating a New Entry").
+ * Registered on the view's own keymap scope, so these go through
+ * `pressEscape` — see its doc for why nothing here dispatches a DOM event.
+ */
+describe("JournalView composer: Escape", () => {
+  it("closes an open, empty composer that has never been typed into", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    const editor = internals(h.view).composer.editor;
+    const destroy = vi.spyOn(editor, "destroy");
+
+    // The distinction this test exists to pin: `discardEmptyComposer`'s
+    // `composerHasInput` gate would refuse here (nothing has been typed), and
+    // must not apply to Escape — a blur nobody caused is ambiguous, a
+    // keypress is not.
+    expect(internals(h.view).composerHasInput).toBe(false);
+
+    expect(pressEscape(h.view)).toBe(false);
+
+    expect(internals(h.view).composer).toBeNull();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(internals(h.view).timelineEl.querySelector(".journal-entry-composer")).toBeNull();
+    // Lazy Creation: nothing was ever written, so nothing is left behind.
+    expect(h.app.vault.files.size).toBe(0);
+  });
+
+  it("falls through when there is no composer to close", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+
+    // Anything other than `false` lets the key carry on to the parent scope,
+    // which is the whole of "Escape outside a composer behaves as it did".
+    expect(pressEscape(h.view)).not.toBe(false);
+  });
+
+  it("does not discard a composer holding meaningful text", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    // Set on the textarea WITHOUT dispatching an input event, which is what
+    // the one genuinely reachable window looks like: `reestablishComposer`
+    // re-opens a composer seeded with the snapshot's text (a mount, not an
+    // edit, so no `onChange` fires) and only claims it for commit an await
+    // later. Escape landing in that window must not throw the text away.
+    composerTextarea(h.view).value = "A draft carried across a rebuild";
+
+    expect(pressEscape(h.view)).toBe(false);
+
+    expect(internals(h.view).composer).not.toBeNull();
+    expect(composerTextarea(h.view).value).toBe("A draft carried across a rebuild");
+  });
+
+  it("destroys nothing while a first commit is in flight", async () => {
+    const h = createHarness();
+    h.service.load();
+    await h.view.onOpen();
+    await h.view.startNewEntry();
+
+    const composer = internals(h.view).composer;
+    const destroy = vi.spyOn(composer.editor, "destroy");
+
+    // Deliberately not settled: `onComposerInput` claims `this.composer`
+    // synchronously on this keystroke, but `commitComposer` only runs once
+    // its turn on the mutation chain arrives.
+    typeInto(composerTextarea(h.view), "Half-committed thought");
+    expect(internals(h.view).composer).toBeNull();
+    expect(internals(h.view).pendingComposerCommit).toBe(composer);
+
+    // Swallowed rather than let through, so one keypress does not do two
+    // different things depending on where an invisible async chain is.
+    expect(pressEscape(h.view)).toBe(false);
+    expect(destroy).not.toHaveBeenCalled();
+    expect(internals(h.view).pendingComposerCommit).toBe(composer);
+
+    await settle();
+    await settle();
+
+    // And the file the user's text was on its way to still arrives.
+    expect(h.app.vault.files.size).toBe(1);
+    const [path] = h.app.vault.files.keys();
+    expect(h.app.vault.contents.get(path)).toContain("Half-committed thought");
   });
 });

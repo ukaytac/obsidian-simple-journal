@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-633 automated tests cover the pure logic and, through a jsdom harness, a good
+637 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
@@ -133,6 +133,20 @@ Failure in any of these is a real defect, not a rough edge.
 - [ ] **`[[` autocomplete in a timeline entry.** Already confirmed against a
       probe embed during the API spike; this is the same check inside a real
       mounted entry.
+
+- [ ] **Escape in the composer, with vim mode on.** Turn on Vim key bindings
+      (Settings → Editor), run `New journal entry`, type nothing, press Escape.
+      Then do it again with the caret in an ordinary entry's editor, in insert
+      mode. Write down what happens in each case. *(Unverified, and not
+      knowable from the source: the composer's Escape handler sits on the
+      view's keymap scope, and whether CodeMirror's vim keymap consumes the
+      key before Obsidian's scope stack reaches that handler is Obsidian's
+      decision, not this plugin's. If vim consumes it, a vim user simply
+      leaves insert mode and the composer stays open — nothing is lost. If it
+      does not, a vim user gets the composer closed where they expected normal
+      mode. Either answer is worth recording; the second one is a product
+      question to reopen, not a bug to patch blind. Nothing is at risk of
+      being lost either way: Escape never closes a composer holding text.)*
 
 - [ ] **An entry cannot be renamed from the timeline.** Confirm there is
       nothing focusable or editable in an entry that would rename the file.

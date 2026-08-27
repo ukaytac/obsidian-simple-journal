@@ -383,6 +383,19 @@ If today is already visible at the top, do not jump unnecessarily.
 
 If the user is viewing older history and explicitly invokes `New journal entry`, move them back to today and focus the new entry composer.
 
+## Closing the composer
+
+Escape closes an uncommitted composer, and only that: with none open the key
+falls through untouched, so Escape everywhere else in the journal — inside a
+mounted entry's editor above all, where vim mode and autocomplete own it —
+behaves exactly as it did. Unlike the blur discard it is not gated on the user
+having typed something first: a blur nobody caused (leaf activation churn) is
+indistinguishable from the user leaving, which is why that gate exists, while
+a keypress is an unambiguous instruction. It never touches a composer whose
+text is already on its way to disk — a claimed-and-committing composer is a
+file being created, and `# Error Handling` outranks the convenience. Nothing
+Escape closes has ever held meaningful text, so nothing is lost by closing it.
+
 ---
 
 # Lazy Creation

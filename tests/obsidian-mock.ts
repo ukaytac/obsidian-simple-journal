@@ -13,11 +13,11 @@
  * test harness or the test itself, never on a class standing in for a real
  * one.
  *
- * This file is not yet fully compliant with that rule. Three pre-existing
- * exceptions predate it, and each is safe today only because every access to
- * its extra surface goes through a mock-typed reference or an explicit cast
- * — never through a real-typed one, which is the only way the mismatch above
- * could actually bite:
+ * This file is not yet fully compliant with that rule. Four exceptions stand,
+ * and each is safe today only because every access to its extra surface goes
+ * through a mock-typed reference or an explicit cast — never through a
+ * real-typed one, which is the only way the mismatch above could actually
+ * bite:
  *
  * - `Menu`'s `items`/`shown`/`findItem` (below) — inspection surface the real
  *   `Menu` doesn't have. Safe because no test currently references `Menu` at
@@ -29,6 +29,14 @@
  * - `WorkspaceLeaf`'s `app` field (below) — not on the real class's public
  *   surface. Safe because it is only ever read through this mock's `ItemView`
  *   constructor, itself mock-typed.
+ * - `Scope`'s `handlers` field (below) — inspection surface the real `Scope`
+ *   keeps private. Unavoidable rather than convenient: real Obsidian owns the
+ *   scope stack and decides which scope a keypress reaches, so there is no
+ *   jsdom event a test could dispatch to reach a handler registered on
+ *   `View.scope`, and no public way to ask a `Scope` what it holds. Safe
+ *   because the only reader is `journalViewHarness.ts`'s `pressEscape`, which
+ *   reaches it through `internals(view)` — `any`-typed — never through a
+ *   real-typed `Scope`.
  */
 export class TAbstractFile {
   // Typed `any` so mock instances remain structurally assignable to the real
@@ -527,6 +535,7 @@ export function createFakeApp(): {
   metadataCache: FakeMetadataCache;
   fileManager: FakeFileManager;
   workspace: FakeWorkspace;
+  scope: Scope;
 } {
   const vault = new FakeVault();
   const workspace = new FakeWorkspace();
@@ -535,6 +544,10 @@ export function createFakeApp(): {
     metadataCache: new FakeMetadataCache(),
     fileManager: new FakeFileManager(vault),
     workspace,
+    // The app-wide keymap scope. Present because `JournalView`'s constructor
+    // passes it as the parent of the view's own scope, exactly as `View.scope`'s
+    // own documented example does.
+    scope: new Scope(),
   };
   // Handed back so leaves this workspace mints (`getRightLeaf`, `addLeaf`)
   // carry an app, the way a real leaf does — `ItemView`'s constructor below
@@ -750,6 +763,48 @@ export class FakeWorkspace extends FakeEvents {
   }
 }
 
+/** What this mock's `Scope.register` stores and hands back. */
+export interface FakeKeymapHandler {
+  modifiers: string[] | null;
+  key: string | null;
+  func: (evt: KeyboardEvent, ctx: { modifiers: string | null; key: string | null; vkey: string }) => unknown;
+}
+
+/**
+ * Minimal stand-in for Obsidian's `Scope` — the view-level keymap
+ * `JournalView`'s constructor registers Escape on (`View.scope`, `@since
+ * 1.5.7`).
+ *
+ * Nothing here dispatches, because nothing here could: real Obsidian owns the
+ * scope stack and decides which scope sees a given keypress, and that is
+ * exactly the part a fake cannot honestly reproduce. Tests therefore invoke a
+ * registered handler directly (`journalViewHarness.ts`'s `pressEscape`), which
+ * pins what the handler decides and deliberately claims nothing about when
+ * Obsidian calls it — see `docs/manual-testing-open.md` for the one ordering
+ * question left open to a person.
+ */
+export class Scope {
+  /** Inspection surface the real `Scope` lacks — see this file's header. */
+  handlers: FakeKeymapHandler[] = [];
+
+  constructor(public parent?: Scope) {}
+
+  register(
+    modifiers: string[] | null,
+    key: string | null,
+    func: FakeKeymapHandler["func"],
+  ): FakeKeymapHandler {
+    const handler: FakeKeymapHandler = { modifiers, key, func };
+    this.handlers.push(handler);
+    return handler;
+  }
+
+  unregister(handler: FakeKeymapHandler): void {
+    const index = this.handlers.indexOf(handler);
+    if (index >= 0) this.handlers.splice(index, 1);
+  }
+}
+
 /**
  * Faithful-enough stand-in for `ItemView`/`View`: real fields (`app`, `leaf`,
  * `containerEl`, `contentEl`) plus `addAction`, so a concrete subclass
@@ -764,6 +819,8 @@ export class FakeWorkspace extends FakeEvents {
  */
 export class ItemView extends Component {
   app: unknown;
+  /** `@since 1.5.7`. Real Obsidian defaults this to null; a view assigns it. */
+  scope: Scope | null = null;
   leaf: WorkspaceLeaf;
   containerEl: HTMLElement;
   contentEl: HTMLElement;
