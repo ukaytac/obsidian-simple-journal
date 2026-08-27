@@ -217,6 +217,12 @@ export default class JournalEntriesPlugin extends Plugin {
     if (typeof this.settings.mentionsSidebar !== "boolean") {
       this.settings.mentionsSidebar = DEFAULT_SETTINGS.mentionsSidebar;
     }
+    // Remembered UI state rather than a configured setting, but it is written
+    // to the same `data.json` and read by the same code, so it gets the same
+    // check: nothing here may reach a panel as a non-boolean.
+    if (typeof this.settings.mentionsFooterCollapsed !== "boolean") {
+      this.settings.mentionsFooterCollapsed = DEFAULT_SETTINGS.mentionsFooterCollapsed;
+    }
   }
 
   /**

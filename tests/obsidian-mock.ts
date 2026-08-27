@@ -909,6 +909,16 @@ export function setTooltip(
 }
 
 /**
+ * Stand-in for Obsidian's real `setIcon`, which injects an `<svg>` from its
+ * own icon registry — something no jsdom test has or needs. Recording the id
+ * on `dataset` matches what `ButtonComponent.setIcon` above already does, so a
+ * test that cares which icon was asked for reads it the same way either way.
+ */
+export function setIcon(el: HTMLElement, iconId: string): void {
+  el.dataset.icon = iconId;
+}
+
+/**
  * Stand-in for Obsidian's `MarkdownRenderer.render`. Real rendering produces
  * fully-formatted HTML (lists, embeds, callouts, ...); this mock cannot and
  * does not attempt that — it only proves `renderStatic` reached this call

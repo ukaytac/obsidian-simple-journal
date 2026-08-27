@@ -2190,3 +2190,46 @@ covers, observe red, restore. Two tests were found to be incapable of failing
 this way and rewritten — the panel's teardown test (satisfied by an unrelated
 guard) and the `resolve` test (which triggered on the host note, so filtering
 would have silently turned it into a no-op assertion).
+
+## Added after the branch was finished: a collapsible footer
+
+Asked for after living with the feature in a real vault, and outside the plan
+entirely — recorded here because this section is the running record of what the
+branch actually contains.
+
+* **Only the footer collapses.** `createMentionsPanel` gained a second option,
+  `collapsible`, and the footer is the only shell that passes it. It is the one
+  panel that arrives unasked under an ordinary note; the sidebar would be
+  emptied by collapsing and the code block was typed on purpose. This made
+  CLAUDE.md § Mentions Rule 3's "they differ in exactly one option" false, so
+  that paragraph now names two and says why the second reaches one shell only.
+* **Expanded by default**, because the justification for the whole feature is
+  seeing entry content rather than a list of filenames.
+* **The state is remembered**, as one vault-wide boolean, `mentionsFooterCollapsed`
+  in `JournalSettings` — validated on load like the other two booleans, and
+  deliberately absent from the settings tab, which `settingsTab.test.ts`'s
+  "declares all three settings" already pins. § Tags' "a scope is never
+  persisted" is not violated: a restored scope hides most of a journal with no
+  visible cause, where a collapsed panel leaves its header and count on screen
+  as both the cause and the control. Obsidian's embedded backlinks behaves the
+  same way.
+* **One boolean, so every mounted footer has to agree.** The toggle writes the
+  setting and repaints through the existing `refreshMentionPanels` registry
+  rather than a second mechanism, and every panel reads the setting *live* on
+  each render rather than latching it at mount — which is what makes a footer in
+  another split, or one mounted onto a note opened later, come up in the same
+  state.
+* **Collapsed reads nothing.** `shown` is empty, so no entry body is read while
+  the panel is folded; `visibleCount` is untouched, so expanding renders the
+  page the user had already paged to.
+* **The header became a real `<button>`** with `aria-expanded` and Obsidian's
+  own chevron (`setIcon`), following `.journal-entry-time`'s precedent: keyboard
+  reachable, Enter/Space with no wiring, and the same button reset plus
+  reinstated focus ring, including the forced-colors fallback. No tooltip — the
+  row spans the note's width, and a popover tracking the pointer across it would
+  be more intrusive than the affordance it explained. `tests/obsidian-mock.ts`
+  gained a `setIcon` mirroring the real free function.
+* Fourteen tests, each verified by mutation, across `mentionsPanel`,
+  `mentionsFooter`, `mentionsView` and `mentionsCodeBlock` — the last two
+  asserting the shells that must *not* collapse, with the stored state set to
+  collapsed throughout so every existing test in those files asserts it too.

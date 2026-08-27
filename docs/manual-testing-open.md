@@ -337,6 +337,16 @@ either way, because nothing in the suite can settle them.
 - [ ] **Turning either setting off removes its surface immediately**, with no
       reload. Off must mean gone, not "gone after a restart".
 
+- [ ] **Collapsing the footer holds, everywhere and across a restart.** Click a
+      footer's header: the entries go, the header and its count stay, the
+      chevron turns. Open a second mentioned note in a split — its footer must
+      already be folded too, not still showing entries. Reopen Obsidian: still
+      folded. Then expand, page in with **Show more**, fold and unfold: the
+      pages you had asked for must come back, not the first five. Only the
+      footer folds — the sidebar panel and a `simple-journal` block stay put
+      through all of it. Tab to the header and press Enter and Space: both must
+      work, and the focus ring must be visible in your theme.
+
 - [ ] **A nested block does not recurse.** Put a `simple-journal` block inside
       a journal entry, then view a note that entry mentions. The panel shows the
       entry with an inert placeholder where its block is, and Obsidian does not

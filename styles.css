@@ -911,6 +911,65 @@
   background-color: var(--background-modifier-border);
 }
 
+/* The footer's header, and only the footer's, is a real <button> that
+   collapses the panel to this one row (see `MentionsPanel.renderHeader`). The
+   same reset `.journal-entry-time` and `.journal-mentions-more` need, and for
+   the same reason: Obsidian's button base would otherwise render a filled,
+   padded chip where a quiet section heading belongs, and `.mobile-tap` would
+   flash that chip back for the duration of every touch. Two selectors so a
+   theme's later `button` rule cannot win on load order.
+
+   `width: 100%` because the row is the control: the hairline runs the width of
+   the note, and a target that stopped short of it would leave most of what
+   looks clickable inert. */
+button.journal-mentions-header,
+button.journal-mentions-header:hover,
+button.journal-mentions-header.mobile-tap {
+  width: 100%;
+  background-color: transparent;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  height: auto;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button.journal-mentions-header:hover,
+button.journal-mentions-header:focus-visible {
+  color: var(--text-normal);
+}
+
+/* `box-shadow: none` above also erases Obsidian's own `button:focus-visible`
+   ring, leaving keyboard focus marked by the much weaker colour shift alone.
+   Reinstated with the variable Obsidian's own rings use — same fix, and same
+   forced-colors fallback, as `.journal-entry-time` above. */
+button.journal-mentions-header:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+@media (forced-colors: active) {
+  button.journal-mentions-header:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
+/* The collapse affordance. Obsidian's own chevron, at its own icon size, and
+   nothing else: every collapsible section the user already knows — backlinks,
+   outline, callouts — is marked exactly this way, so it needs no explaining
+   and adds no border, background or second row to a header whose whole design
+   is a hairline and two words. Without it the row is pure typography, which
+   is precisely what the two non-collapsible shells' headers also are, and a
+   control nobody can tell apart from a label is not a control. */
+.journal-mentions-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  --icon-size: var(--icon-s);
+}
+
 .journal-mentions-count {
   font-variant-numeric: tabular-nums;
   order: 1;

@@ -161,7 +161,13 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
       // with no mentions must render nothing at all. The panel still mounts,
       // so a mention added later appears without waiting for a relayout, and
       // `.journal-mentions:empty` collapses the container meanwhile.
-      const panel = createMentionsPanel({ plugin, container, target: file });
+      //
+      // `collapsible`, and this is the only shell that asks: this is the
+      // panel that arrives unasked under someone's note, so it is the one
+      // that has to offer a way out from under it. The state it toggles is
+      // one vault-wide boolean read live by every panel, so a footer mounted
+      // here after a collapse elsewhere comes up collapsed on its own.
+      const panel = createMentionsPanel({ plugin, container, target: file, collapsible: true });
       mounted.set(view, { path: file.path, container, panel });
       void panel.render();
     }

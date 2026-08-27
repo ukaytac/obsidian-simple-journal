@@ -183,7 +183,11 @@ follows the plugin's own naming convention.
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your
 having to write a block. A note nothing mentions shows nothing at all, and
-journal entries never get one — the timeline already is the journal.
+journal entries never get one — the timeline already is the journal. Click its
+header to fold the panel down to that one line and the count; click again to
+bring the entries back. Folded or not, it stays that way for every note until
+you change it. The panel in the sidebar and the one you write as a block don't
+fold: you opened those on purpose.
 
 **Mentions sidebar** — off by default. Keeps a mentions panel in the sidebar
 that follows whichever note you are reading. This governs whether the panel is

@@ -11,6 +11,7 @@ import {
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
 import { createMentionsFooter, findContentFlowEl } from "../src/mentions/mentionsFooter";
+import { destroyMentionPanels } from "../src/mentions/MentionsPanel";
 import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
@@ -20,6 +21,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The registry a collapse toggle repaints through is module-level, so a
+  // panel one test leaves mounted is still in it when the next one clicks.
+  destroyMentionPanels();
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = "";
@@ -40,6 +44,8 @@ interface Setup {
   footer: ReturnType<typeof createMentionsFooter>;
   /** How many panels have subscribed to the journal and never unsubscribed. */
   livePanels: () => number;
+  /** Observes a collapse actually being remembered, not merely drawn. */
+  saveSettings: ReturnType<typeof vi.fn<[], Promise<void>>>;
 }
 
 /**
@@ -82,15 +88,28 @@ function setup(counts: { a?: number } = {}): Setup {
     };
   });
 
+  const saveSettings = vi.fn(() => Promise.resolve());
   const plugin = {
     app,
     repository,
     journal: service,
-    settings: { journalFolder: "Journal", showMentionsUnderNotes: true, mentionsSidebar: false },
+    settings: {
+      journalFolder: "Journal",
+      showMentionsUnderNotes: true,
+      mentionsSidebar: false,
+      mentionsFooterCollapsed: false,
+    },
+    saveSettings,
     goToDateInJournal: vi.fn(),
   } as unknown as JournalEntriesPlugin;
 
-  return { app, plugin, footer: createMentionsFooter(plugin), livePanels: () => live };
+  return {
+    app,
+    plugin,
+    footer: createMentionsFooter(plugin),
+    livePanels: () => live,
+    saveSettings,
+  };
 }
 
 /**
@@ -156,6 +175,11 @@ function footerEls(): HTMLElement[] {
 
 function footerIn(view: FakeMarkdownView): HTMLElement | null {
   return view.containerEl.querySelector<HTMLElement>(".journal-mentions-footer");
+}
+
+/** The footer's header, which in this shell alone is the collapse control. */
+function collapseToggleIn(view: FakeMarkdownView): HTMLElement | null {
+  return view.containerEl.querySelector<HTMLElement>("button.journal-mentions-header");
 }
 
 describe("findContentFlowEl", () => {
@@ -470,6 +494,64 @@ describe("createMentionsFooter", () => {
     expect(livePanels()).toBe(0);
     expect(footerIn(view)).toBeNull();
     expect(footerEls()).toHaveLength(0);
+  });
+
+  /**
+   * The footer is the one shell that asks for `collapsible`, so this is where
+   * "the setting is one boolean for the whole vault" has to hold across more
+   * than one open note.
+   */
+  it("collapses every other open note's footer with the one that was clicked", async () => {
+    const { app, plugin, footer, saveSettings } = setup({ a: 2 });
+    // Two panes on the same note, which is the arrangement that makes a
+    // disagreement visible on one screen.
+    const { view: first } = addMarkdownLeaf(app, fileAt(app, NOTE_A));
+    const { view: second } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "cm-sizer", "source");
+
+    footer.sync();
+    await settle();
+    expect(footerIn(first)?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    expect(footerIn(second)?.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+
+    collapseToggleIn(first)?.click();
+    await settle();
+
+    expect(plugin.settings.mentionsFooterCollapsed).toBe(true);
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    for (const view of [first, second]) {
+      const el = footerIn(view);
+      expect(collapseToggleIn(view)?.getAttribute("aria-expanded")).toBe("false");
+      expect(el?.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+      // The count is what keeps a collapsed footer from reading as breakage.
+      expect(el?.querySelector(".journal-mentions-count")?.textContent).toBe("2");
+    }
+  });
+
+  it("mounts a footer collapsed onto a note opened after the state was stored", async () => {
+    const { app, plugin, footer } = setup({ a: 2 });
+    plugin.settings.mentionsFooterCollapsed = true;
+    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A));
+
+    footer.sync();
+    await settle();
+
+    expect(collapseToggleIn(view)?.getAttribute("aria-expanded")).toBe("false");
+    expect(footerIn(view)?.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+  });
+
+  it("still renders nothing at all for a note with no mentions while collapsed", async () => {
+    const { app, plugin, footer } = setup({ a: 2 });
+    plugin.settings.mentionsFooterCollapsed = true;
+    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_B));
+
+    footer.sync();
+    await settle();
+
+    // A "Journal mentions 0" header under every unmentioned note the user
+    // opens would be the noise this shell's missing `emptyText` prevents —
+    // collapsing must not smuggle one in.
+    expect(footerIn(view)?.children).toHaveLength(0);
+    expect(footerIn(view)?.textContent).toBe("");
   });
 
   it("destroy() removes every footer and releases every panel", async () => {

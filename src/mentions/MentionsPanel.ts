@@ -1,4 +1,4 @@
-import { Component, debounce, MarkdownRenderer, setTooltip, type TFile } from "obsidian";
+import { Component, debounce, MarkdownRenderer, setIcon, setTooltip, type TFile } from "obsidian";
 import type JournalEntriesPlugin from "../main";
 import type { JournalEntry } from "../journal/entry";
 import { normalizeBodyForRender } from "../journal/markdownDoc";
@@ -51,6 +51,18 @@ export interface MentionsPanelOptions {
    * read as a bug).
    */
   emptyText?: string;
+  /**
+   * Lets the user collapse the panel to its header, and remembers that in
+   * `mentionsFooterCollapsed`. Off unless a shell asks for it, and only the
+   * automatic footer does: it is the one surface that arrives unasked at the
+   * bottom of an ordinary note, so it is the one that needs a way to be got
+   * out of the way. Collapsing the sidebar would empty the whole view for no
+   * gain, and the code block is a thing the user typed on purpose.
+   *
+   * The second of the two options the three shells differ in, and the reason
+   * CLAUDE.md § Mentions Rule 3 now says two rather than one.
+   */
+  collapsible?: boolean;
 }
 
 export interface MentionsPanel {
@@ -106,7 +118,7 @@ export function destroyMentionPanels(): void {
 }
 
 export function createMentionsPanel(options: MentionsPanelOptions): MentionsPanel {
-  const { plugin, container, target, emptyText } = options;
+  const { plugin, container, target, emptyText, collapsible = false } = options;
 
   let visibleCount = INITIAL_COUNT;
   let destroyed = false;
@@ -154,7 +166,15 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
       target,
       plugin.app.metadataCache.resolvedLinks,
     );
-    const shown = mentions.slice(0, visibleCount);
+    // Read from the setting on every render rather than latched at mount, so
+    // the repaint `toggleCollapsed` drives through the registry is all it
+    // takes for every other live panel to agree with the one that was clicked.
+    const collapsed = collapsible && plugin.settings.mentionsFooterCollapsed;
+    // Nothing is drawn below the header while collapsed, so nothing is read
+    // either: every footer on every open note repaints on both of this
+    // panel's subscriptions, and a collapsed one must not still cost a read
+    // per visible entry each time.
+    const shown = collapsed ? [] : mentions.slice(0, visibleCount);
 
     // Read every visible body BEFORE touching the DOM, so a slow read can
     // never leave a half-built panel on screen.
@@ -180,9 +200,13 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
       return;
     }
 
-    const headerEl = container.createDiv({ cls: "journal-mentions-header" });
-    headerEl.createSpan({ cls: "journal-mentions-title", text: "Journal mentions" });
-    headerEl.createSpan({ cls: "journal-mentions-count", text: String(mentions.length) });
+    renderHeader(mentions.length, collapsed);
+    // The header and its count stay on screen, which is the whole reason
+    // remembering this state is not the thing CLAUDE.md § Tags refuses: there
+    // is a visible cause for the missing entries and an obvious control to
+    // undo it, where a restored tag scope would hide most of the journal with
+    // neither.
+    if (collapsed) return;
 
     const listEl = container.createDiv({ cls: "journal-mentions-list" });
 
@@ -270,6 +294,61 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
         void render();
       });
     }
+  }
+
+  /**
+   * The header, and — when the shell asked for it — the control that collapses
+   * the panel to just this row.
+   *
+   * A real `<button>`, not a div with a click handler, for the same reason
+   * `.journal-mentions-time` and the calendar's day cells are: keyboard
+   * reachable and Enter/Space activated with no extra wiring. Its accessible
+   * name is the title and count it already shows, so `aria-expanded` is the
+   * only thing added for a screen reader — no `aria-label` restating the
+   * visible text, and no tooltip: this row spans the note's full width, and a
+   * popover following the pointer across it would be far more intrusive than
+   * the affordance it explained.
+   *
+   * The chevron is Obsidian's own icon rather than a glyph of this plugin's,
+   * and it is the smallest affordance that survives the restraint the styles
+   * for this header describe: it adds no border, no background and no second
+   * row, and every collapsible section in Obsidian — backlinks, outline,
+   * callouts — already teaches it. Without it the row is pure typography,
+   * indistinguishable from the un-collapsible one two shells away, and a
+   * control nobody can see is not a control.
+   */
+  function renderHeader(count: number, collapsed: boolean): void {
+    const headerEl = collapsible
+      ? container.createEl("button", {
+          cls: "journal-mentions-header",
+          // Inert should this panel ever be rendered inside a <form>.
+          attr: { type: "button", "aria-expanded": String(!collapsed) },
+        })
+      : container.createDiv({ cls: "journal-mentions-header" });
+
+    if (collapsible) {
+      setIcon(
+        headerEl.createSpan({ cls: "journal-mentions-chevron" }),
+        collapsed ? "chevron-right" : "chevron-down",
+      );
+      headerEl.addEventListener("click", () => toggleCollapsed());
+    }
+
+    headerEl.createSpan({ cls: "journal-mentions-title", text: "Journal mentions" });
+    headerEl.createSpan({ cls: "journal-mentions-count", text: String(count) });
+  }
+
+  /**
+   * Repaints first and persists afterwards. The setting is the single source
+   * every live panel reads, so flipping it and going through the registry is
+   * what makes a second open note's footer agree with the one that was
+   * clicked; the write to disk is remembering, not applying, and making the
+   * user wait on it would be making them wait for nothing.
+   */
+  function toggleCollapsed(): void {
+    plugin.settings.mentionsFooterCollapsed = !plugin.settings.mentionsFooterCollapsed;
+    refreshMentionPanels();
+    void plugin.saveSettings();
   }
 
   /**

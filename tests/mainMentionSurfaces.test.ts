@@ -85,6 +85,7 @@ function setup(entryCount = 2): Setup {
     journalFolder: "Diary",
     showMentionsUnderNotes: true,
     mentionsSidebar: false,
+    mentionsFooterCollapsed: false,
   };
   plugin.repository = new EntryRepository(app as unknown as App, () => plugin.settings.journalFolder);
   plugin.journal = new JournalService(app as unknown as App, plugin.repository);

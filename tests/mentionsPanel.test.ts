@@ -10,6 +10,7 @@ import {
   destroyMentionPanels,
   refreshMentionPanels,
 } from "../src/mentions/MentionsPanel";
+import { DEFAULT_SETTINGS } from "../src/settings/settings";
 import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
@@ -39,6 +40,8 @@ interface Setup {
   goToDate: ReturnType<typeof vi.fn>;
   /** Called when the panel's `journal.onChange` unsubscribe actually runs. */
   journalUnsubscribed: ReturnType<typeof vi.fn>;
+  /** Observes the collapse toggle actually persisting, not merely flipping. */
+  saveSettings: ReturnType<typeof vi.fn<[], Promise<void>>>;
 }
 
 /**
@@ -91,15 +94,21 @@ function setup(count: number): Setup {
   });
 
   const goToDate = vi.fn();
+  const saveSettings = vi.fn(() => Promise.resolve());
   const plugin = {
     app,
     repository,
     journal: service,
+    // The shipped defaults, not a hand-written literal: "expanded unless the
+    // user collapsed it" is the product decision, and a test that spelled its
+    // own `false` here would keep passing if the default were flipped.
+    settings: { ...DEFAULT_SETTINGS },
+    saveSettings,
     goToDateInJournal: goToDate,
   } as unknown as JournalEntriesPlugin;
 
   const container = document.body.createDiv();
-  return { app, plugin, target, entries, container, goToDate, journalUnsubscribed };
+  return { app, plugin, target, entries, container, goToDate, journalUnsubscribed, saveSettings };
 }
 
 describe("createMentionsPanel", () => {
@@ -382,6 +391,175 @@ describe("createMentionsPanel", () => {
 
     expect(isEntryFile).not.toHaveBeenCalled();
     expect(container.childElementCount).toBe(0);
+  });
+});
+
+/**
+ * Collapsing, which only ONE of the three shells asks for.
+ *
+ * The footer arrives unasked at the bottom of an ordinary note, so it needs a
+ * way to be got out of the way; the sidebar and the code block were both
+ * opened deliberately, and collapsing either leaves nothing behind worth
+ * looking at. So `collapsible` is off unless a shell asks — which is what the
+ * "no toggle at all" test below pins.
+ */
+describe("a collapsible panel", () => {
+  function header(container: HTMLElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(".journal-mentions-header");
+  }
+
+  it("is expanded when nothing has been stored yet", async () => {
+    const { plugin, target, container } = setup(2);
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+
+    // The justification for this whole surface is seeing entry CONTENT rather
+    // than a list of links; starting collapsed would quietly undo that.
+    expect(header(container)?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    panel.destroy();
+  });
+
+  it("renders the header and its count, and nothing else, when collapsed", async () => {
+    const { plugin, target, container } = setup(8);
+    plugin.settings.mentionsFooterCollapsed = true;
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+
+    // The count is the half that must survive: it is what makes the collapsed
+    // state a visible cause rather than a panel that silently vanished.
+    expect(container.querySelector(".journal-mentions-count")?.textContent).toBe("8");
+    expect(header(container)?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+    expect(container.querySelectorAll(".journal-mentions-day")).toHaveLength(0);
+    expect(container.querySelector(".journal-mentions-more")).toBeNull();
+    panel.destroy();
+  });
+
+  it("reads no entry bodies while it is collapsed", async () => {
+    const { app, plugin, target, container } = setup(8);
+    plugin.settings.mentionsFooterCollapsed = true;
+    const cachedRead = vi.spyOn(app.vault, "cachedRead");
+
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+
+    // Every footer on every open note repaints on the panel's two
+    // subscriptions; a collapsed one showing nothing must not still pay for
+    // five reads each time.
+    expect(cachedRead).not.toHaveBeenCalled();
+    panel.destroy();
+  });
+
+  it("persists the toggle and flips aria-expanded", async () => {
+    const { plugin, target, container, saveSettings } = setup(2);
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(plugin.settings.mentionsFooterCollapsed).toBe(true);
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    expect(header(container)?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(plugin.settings.mentionsFooterCollapsed).toBe(false);
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(header(container)?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    panel.destroy();
+  });
+
+  it("keeps the pages the user had asked for across a collapse and back", async () => {
+    const { plugin, target, container } = setup(8);
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+    container.querySelector<HTMLButtonElement>(".journal-mentions-more")?.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(8);
+
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Collapsing is a change of what is drawn, not of what the panel knows:
+    // dropping back to the initial five would silently discard a click the
+    // user had already made.
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(8);
+    panel.destroy();
+  });
+
+  it("collapses every other live panel with it", async () => {
+    const { plugin, target, container } = setup(2);
+    const other = document.body.createDiv();
+    const a = createMentionsPanel({ plugin, container, target, collapsible: true });
+    const b = createMentionsPanel({ plugin, container: other, target, collapsible: true });
+    await Promise.all([a.render(), b.render()]);
+
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // One boolean, not one per note: a second open note left expanded would
+    // be a footer disagreeing with the switch the user just threw.
+    expect(header(other)?.getAttribute("aria-expanded")).toBe("false");
+    expect(other.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+    a.destroy();
+    b.destroy();
+  });
+
+  it("starts collapsed when a panel mounted earlier had already collapsed it", async () => {
+    const state = setup(2);
+    const { plugin, target, container } = state;
+    const first = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await first.render();
+    header(container)?.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The note opened after the switch was thrown — a footer mounting into a
+    // view that did not exist when the toggle happened.
+    const later = document.body.createDiv();
+    const second = createMentionsPanel({ plugin, container: later, target, collapsible: true });
+    await second.render();
+
+    expect(header(later)?.getAttribute("aria-expanded")).toBe("false");
+    expect(later.querySelectorAll(".journal-mentions-entry")).toHaveLength(0);
+    first.destroy();
+    second.destroy();
+  });
+
+  it("gives a panel that did not ask to be collapsible no toggle at all", async () => {
+    const { plugin, target, container } = setup(2);
+    plugin.settings.mentionsFooterCollapsed = true;
+    const panel = createMentionsPanel({ plugin, container, target });
+    await panel.render();
+
+    // The sidebar and the code block, both of which the user opened on
+    // purpose: the stored state is not theirs to obey, and there is nothing
+    // for a keyboard or a screen reader to activate.
+    expect(header(container)?.tagName).toBe("DIV");
+    expect(header(container)?.hasAttribute("aria-expanded")).toBe(false);
+    expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+    panel.destroy();
+  });
+
+  it("renders nothing at all for a note with no mentions, collapsed or not", async () => {
+    const { plugin, target, container } = setup(0);
+    const panel = createMentionsPanel({ plugin, container, target, collapsible: true });
+    await panel.render();
+    expect(container.childElementCount).toBe(0);
+
+    plugin.settings.mentionsFooterCollapsed = true;
+    await panel.render();
+
+    // A bare "Journal mentions 0" header under every note the user opens is
+    // exactly the noise the footer's missing `emptyText` exists to prevent.
+    expect(container.childElementCount).toBe(0);
+    panel.destroy();
   });
 });
 

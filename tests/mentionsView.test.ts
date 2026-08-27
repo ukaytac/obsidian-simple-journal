@@ -9,6 +9,7 @@ import {
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
 import { MentionsView } from "../src/mentions/MentionsView";
+import { DEFAULT_SETTINGS } from "../src/settings/settings";
 import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
@@ -118,6 +119,11 @@ function setup(counts: { a?: number; b?: number } = {}): Setup {
     app,
     repository,
     journal: service,
+    // Stored collapsed throughout, so every test here also asserts by
+    // omission what the last one asserts outright: the footer's remembered
+    // state is not this shell's to obey.
+    settings: { ...DEFAULT_SETTINGS, mentionsFooterCollapsed: true },
+    saveSettings: vi.fn(() => Promise.resolve()),
     goToDateInJournal: vi.fn(),
   } as unknown as JournalEntriesPlugin;
 
@@ -333,5 +339,21 @@ describe("MentionsView", () => {
     // lets `visibleCount` — and so the user's expanded state — survive a
     // `refresh()` call.
     expect(shownEntries(view)).toBe(8);
+  });
+
+  it("is never collapsible, whatever the footer's remembered state says", async () => {
+    const { app, plugin, view } = setup({ a: 2 });
+    expect(plugin.settings.mentionsFooterCollapsed).toBe(true);
+    app.workspace.activeFile = fileAt(app, NOTE_A);
+
+    await view.onOpen();
+    await settle();
+
+    // Collapsing this panel would empty the whole view and leave a sidebar
+    // tab showing one line — the user opened it to read entries. So there is
+    // no control here, and the stored state does not reach it.
+    expect(view.contentEl.querySelector("button.journal-mentions-header")).toBeNull();
+    expect(view.contentEl.querySelector(".journal-mentions-header")).not.toBeNull();
+    expect(shownEntries(view)).toBe(2);
   });
 });

@@ -16,10 +16,25 @@ export interface JournalSettings {
    * command is how you reach a thing.
    */
   mentionsSidebar: boolean;
+  /**
+   * Whether the footer's panel is collapsed to its header. Remembered UI
+   * state, not a setting: it deliberately does NOT appear in the settings tab
+   * — the only way to change it is the header the state is about.
+   *
+   * One boolean for the whole vault rather than one per note, so a user who
+   * has folded the panel away does not have to fold it again under every note
+   * they open.
+   *
+   * Expanded by default, because the justification for this whole surface is
+   * seeing entry content instead of a list of filenames; starting collapsed
+   * would quietly turn it back into the list.
+   */
+  mentionsFooterCollapsed: boolean;
 }
 
 export const DEFAULT_SETTINGS: JournalSettings = {
   journalFolder: "Journal",
   showMentionsUnderNotes: false,
   mentionsSidebar: false,
+  mentionsFooterCollapsed: false,
 };

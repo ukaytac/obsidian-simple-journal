@@ -15,6 +15,7 @@ import {
   parseMentionsBlock,
   registerMentionsCodeBlock,
 } from "../src/mentions/mentionsCodeBlock";
+import { DEFAULT_SETTINGS } from "../src/settings/settings";
 import type JournalEntriesPlugin from "../src/main";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
@@ -157,6 +158,11 @@ describe("registerMentionsCodeBlock", () => {
       app,
       repository,
       journal: service,
+      // Stored collapsed throughout, so every test in this file also asserts
+      // by omission what the last one asserts outright: the footer's
+      // remembered state is not this shell's to obey.
+      settings: { ...DEFAULT_SETTINGS, mentionsFooterCollapsed: true },
+      saveSettings: vi.fn(() => Promise.resolve()),
       goToDateInJournal: vi.fn(),
       registerMarkdownCodeBlockProcessor: (_language: string, handler: BlockProcessor) => {
         process = handler;
@@ -223,6 +229,22 @@ describe("registerMentionsCodeBlock", () => {
     // default. And no panel was mounted, so nothing subscribed to anything.
     expect(el.textContent).toBe("No journal entries mention this note yet.");
     expect(state.children).toHaveLength(0);
+  });
+
+  it("is never collapsible, whatever the footer's remembered state says", async () => {
+    const state = setup();
+    expect(state.plugin.settings.mentionsFooterCollapsed).toBe(true);
+    const el = document.body.createDiv();
+
+    state.process("", el, contextFor(state, NOTE_A));
+    await settle();
+
+    // The user typed this fence on purpose. Folding it away on account of a
+    // switch thrown at the bottom of some other note would leave a block they
+    // wrote showing one line they never asked for.
+    expect(el.querySelector("button.journal-mentions-header")).toBeNull();
+    expect(el.querySelector(".journal-mentions-header")).not.toBeNull();
+    expect(el.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
   });
 
   it("renders an inert placeholder for a block nested inside a panel, and mounts nothing", async () => {

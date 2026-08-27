@@ -561,12 +561,43 @@ The three shells — the code block, the sidebar view, the note footer — each 
 one job: obtain a container and a target `TFile`, and delegate. They are not
 three features. A change to how mentions look or behave is a change to one file.
 
-They differ in exactly one option, and deliberately: whether an empty result
-prints a line or renders nothing at all. The code block and the sidebar print
-one, because in both cases the user asked — by typing the block, or by opening
-the panel — and silence in answer to a question reads as a bug. The footer
-prints nothing, because nobody asked for anything at the bottom of that note and
-an empty panel there is pure noise.
+They differ in exactly two options, and deliberately.
+
+The first is whether an empty result prints a line or renders nothing at all.
+The code block and the sidebar print one, because in both cases the user asked —
+by typing the block, or by opening the panel — and silence in answer to a
+question reads as a bug. The footer prints nothing, because nobody asked for
+anything at the bottom of that note and an empty panel there is pure noise.
+
+The second is whether the panel can be **collapsed to its header**, and it
+applies to the footer alone. The same asymmetry decides it: the footer is the
+one panel that arrives unasked under an ordinary note, so it is the one that has
+to offer a way out from under itself. Collapsing the sidebar would empty a whole
+view the user opened in order to read entries, and the code block is a thing
+they typed on purpose — folding either away would be answering a question by
+hiding it. The header is a real `<button>` carrying `aria-expanded`, so it is
+keyboard reachable with no wiring of its own, and it keeps the count: what
+collapses is the entry list, never the fact that there are entries.
+
+It is **expanded by default**, because the justification for this whole feature
+is seeing entry content instead of a list of filenames, and starting collapsed
+would quietly turn it back into the list.
+
+The collapsed state **is** remembered — one vault-wide boolean in settings,
+`mentionsFooterCollapsed`, so a user who has folded the panel away does not
+fold it again under every note they open. It is remembered UI state rather than
+a configured setting, so it does not appear in the settings tab: the only way to
+change it is the header it is about.
+
+That is not the precedent in `# Tags` ("A scope is never persisted") being
+ignored. A restored tag scope hides most of a journal with **no visible cause
+and no obvious way back** — the timeline just looks emptier than the user left
+it. A collapsed panel leaves its header and its count on screen, which is both
+the cause and the control: "Journal mentions 12", one click from the twelve.
+Obsidian's own embedded backlinks behaves exactly this way, so the interaction
+is one the user already has. A scope also composes with an anchor and can
+silently combine into a near-empty timeline; there is nothing for this boolean
+to compound with.
 
 Staying current is the renderer's job too, through two debounced subscriptions:
 the journal's own `onChange`, and `metadataCache`'s `resolve` for a link added
@@ -972,6 +1003,13 @@ they gate optional surfaces rather than configure the journal itself:
 Show mentions under notes
 Mentions sidebar
 ```
+
+Stored beside them in the same `data.json`, and validated on load the same way,
+is one thing that is **not** a setting and must never appear in the settings
+tab: `mentionsFooterCollapsed`, whether the note footer is folded to its header.
+It is remembered UI state, written only by the header the user clicks (see
+`# Mentions` Rule 3). A control in the tab for it would be a second way to say
+the same thing, in a place the panel it is about cannot be seen.
 
 Potential future settings:
 
