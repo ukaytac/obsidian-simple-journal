@@ -148,6 +148,17 @@ Failure in any of these is a real defect, not a rough edge.
       question to reopen, not a bug to patch blind. Nothing is at risk of
       being lost either way: Escape never closes a composer holding text.)*
 
+- [ ] **What Escape does with no composer open must not have changed.** Open
+      the journal in a tab that already had a note in it, press Escape with
+      nothing being composed. Obsidian should navigate back to that note,
+      exactly as it did before this handler existed. *(That "goes back to the
+      previous note" is the observed behaviour reported from a real vault —
+      not "the journal view closes", which is what it looks like and what an
+      earlier commit message wrongly said. The handler returns a non-`false`
+      value in this case precisely so Obsidian's own behaviour, whatever it
+      turns out to be, is left alone; this check is what proves the fall-through
+      works rather than the view scope swallowing the key unconditionally.)*
+
 - [ ] **An entry cannot be renamed from the timeline.** Confirm there is
       nothing focusable or editable in an entry that would rename the file.
       Renaming from the File Explorer still works normally.
