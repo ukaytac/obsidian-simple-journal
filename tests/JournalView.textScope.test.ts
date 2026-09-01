@@ -14,6 +14,19 @@ function scopeBar(h: Harness): HTMLElement {
 }
 
 /**
+ * Rewrites an entry's body, keeping the frontmatter `addEntry` wrote. Reaches
+ * `vault.contents` directly rather than through an invented `setContent`:
+ * `tests/obsidian-mock.ts`'s header forbids giving a stand-in surface the
+ * real class lacks, and `Vault` has no such method.
+ */
+function setBody(h: Harness, file: { path: string }, body: string): void {
+  const current = h.app.vault.contents.get(file.path) ?? "";
+  const parts = current.split("\n---\n\n");
+  if (parts.length !== 2) throw new Error(`unexpected entry shape at ${file.path}`);
+  h.app.vault.contents.set(file.path, `${parts[0]}\n---\n\n${body}`);
+}
+
+/**
  * A text scope as `main.ts` builds one: the paths are already resolved, which
  * is the whole point — the view never reads a file to decide what to render.
  */
@@ -136,7 +149,69 @@ describe("JournalView text scope", () => {
     expect(internals(h.view).composer).not.toBeNull();
   });
 
-  it("clears on Escape outside an entry, exactly as a tag scope does", async () => {
+  it("drops a row whose text stopped matching, edited elsewhere in Obsidian", async () => {
+    const { match, older } = await openWithBodies();
+    await textScope(h, "kahve", [match.path, older.path]);
+
+    setBody(h, match, "artık çay");
+    h.app.vault.trigger("modify", match);
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([older.path]));
+  });
+
+  it("admits a row whose text started matching", async () => {
+    const { match, miss, older } = await openWithBodies();
+    await textScope(h, "kahve", [match.path, older.path]);
+
+    setBody(h, miss, "bugün de kahve");
+    h.app.vault.trigger("modify", miss);
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() =>
+      expect(renderedPaths(h)).toEqual([match.path, miss.path, older.path]),
+    );
+  });
+
+  /**
+   * A `reload` change fires for any mutation of the journal folder or its
+   * DESCENDANTS, including a rename that changes every entry's path and not
+   * one word of anyone's text. Clearing the scope there is precisely what
+   * the tag scope refuses to do — see "survives a folder-level rebuild" in
+   * `JournalView.tagScope.test.ts` — so a text scope re-resolves instead,
+   * which keeps the filter AND repairs a path set that a rename would have
+   * left pointing at nothing. The spec asked for clearing; the plan's
+   * corrections block explains why this is built the other way.
+   *
+   * The scope starts with an EMPTY path set on purpose. Starting it correct
+   * would pass just as well if `reresolveTextScope` did nothing at all.
+   */
+  it("re-resolves rather than clearing when the folder is rebuilt under it", async () => {
+    const { match, older } = await openWithBodies();
+    await textScope(h, "kahve", []);
+    expect(renderedPaths(h)).toEqual([]);
+
+    await internals(h.view).applyChangesNow([{ kind: "reload" }]);
+
+    expect(h.view.activeScope()?.kind).toBe("text");
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([match.path, older.path]));
+    expect(scopeBar(h).querySelector(".journal-scope-query")?.textContent).toBe("“kahve”");
+  });
+
+  it("forgets a deleted entry's path rather than carrying it in the scope", async () => {
+    const { match, older } = await openWithBodies();
+    await textScope(h, "kahve", [match.path, older.path]);
+
+    h.app.vault.contents.delete(match.path);
+    h.app.vault.trigger("delete", match);
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() => expect(renderedPaths(h)).toEqual([older.path]));
+    const scope = h.view.activeScope();
+    expect(scope?.kind === "text" && scope.paths.has(match.path)).toBe(false);
+  });
+
+    it("clears on Escape outside an entry, exactly as a tag scope does", async () => {
     const { match, older } = await openWithBodies();
     await textScope(h, "kahve", [match.path, older.path]);
 

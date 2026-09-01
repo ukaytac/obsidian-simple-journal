@@ -24,6 +24,8 @@ import { anchorSeed, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
 import { formatDayHeader, formatTime } from "../utils/dates";
 import { scopeMatches, type JournalScope } from "./journalScope";
+import { parseSearchQuery } from "../journal/entrySearch";
+import { hitPaths, readJournalSnapshot, searchSnapshot } from "../services/journalSearch";
 import type { RenderedState } from "./applyChange";
 import { ChangeEntryTimeModal } from "./ChangeEntryTimeModal";
 import { createChangeApplication, type ChangeApplication } from "./changeApplication";
@@ -2160,7 +2162,10 @@ export class JournalView extends ItemView {
     // over a metadata-only array — per debounce flush, not per keystroke —
     // buys exact correctness with no incremental-sync state to get wrong.
     // Skipped entirely when unscoped, so `this.index` stays the live alias.
-    if (this.journalScope !== null) this.index = this.scopedIndex();
+    if (this.journalScope !== null) {
+      await this.reresolveTextScope(changes);
+      this.index = this.scopedIndex();
+    }
 
     // A "reload" change deliberately does NOT clear the scope. It fires for
     // any mutation of the journal folder or its DESCENDANTS (see
@@ -2892,6 +2897,63 @@ export class JournalView extends ItemView {
    * touches this same entry, whose own reposition/insert then lands at the
    * by-then-correct slot.
    */
+  /**
+   * Brings a text scope's resolved path set back into line after a change.
+   *
+   * A tag scope needs nothing here: `scopedIndex()` re-derives it from an
+   * index `JournalService` has already updated, and `entryHasTag` answers
+   * from metadata that is already in memory. A text scope's predicate lives
+   * on disk, so the equivalent is a read — kept as small as the batch allows.
+   *
+   * A `reload` change means the index was replaced wholesale (a folder
+   * rename, or the journal-folder setting changing), so every path in the
+   * set may name a file that no longer exists and the whole journal is
+   * re-read. Every other batch names the entries it touched, so only those
+   * are.
+   *
+   * Either way the scope is REPLACED, never cleared. Clearing is what the
+   * `applyChangesNow` comment above refuses to do for a tag scope, and for
+   * the same reason: a filter that vanishes with no cause the user can
+   * connect to what they did is worse than one that is briefly wrong.
+   */
+  private async reresolveTextScope(changes: JournalChange[]): Promise<void> {
+    const scope = this.journalScope;
+    if (scope === null || scope.kind !== "text") return;
+
+    const terms = parseSearchQuery(scope.query);
+    const entries = this.plugin.journal.getEntries();
+
+    if (changes.some((change) => change.kind === "reload")) {
+      const snapshot = await readJournalSnapshot(this.plugin.repository, entries);
+      this.journalScope = { ...scope, paths: hitPaths(searchSnapshot(snapshot, terms)) };
+      return;
+    }
+
+    // `flatMap` with an empty array rather than a `map` + filter: a `reload`
+    // is already handled above, but nothing in the TYPE says so, and a
+    // `change.path` reached on a variant that has none is exactly the error
+    // `tsc` should be allowed to keep catching if this ever moves.
+    const touched = new Set(
+      changes.flatMap((change) => {
+        if ("entry" in change) return [change.entry.file.path];
+        return change.kind === "removed" ? [change.path] : [];
+      }),
+    );
+    const affected = entries.filter((entry) => touched.has(entry.file.path));
+    const snapshot = await readJournalSnapshot(this.plugin.repository, affected);
+    const matched = hitPaths(searchSnapshot(snapshot, terms));
+
+    const paths = new Set(scope.paths);
+    // Every touched path leaves first, then the ones that still match come
+    // back. A removed entry is in `touched` but not in `entries`, so it is
+    // deleted here and never re-added — the correct outcome without a case
+    // of its own.
+    for (const path of touched) paths.delete(path);
+    for (const path of matched) paths.add(path);
+
+    this.journalScope = { ...scope, paths };
+  }
+
   private scopedIndex(): JournalEntry[] {
     const all = this.plugin.journal.getEntries();
     const scope = this.journalScope;
