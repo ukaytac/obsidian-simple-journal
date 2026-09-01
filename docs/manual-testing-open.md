@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-650 automated tests cover the pure logic and, through a jsdom harness, a good
+696 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
@@ -379,6 +379,41 @@ either way, because nothing in the suite can settle them.
       no footer, the click-below-to-write space must be back to full, not
       still capped. A cap that outlives its footer is the one way this can be
       wrong that the old selector could not be.
+
+- [ ] **`Search journal` opens at all.** The one thing no fake proves: that
+      the command is registered, that `openJournal()` resolves, and that a
+      `SuggestModal` appears. Every branch behind it is unit-tested; this is
+      the glue. Run the command from the palette on the real vault.
+
+- [ ] **Search finds what you remember, in your own language.** Write an entry
+      containing `İstanbul` and another containing `Işık`. Search `istanbul` —
+      the first must appear. Search `ışık` — the second must, and so must one
+      written `IŞIK`. Then, with an entry containing `açık` in the journal,
+      search `acik`: it must NOT appear. That is the folding decision working
+      in both directions, and no unit test can prove the keyboard produces the
+      characters you think it does.
+
+- [ ] **Both exits do different things.** Search a word that several entries
+      share. Choose one result: the timeline lands on that entry with older
+      entries below it and NO filter — scroll up and the newer ones are still
+      there. Search again and choose "Show all": now only matches are shown
+      and the bar names the query in quotes. Escape, or the bar's ×, puts the
+      whole journal back.
+
+- [ ] **The excerpt is legible in both themes.** In light and dark, the
+      matched word reads as emphasised without the row looking striped, and a
+      long entry's excerpt stays on one line with an ellipsis rather than
+      wrapping.
+
+- [ ] **A search over the real journal feels immediate.** Not "is fast in a
+      test" — open the command on the actual vault and type. If the first
+      keystroke stutters, the snapshot read is the suspect and the fix
+      direction is the incremental index named in `CLAUDE.md` § Search.
+
+- [ ] **Search on a phone.** The suggester is Obsidian's own, so the keyboard
+      and the list are its problem. The row layout is ours: confirm the
+      timestamp and the excerpt share one line at phone width rather than the
+      excerpt collapsing to nothing.
 
 - [ ] **The footer is absent on journal entries.** Open an entry as an ordinary
       note. No panel — its own timeline already shows this, and a panel there

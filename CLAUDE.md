@@ -502,6 +502,99 @@ things in two different places.
 
 ---
 
+# Search
+
+One command, `Search journal`, answering two questions with one list: *take me
+to that entry*, and *show me everything I wrote about this*.
+
+## Rule 1 — One reader
+
+`journal/entrySearch.ts` owns folding, term splitting, matching and snippets,
+and nothing downstream re-derives any of them — the same shape `entryDate.ts`
+holds for chronology and `entryTags.ts` for tags. It is pure. The reading
+lives in `services/journalSearch.ts`, which is the only file in the plugin
+that knows search touches the disk at all; if that ever has to become an
+incremental index, nothing outside it changes.
+
+## Rule 2 — The body, and only the body
+
+Search reads what the timeline shows. Not frontmatter, not filenames.
+
+The timeline hides `.metadata-container`, so a result that matched on a
+property would appear with no visible cause — the same reasoning that decides
+which tags get chips (`# Tags` Rule 3). Tags are already reachable exactly and
+case-insensitively through `Filter journal by tag`; search does not duplicate
+that with a looser guarantee.
+
+## Rule 3 — Two exits, one door
+
+Choosing a result **anchors** the timeline to that entry, unfiltered — the
+calendar's mechanism, and the mentions panel's. Choosing "Show all N matches"
+**scopes** the timeline to the query — the tag scope's mechanism. Neither is a
+new concept; search only opens a new door onto two that already existed.
+
+## Rule 4 — One scope at a time
+
+A text scope and a tag scope are never both active; setting either replaces
+the other. This is the line that keeps search on the right side of
+`# Non-Goals`: the intersection of two filters is a query builder. It is
+enforced by the type — `JournalScope` in `views/journalScope.ts` is a union,
+so the field cannot hold both.
+
+## Rule 5 — Substring, and no syntax
+
+Terms split on whitespace and are ANDed in any order. No quotes, no `OR`, no
+exclusion, no field prefixes, no fuzzy matching. A query under two characters
+matches nothing, because scoping the journal to something every entry contains
+is the same as having no scope.
+
+## Case folding: Turkish casing pairs, no locale
+
+`İ`→`i`, `I`→`ı`, then `toLowerCase()`. Two fixed substitutions, no ICU, no
+locale — identical on every platform, which is what `compareEntries` gave up
+`localeCompare` to guarantee for a synced vault.
+
+`İ` and `i` are one letter; `I` and `ı` are one letter; `i` and `ı` are not.
+`ö/o`, `ç/c`, `ş/s`, `ğ/g`, `ü/u`, `â/a` all stay distinct: this folds case,
+not accents.
+
+Plain `toLowerCase()` was rejected because it turns `İ` into `i` plus a
+combining dot, so `istanbul` would not find `İstanbul` — a daily failure in a
+Turkish journal, not a preference.
+
+**The accepted cost:** English loses its capital `I`. `"I am happy"` folds to
+`"ı am happy"` and is not found by `"i am"`. Turkish casing cannot be correct
+and leave that alone at the same time. Pinned by a test so it stays a decision
+rather than becoming a bug report.
+
+The folding is also length-preserving, and that is load bearing rather than
+tidy: the excerpt shown in each row is sliced out of the original body using
+an offset found in the folded copy. Anything that changed length — NFD
+normalisation, say — would silently misalign every excerpt.
+
+## Reading
+
+One read of the whole journal per search session, not per keystroke, through
+`readBodyCached`. A per-keystroke scan is the unscalable shape `# Performance`
+warns against; a single pass is not. If it is ever felt, the answer is an
+incrementally maintained index fed by `JournalService`'s change batching —
+which Rule 1 keeps a one-file change.
+
+An unreadable entry is logged, dropped, and **counted**, and the modal shows
+the count. Quietly answering with less than you have is the worst thing a
+search can do, and `# Error Handling` asks to fail visibly. Search writes
+nothing, so no data is at risk either way.
+
+## A text scope stays live, and never clears itself
+
+A changed entry is re-read and re-evaluated; a folder-level rebuild
+re-resolves the whole scope rather than clearing it. Nothing but the user and
+`New journal entry` ever clears it, for the reason `# Tags` already gives: a
+filter that vanishes with no cause the user can connect to what they did is
+the failure this codebase keeps designing away from.
+
+---
+
 # Mentions
 
 A journal entry has no title, and that is a North Star principle. Inside the
@@ -855,13 +948,11 @@ Open calendar
 Filter journal by tag
 Open journal mentions
 Insert journal mentions block
-```
-
-Still later:
-
-```text
 Search journal
 ```
+
+Nothing is queued behind these. A new command needs a section of its own in
+this document first, the way each of the five above has one.
 
 When opening the journal, focusing the newest entries is the default.
 
@@ -1546,8 +1637,16 @@ Still NOT to implement:
 * daily summaries
 * weekly/monthly reviews
 * Bases integration
-* advanced filters, except the tag scope described under `# Tags` — a single
-  tag, chosen from one command, never persisted
+* advanced filters, except the two scopes described under `# Tags` and
+  `# Search` — one tag or one text query, chosen from one command, never
+  persisted, and never both at once. Specifically still out: query syntax of
+  any kind (quotes, `OR`, exclusion, field prefixes), regular expressions,
+  combining a text scope with a tag scope, saved or recent searches,
+  searching frontmatter or filenames, searching the vault rather than the
+  journal, a sort order for results, and highlighting matches inside the
+  timeline itself. `semantic search` below is unaffected: `# Search` is
+  substring matching and nothing else, and Obsidian's own search keeps
+  answering the wider question exactly as it did
 * alternative sort modes
 * single-day filtering — clicking a calendar day anchors the timeline rather
   than filtering it; see the calendar section for why
