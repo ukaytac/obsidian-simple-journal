@@ -97,10 +97,39 @@ export function findContentFlowEl(
 /** The footer's own container class; `MentionsPanel` adds `.journal-mentions` to it. */
 const FOOTER_CLASS = "journal-mentions-footer";
 
+/**
+ * Put on the content flow that holds a footer, and taken off with it.
+ *
+ * `styles.css` caps the editor's click-past-the-text padding on exactly the
+ * notes this surface appears under, and it needs to reach the sizer to do it.
+ * That rule read `.cm-sizer:has(> .journal-mentions-footer)` first, which is
+ * true by construction and needs no bookkeeping — the honest reason it does
+ * not any more is cost, not correctness: a `:has()` in a stylesheet is
+ * evaluated against every `.cm-sizer` the app has open, so every editor in
+ * Obsidian carries its invalidation for a surface that is off by default and
+ * that most vaults will never turn on. A class costs exactly the notes that
+ * have one.
+ *
+ * The price is that this can now be wrong, where the selector could not be:
+ * a mark left behind caps a note with no footer under it, and a mark never
+ * written leaves the panel most of a screen below the text. Both directions
+ * are pinned in `tests/mentionsFooter.test.ts`, and the mark is written and
+ * removed in the same two places the container itself is, so there is no
+ * third path either can take alone.
+ */
+const HOST_CLASS = "journal-mentions-footer-host";
+
 interface MountedFooter {
   /** Guards against a rebuild when the view is still showing the same note. */
   path: string;
   container: HTMLElement;
+  /**
+   * The content flow the container was mounted into, remembered rather than
+   * re-derived on the way out: `unmount` runs for orphaned containers too
+   * (see `sync`'s parent check), and `container.parentElement` is null by
+   * then — which would leave the mark on the sizer for good.
+   */
+  host: HTMLElement;
   panel: MentionsPanel;
 }
 
@@ -238,6 +267,7 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
       // on them.
       unwatch(view);
       const container = flowEl.createDiv({ cls: FOOTER_CLASS });
+      flowEl.addClass(HOST_CLASS);
       // No `emptyText`: the user did not ask for anything here, so a note
       // with no mentions must render nothing at all. The panel still mounts,
       // so a mention added later appears without waiting for a relayout, and
@@ -249,7 +279,7 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
       // one vault-wide boolean read live by every panel, so a footer mounted
       // here after a collapse elsewhere comes up collapsed on its own.
       const panel = createMentionsPanel({ plugin, container, target: file, collapsible: true });
-      mounted.set(view, { path: file.path, container, panel });
+      mounted.set(view, { path: file.path, container, host: flowEl, panel });
       void panel.render();
     }
 
@@ -276,6 +306,7 @@ export function createMentionsFooter(plugin: JournalEntriesPlugin): MentionsFoot
     // is what put it in somebody else's view.
     footer.panel.destroy();
     footer.container.remove();
+    footer.host.removeClass(HOST_CLASS);
   }
 
   /** Everything this shell has out there: both the footers and the waiting. */

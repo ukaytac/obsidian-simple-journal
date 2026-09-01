@@ -808,6 +808,14 @@ does not.
      writing surface wins over the reading convenience; that is the same
      ordering the rest of this document uses.
 
+     It finds its target through a class this shell puts on the sizer it
+     mounted into, not through `:has(> .journal-mentions-footer)`, which is
+     what it read first. A `:has()` in a stylesheet is matched against every
+     `.cm-sizer` the app has open, so every editor in Obsidian would carry its
+     invalidation for a surface that is off by default. That is the same
+     trade `.journal-entry-embed-editor-pane` makes for the editor exception,
+     for a different reason.
+
    Obsidian's own `.embedded-backlinks` sits in the same place, under the same
    padding, and is misaligned the same way — so neither rule is repairing
    something this plugin broke.
@@ -819,10 +827,11 @@ reason this exception may be kept at all — an exception whose safety rule is
 unenforced is not an exception, it is a hack with a paragraph attached.
 
 The footer does not assume anything else: not the sizer's internals, not its
-children, not its styling. It appends one plain div as a last child, never
-reorders or removes what Obsidian put there, and in live preview it is a sibling
-of `.cm-content` rather than inside it, so it is not part of the editable
-document and cannot reach the user's text. The one remaining assumption is that
+children, not its styling. It appends one plain div as a last child and adds one
+class of its own naming to the sizer holding it — both removed on the way out,
+in the same function — and never reorders or removes what Obsidian put there.
+In live preview it is a sibling of `.cm-content` rather than inside it, so it is
+not part of the editable document and cannot reach the user's text. The one remaining assumption is that
 Obsidian will not silently discard a foreign child of the sizer — which is why
 each sync re-checks where the footer actually is rather than trusting its own
 bookkeeping, and simply mounts it again if it was removed or orphaned.

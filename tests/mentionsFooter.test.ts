@@ -222,6 +222,11 @@ function footerIn(view: FakeMarkdownView): HTMLElement | null {
   return view.containerEl.querySelector<HTMLElement>(".journal-mentions-footer");
 }
 
+/** Every content-flow element currently marked as holding a footer. */
+function hostEls(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".journal-mentions-footer-host"));
+}
+
 /** The footer's header, which in this shell alone is the collapse control. */
 function collapseToggleIn(view: FakeMarkdownView): HTMLElement | null {
   return view.containerEl.querySelector<HTMLElement>("button.journal-mentions-header");
@@ -523,6 +528,82 @@ describe("createMentionsFooter", () => {
   });
 
   /**
+   * The host mark, and why it is worth five tests of its own.
+   *
+   * `styles.css` caps the editor's click-past-the-text padding on notes that
+   * carry a footer, and it used to find them with
+   * `.cm-sizer:has(> .journal-mentions-footer)` — a selector that is true by
+   * construction and needs nothing pinning it. A class this shell writes is
+   * bookkeeping instead, and bookkeeping can go stale in both directions: a
+   * mark left behind caps a note with no footer to justify it, and a mark
+   * never written leaves the panel most of a screen below the text. Neither
+   * shows up in any other assertion here, because neither changes what is
+   * mounted — only what it is styled like. So they are pinned here.
+   */
+  it("marks the sizer it mounted a footer into", async () => {
+    const { app, footer } = setup({ a: 2 });
+    const { view } = addMarkdownLeaf(app, fileAt(app, NOTE_A), "cm-sizer", "source");
+
+    footer.sync();
+    await settle();
+
+    const sizer = findContentFlowEl(view.containerEl, "source");
+    expect(hostEls()).toEqual([sizer]);
+  });
+
+  it("takes the mark off when the setting is turned off", async () => {
+    const { app, plugin, footer } = setup({ a: 2 });
+    addMarkdownLeaf(app, fileAt(app, NOTE_A), "cm-sizer", "source");
+
+    footer.sync();
+    await settle();
+    expect(hostEls()).toHaveLength(1);
+
+    plugin.settings.showMentionsUnderNotes = false;
+    footer.sync();
+    await settle();
+
+    expect(hostEls()).toHaveLength(0);
+  });
+
+  /**
+   * The mark has to travel with the footer, not merely be added at the far
+   * end: the pane left behind is still in the DOM, hidden rather than
+   * removed, and a mark stranded on it caps a sizer that holds nothing.
+   */
+  it("moves the mark with the footer on a mode switch", async () => {
+    const { app, footer } = setup({ a: 2 });
+    const { view } = addMarkdownLeaf(
+      app,
+      fileAt(app, NOTE_A),
+      ["cm-sizer", "markdown-preview-sizer"],
+      "preview",
+    );
+    const preview = view.contentEl.querySelector<HTMLElement>(".markdown-preview-sizer");
+    const source = view.contentEl.querySelector<HTMLElement>(".cm-sizer");
+
+    footer.sync();
+    await settle();
+    expect(hostEls()).toEqual([preview]);
+
+    view.mode = "source";
+    footer.sync();
+    await settle();
+
+    expect(hostEls()).toEqual([source]);
+  });
+
+  it("leaves no mark on a note that must never have a footer", async () => {
+    const { app, footer } = setup({ a: 2 });
+    addMarkdownLeaf(app, fileAt(app, ENTRY), "cm-sizer", "source");
+
+    footer.sync();
+    await settle();
+
+    expect(hostEls()).toHaveLength(0);
+  });
+
+  /**
    * The pane Obsidian has not built yet.
    *
    * Switching into reading view fires `layout-change` *before*
@@ -779,6 +860,7 @@ describe("createMentionsFooter", () => {
     expect(footerEls()).toHaveLength(0);
     expect(footerIn(first)).toBeNull();
     expect(footerIn(second)).toBeNull();
+    expect(hostEls()).toHaveLength(0);
     expect(livePanels()).toBe(0);
   });
 });

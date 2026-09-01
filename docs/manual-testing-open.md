@@ -1,6 +1,6 @@
 # Open checks — for a person, not the suite
 
-646 automated tests cover the pure logic and, through a jsdom harness, a good
+650 automated tests cover the pure logic and, through a jsdom harness, a good
 deal of the timeline's DOM behaviour. What is left here needs a running
 Obsidian, a real phone, a community theme, or a screen reader — things no fake
 can stand in for.
@@ -366,6 +366,19 @@ either way, because nothing in the suite can settle them.
       viewport, which the appended div is not accounted for in. If either half
       fails, the fix direction is reading view only for the footer, and the
       code block for live preview.
+
+- [ ] **The padding cap still finds its target.** The rule that trims the
+      editor's click-past-the-text space under a footered note used to select
+      with `.cm-sizer:has(> .journal-mentions-footer)`; it now reads a class
+      `mentionsFooter.ts` writes on the sizer, so that the `:has()` is not
+      matched against every editor in the app. Unit tests pin the class going
+      on and coming off; only a running vault shows the cap itself. In live
+      preview, on a short mentioned note: the panel sits a few lines under the
+      text, not most of a screen below it. Then switch the same note to
+      reading view and back, and turn "Show mentions under notes" off — with
+      no footer, the click-below-to-write space must be back to full, not
+      still capped. A cap that outlives its footer is the one way this can be
+      wrong that the old selector could not be.
 
 - [ ] **The footer is absent on journal entries.** Open an entry as an ordinary
       note. No panel — its own timeline already shows this, and a panel there

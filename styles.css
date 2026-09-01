@@ -1153,10 +1153,29 @@ button.journal-mentions-header:focus-visible {
    a journal entry happens to link to — including one the user actively writes
    in. 6rem keeps a few lines' worth.
 
-   `!important` because Obsidian computes the value inline. `:has()` so this
-   reaches only sizers that actually carry a footer: with the setting off, or
-   on a note with no mentions, the editor is untouched. */
-.cm-sizer:has(> .journal-mentions-footer) .cm-content {
+   `!important` because Obsidian computes the value inline, and an inline
+   declaration is the one thing no selector outranks at any specificity. This
+   is the file's ninth and last one, and the only one that is not a cascade
+   judgement call — see the block above `.journal-entry-embed .cm-editor` for
+   the eight that are.
+
+   A class, not `:has(> .journal-mentions-footer)`, which is what this said
+   first and read better — it was true by construction and needed nothing
+   keeping it honest. The reason it changed is cost, not correctness: a
+   `:has()` in a stylesheet is matched against every `.cm-sizer` the app has
+   open, so every editor in Obsidian carries its invalidation for a surface
+   that is off by default and that most vaults will never turn on. The mark
+   costs the notes that actually have a footer and nothing else.
+
+   It is the same shape `.journal-entry-embed-editor-pane` takes further up
+   this file — a class tagged from TypeScript standing in for a `:has()` —
+   arrived at there for a different reason (support, not cost).
+   `mentionsFooter.ts` writes and removes this one, in the same two places it
+   mounts and unmounts the container, and both directions are pinned by tests.
+
+   `.cm-sizer` is still named, so this cannot reach the reading-view sizer —
+   which has no `.cm-content` to cap in the first place. */
+.cm-sizer.journal-mentions-footer-host .cm-content {
   padding-bottom: 6rem !important;
 }
 
