@@ -3,6 +3,37 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.3.0
+
+### Search
+
+`Search journal` finds an entry by the words in it.
+
+Type, and matching entries appear with their time and the words around the
+match. There are two ways out. Pick one entry and the journal goes to it, with
+the rest of the timeline still there around it — nothing is filtered. Pick
+"Show all" and the timeline narrows to every entry that matched.
+
+- **It searches what you wrote**, not properties and not filenames.
+- **Turkish casing works.** `istanbul` finds `İstanbul`; `ışık` finds `IŞIK`.
+  Accents are not folded, so `acik` does not find `açık` — this folds case,
+  not accents. One consequence worth knowing: English's capital `I` folds to
+  `ı`, so `i am` does not find `I am happy`.
+- **Every term must appear**, in any order. There is no query syntax — no
+  quotes, no `OR`, no exclusion.
+- **A search filter is never remembered.** Restarting Obsidian, or writing a
+  new entry, puts the whole journal back.
+- **Nothing is written.** As with mentions, this release adds no writes at all.
+
+### Known limitations
+
+- **Searching reads every entry once each time you open the command.** On a
+  journal of a few hundred entries this is imperceptible. On a very large one
+  it may not be; if it ever stutters, the fix is a different reading strategy
+  and not a different search.
+- **This has not run on a phone**, as with the rest of this plugin's mobile
+  support.
+
 ## 1.2.0
 
 ### Mentions

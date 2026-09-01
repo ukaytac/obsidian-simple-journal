@@ -821,6 +821,63 @@
   color: var(--text-muted);
 }
 
+/* A text scope's label, and the reason it is a second class rather than the
+   same one: a tag is a token and reads as one — spaced caps, the shape it has
+   everywhere else in Obsidian — while a query is the user's own words. Italic
+   rather than monospaced, because it is prose they typed and not a fragment of
+   code. The quotation marks come from `renderScopeBar`, not from a `content`
+   rule here, so the bar's text is the same whether it is read by an eye or by
+   a screen reader. */
+.journal-scope-query {
+  font-size: var(--font-ui-small);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* One suggester row: the timestamp, then the excerpt. Baseline-aligned rather
+   than centred so the two different font sizes sit on one line of text. */
+.journal-search-suggestion {
+  display: flex;
+  gap: var(--size-4-3);
+  align-items: baseline;
+}
+
+/* Fixed-width and never shrinking, so every excerpt in the list starts on the
+   same column and the whole thing can be scanned down rather than read. */
+.journal-search-time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One line, always. An excerpt that wrapped would give rows different heights
+   and turn a list you scan into a wall you read. `min-width: 0` because a flex
+   item's default `min-width: auto` refuses to shrink below its content, which
+   would defeat the ellipsis and push the row wider than the modal. */
+.journal-search-excerpt {
+  min-width: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The matched words. Weight and colour rather than a background highlight:
+   the suggester already paints the selected row, and a second highlight inside
+   it competes with the one signal the user is actually steering by. */
+.journal-search-match {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+/* Not a result — a caveat about the results. Reads as an aside so it is not
+   mistaken for an entry that failed to render. */
+.journal-search-unreadable {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+}
+
 /* Frontmatter tag chips (JournalView.createEntryEl). Real <button>s, so —
    exactly like .journal-entry-time — a lone class selector would lose to
    Obsidian's own `button:not(.clickable-icon)` and bare `button` rules and
