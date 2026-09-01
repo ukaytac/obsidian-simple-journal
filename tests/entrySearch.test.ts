@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   MIN_QUERY_LENGTH,
+  SNIPPET_CONTEXT,
   bodyMatchesTerms,
+  buildSnippet,
   foldForSearch,
   parseSearchQuery,
 } from "../src/journal/entrySearch";
@@ -68,5 +70,56 @@ describe("bodyMatchesTerms", () => {
 
   it("folds the body the same way as the query", () => {
     expect(bodyMatchesTerms("İstanbul'a gittik", parseSearchQuery("istanbul"))).toBe(true);
+  });
+});
+
+describe("buildSnippet", () => {
+  it("splits the body around the first matching term", () => {
+    const snippet = buildSnippet("Bugün kahve içtik.", ["kahve"]);
+    expect(snippet).toEqual({ before: "Bugün ", match: "kahve", after: " içtik." });
+  });
+
+  it("uses whichever term appears first, not the first term given", () => {
+    const snippet = buildSnippet("kahve, sonra kutu", ["kutu", "kahve"]);
+    expect(snippet.match).toBe("kahve");
+  });
+
+  it("returns the matched text as the body spells it, not as the query does", () => {
+    expect(buildSnippet("İstanbul'a gittik", ["istanbul"]).match).toBe("İstanbul");
+  });
+
+  it("trims context on both sides and marks the trim", () => {
+    const body = `${"a".repeat(200)} kahve ${"b".repeat(200)}`;
+    const snippet = buildSnippet(body, ["kahve"]);
+    expect(snippet.before.startsWith("…")).toBe(true);
+    expect(snippet.after.endsWith("…")).toBe(true);
+    expect(snippet.before.length).toBeLessThanOrEqual(SNIPPET_CONTEXT + 2);
+    expect(snippet.after.length).toBeLessThanOrEqual(SNIPPET_CONTEXT + 2);
+  });
+
+  it("does not mark a trim that did not happen", () => {
+    const snippet = buildSnippet("kısa kahve notu", ["kahve"]);
+    expect(snippet.before).toBe("kısa ");
+    expect(snippet.after).toBe(" notu");
+  });
+
+  /**
+   * The expectation is spelled as a slice of the collapsed text rather than
+   * as a literal so it states the rule — every run of whitespace becomes one
+   * space — instead of a number someone would have to re-derive to check.
+   */
+  it("collapses newlines so a row stays one line", () => {
+    expect(buildSnippet("ilk satır\n\nkahve\nson", ["kahve"])).toEqual({
+      before: "ilk satır kahve".slice(0, 10),
+      match: "kahve",
+      after: " son",
+    });
+  });
+
+  it("returns the head of the body when nothing matched", () => {
+    const snippet = buildSnippet("hiçbir şey", ["kahve"]);
+    expect(snippet.match).toBe("");
+    expect(snippet.before).toBe("hiçbir şey");
+    expect(snippet.after).toBe("");
   });
 });

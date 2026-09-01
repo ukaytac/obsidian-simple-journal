@@ -80,3 +80,62 @@ export function bodyMatchesTerms(body: string, terms: readonly string[]): boolea
   const folded = foldForSearch(body);
   return terms.every((term) => folded.includes(term));
 }
+
+/** Characters of context kept on each side of a match in a suggester row. */
+export const SNIPPET_CONTEXT = 60;
+
+/**
+ * One row's worth of an entry, split so the caller can emphasise the match
+ * with `createSpan` rather than by building markup out of the user's own
+ * text. `match` is empty when nothing matched, in which case `before` holds
+ * the head of the body — a row is still better than a blank.
+ */
+export interface SearchSnippet {
+  before: string;
+  match: string;
+  after: string;
+}
+
+/** Collapses every run of whitespace to one space, so a row stays one line. */
+function flatten(body: string): string {
+  return body.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The excerpt around the FIRST match in the body — first by position, not by
+ * the order the terms were typed. Whichever term the user's eye would hit
+ * first is the one worth showing.
+ *
+ * `match` is sliced out of the body rather than taken from the term, so the
+ * row shows `İstanbul` for a query of `istanbul`: the point of the excerpt
+ * is to look like the entry, not like the search box. That slice is only
+ * correct because `foldForSearch` preserves length — see its doc.
+ */
+export function buildSnippet(body: string, terms: readonly string[]): SearchSnippet {
+  const flat = flatten(body);
+  const folded = foldForSearch(flat);
+
+  let at = -1;
+  let length = 0;
+  for (const term of terms) {
+    const index = folded.indexOf(term);
+    if (index >= 0 && (at === -1 || index < at)) {
+      at = index;
+      length = term.length;
+    }
+  }
+
+  if (at === -1) {
+    const head = flat.slice(0, SNIPPET_CONTEXT * 2);
+    return { before: head + (flat.length > head.length ? "…" : ""), match: "", after: "" };
+  }
+
+  const start = Math.max(0, at - SNIPPET_CONTEXT);
+  const end = Math.min(flat.length, at + length + SNIPPET_CONTEXT);
+
+  return {
+    before: (start > 0 ? "…" : "") + flat.slice(start, at),
+    match: flat.slice(at, at + length),
+    after: flat.slice(at + length, end) + (end < flat.length ? "…" : ""),
+  };
+}
