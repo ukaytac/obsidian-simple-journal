@@ -669,10 +669,15 @@
    above it on mobile.
    ---
    `!important` is deliberate here, and these eight — three below, one on the
-   padding rule after it, one on `.cm-line` above, three on the gutter — are the
-   only ones in this stylesheet. Obsidian's own review scorecard flags every one
-   of them; this comment is the answer to that flag, and the count is kept honest
-   because it is the whole argument.
+   padding rule after it, one on `.cm-line` above, three on the gutter — are
+   every one this cascade argument covers. The stylesheet holds one more, and
+   one only: the mentions footer's `padding-bottom` cap near the bottom of this
+   file. It is not part of the argument below because it is not a cascade fight
+   at all — it overrides a value Obsidian computes *inline*, which no selector
+   can outrank at any specificity, and it carries its own note there (see also
+   CLAUDE.md § Mentions Rule 2). Nine in the file. Obsidian's own review
+   scorecard flags every one of them; this comment is the answer to that flag,
+   and the count is kept honest because it is the whole argument.
 
    It was seven before the list-marker fix. `.cm-line` needs these box resets but
    cannot take a `padding` shorthand, so the reset is grouped by property, which
@@ -689,6 +694,16 @@
      the deepest real ancestor chain available to us:  (0,4,0)
        (`.journal-timeline .journal-entry-body .journal-entry-embed .cm-sizer`)
      opposing rules using !important:                  none
+
+   Re-checked against 1.8.10's app.css, for those same elements and properties,
+   and the conclusion is unchanged. The `HyperMD-header` chain above is still
+   there — counted on 1.8.10 it comes to (0,8,1) rather than the (0,10,0)
+   recorded from 1.8.9, which is still twice the reach available to us and does
+   not move the argument. Of the rules that do carry `!important` anywhere near
+   this ground — `.cm-content { flex-basis }`, `.cm-content > * { margin }`,
+   `.cm-gutters { color, border-right }` — none lands on a property either
+   block resets, except `.cm-line`'s margin, where Obsidian sets the same 0.
+   The themes half of the measurement was not redone.
 
    So specificity *can* win in principle — nothing opposing is `!important` —
    but not at any specificity this plugin can reach honestly. Closing a
@@ -725,7 +740,7 @@
 /* Padding is the one property of the four that `.cm-line` cannot take from a
    shorthand — see the axis split above — so it gets the same selector list
    minus that one element. Grouping the reset by property rather than by element
-   is what keeps the `!important` count at eight instead of eleven: the
+   is what keeps this argument's count at eight instead of eleven: the
    alternative is a second element-shaped block repeating `margin`, `min-height`
    and `max-width` for `.cm-line` alone. */
 .journal-entry-embed .cm-editor,
