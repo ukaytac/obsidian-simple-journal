@@ -14,7 +14,6 @@ import {
 import type { JournalEntry } from "../journal/entry";
 import {
   entriesWithTag,
-  entryHasTag,
   frontmatterTags,
   normalizeTag,
   resolveTags,
@@ -24,6 +23,7 @@ import type JournalEntriesPlugin from "../main";
 import { anchorSeed, pageAfter } from "../services/entryIndex";
 import type { JournalChange } from "../services/journalService";
 import { formatDayHeader, formatTime } from "../utils/dates";
+import { scopeMatches, type JournalScope } from "./journalScope";
 import type { RenderedState } from "./applyChange";
 import { ChangeEntryTimeModal } from "./ChangeEntryTimeModal";
 import { createChangeApplication, type ChangeApplication } from "./changeApplication";
@@ -251,21 +251,28 @@ export class JournalView extends ItemView {
    */
   private anchorDate: Date | null = null;
   /**
-   * When set, the timeline shows only entries carrying this tag (`#`
-   * stripped, cased as the user chose it; matching is case-insensitive).
+   * What the timeline is filtered to, or null. Two kinds — a tag or a text
+   * query — and only ever one at a time; see `journalScope.ts` for the
+   * union and why one-at-a-time is structural rather than a rule.
    *
-   * A SCOPE, not an anchor: a tag is not a point on the chronological axis,
-   * so "this tag and older" has no meaning — see the spec at
-   * `docs/superpowers/specs/2026-08-23-journal-tags-design.md`. Composes with
-   * `anchorDate`: the two are orthogonal, one deciding WHICH entries and the
-   * other WHERE to start.
+   * A SCOPE, not an anchor: neither kind is a point on the chronological
+   * axis, so "this and older" has no meaning for either — see the specs at
+   * `docs/superpowers/specs/2026-08-23-journal-tags-design.md` and
+   * `docs/superpowers/specs/2026-09-01-journal-search-design.md`. Composes
+   * with `anchorDate`: the two are orthogonal, one deciding WHICH entries
+   * and the other WHERE to start.
    *
    * NEVER persisted — not to view state, not to settings. A saved workspace
    * layout that restored a filter would hide most of a user's journal at
    * startup with no visible cause, the same "permanently locked out" failure
    * the calendar's placement policy exists to avoid.
+   *
+   * Named `journalScope` rather than `scope` because `ItemView` already has
+   * a `scope` — Obsidian's keymap `Scope`, which this view assigns in the
+   * constructor to capture Escape. Shadowing it type-checks as an override
+   * and then fails at `this.scope.register(...)`. Not a style choice.
    */
-  private tagScope: string | null = null;
+  private journalScope: JournalScope | null = null;
   private loading = false;
   /**
    * True while `onSentinelVisible` is processing a callback that it itself
@@ -666,7 +673,7 @@ export class JournalView extends ItemView {
       // for something it did not cause. `this.index` is already the
       // SCOPED array here, so the unfiltered count has to come from the
       // service directly.
-      this.renderEmptyState(false, this.plugin.journal.getEntries().length > 0 ? this.tagScope : null);
+      this.renderEmptyState(false, this.plugin.journal.getEntries().length > 0 ? this.journalScope : null);
       // Still installed even though there's nothing to page yet: the
       // sentinel's own initial IntersectionObserver callback finds the
       // first page empty and tears itself back down immediately (see
@@ -692,7 +699,7 @@ export class JournalView extends ItemView {
     if (this.rendered.size === 0) {
       this.renderEmptyState(
         this.anchorDate !== null,
-        this.plugin.journal.getEntries().length > 0 ? this.tagScope : null,
+        this.plugin.journal.getEntries().length > 0 ? this.journalScope : null,
       );
     }
 
@@ -1205,8 +1212,8 @@ export class JournalView extends ItemView {
    * and why; this wrapper exists only so calls go through `this.` — same
    * reasoning as `mountEditor`'s doc in `mountLifecycle.ts`.
    */
-  private renderEmptyState(anchored = false, scopeTag: string | null = null): void {
-    this.timelineDom.renderEmptyState(anchored, scopeTag);
+  private renderEmptyState(anchored = false, scope: JournalScope | null = null): void {
+    this.timelineDom.renderEmptyState(anchored, scope);
   }
 
   /**
@@ -2153,7 +2160,7 @@ export class JournalView extends ItemView {
     // over a metadata-only array — per debounce flush, not per keystroke —
     // buys exact correctness with no incremental-sync state to get wrong.
     // Skipped entirely when unscoped, so `this.index` stays the live alias.
-    if (this.tagScope !== null) this.index = this.scopedIndex();
+    if (this.journalScope !== null) this.index = this.scopedIndex();
 
     // A "reload" change deliberately does NOT clear the scope. It fires for
     // any mutation of the journal folder or its DESCENDANTS (see
@@ -2290,7 +2297,7 @@ export class JournalView extends ItemView {
     // entry has no tags, and is newer than any past anchor — leaving the file
     // safe on disk but absent from the timeline with no explanation. Both are
     // cleared in one reload rather than two.
-    if (this.tagScope !== null || this.anchorDate !== null) {
+    if (this.journalScope !== null || this.anchorDate !== null) {
       await this.resetToNewest();
     }
 
@@ -2805,7 +2812,7 @@ export class JournalView extends ItemView {
     // this, abandoning the very first entry in an otherwise-empty journal
     // would leave a blank pane with no way back to the message short of a
     // manual reload.
-    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.tagScope);
+    if (this.rendered.size === 0) this.renderEmptyState(this.anchorDate !== null, this.journalScope);
   }
 
   /**
@@ -2887,14 +2894,18 @@ export class JournalView extends ItemView {
    */
   private scopedIndex(): JournalEntry[] {
     const all = this.plugin.journal.getEntries();
-    const scope = this.tagScope;
+    const scope = this.journalScope;
     if (scope === null) return all;
-    return entriesWithTag(all, scope);
+    // `entriesWithTag` for the tag kind rather than a `scopeMatches` filter:
+    // it normalizes the tag once for the whole pass instead of per entry,
+    // which is the reason it exists (see `entryTags.ts`).
+    if (scope.kind === "tag") return entriesWithTag(all, scope.tag);
+    return all.filter((entry) => scope.paths.has(entry.file.path));
   }
 
   /** Whether `entry` belongs in the timeline as currently filtered. */
   private matchesScope(entry: JournalEntry): boolean {
-    return this.tagScope === null || entryHasTag(entry, this.tagScope);
+    return scopeMatches(this.journalScope, entry);
   }
 
   /**
@@ -2906,8 +2917,9 @@ export class JournalView extends ItemView {
     if (!el) return;
 
     el.empty();
-    el.toggleClass("journal-scope-bar-active", this.tagScope !== null);
-    if (this.tagScope === null) return;
+    const scope = this.journalScope;
+    el.toggleClass("journal-scope-bar-active", scope !== null);
+    if (scope === null) return;
 
     // The outer element (`el`) is full-bleed — see styles.css — so its
     // background covers the whole scrollport width. This inner wrapper is
@@ -2919,7 +2931,14 @@ export class JournalView extends ItemView {
     // and the bar takes no space, exactly as before this wrapper existed.
     const inner = el.createDiv({ cls: "journal-scope-bar-inner" });
 
-    inner.createSpan({ cls: "journal-scope-tag", text: `#${this.tagScope}` });
+    // A tag is a token and reads as one; a query is the user's own words and
+    // reads as a quotation. Two classes rather than one, so styles.css can
+    // say that without inspecting the text.
+    if (scope.kind === "tag") {
+      inner.createSpan({ cls: "journal-scope-tag", text: `#${scope.tag}` });
+    } else {
+      inner.createSpan({ cls: "journal-scope-query", text: `“${scope.query}”` });
+    }
 
     const clear = new ButtonComponent(inner)
       .setIcon("x")
@@ -2937,7 +2956,7 @@ export class JournalView extends ItemView {
    * owns that key and would be silently overridden.
    */
   private onContentKeyDown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || this.tagScope === null) return;
+    if (event.key !== "Escape" || this.journalScope === null) return;
 
     const target = event.target instanceof HTMLElement ? event.target : null;
     if (target?.closest(".journal-entry")) return;
@@ -2996,26 +3015,46 @@ export class JournalView extends ItemView {
     if (tagsEl) this.renderEntryTagsInto(tagsEl, rendered.entry);
   }
 
-  /** The active tag scope, or null. Read by `main.ts` to build the suggester. */
-  activeTagScope(): string | null {
-    return this.tagScope;
+  /** The active scope, or null, whatever kind. Read by `main.ts`. */
+  activeScope(): JournalScope | null {
+    return this.journalScope;
   }
 
   /**
-   * Scopes the timeline to `tag`, or clears the scope when `tag` is null.
+   * The active TAG scope's tag, or null — null also while a TEXT scope is
+   * active, which is correct for every caller: they ask this to decide what
+   * to preselect or clear in a tag suggester, and a text scope is neither.
+   */
+  activeTagScope(): string | null {
+    return this.journalScope?.kind === "tag" ? this.journalScope.tag : null;
+  }
+
+  /**
+   * Sets the scope, or clears it when null. ONE scope at a time: this
+   * replaces whatever was active, whatever kind it was.
    *
-   * Keeps any active anchor: the two compose (see `tagScope`'s doc). Goes
+   * Keeps any active anchor: the two compose (see `scope`'s doc). Goes
    * through the same serialized `reload()` chain as every other timeline
    * rebuild, and scrolls to the top afterwards so the newest matching entry
    * is actually visible rather than leaving the viewport where the previous,
    * differently-populated timeline had it.
    */
-  async setTagScope(tag: string | null): Promise<void> {
-    const next = tag === null ? null : normalizeTag(tag);
-    this.tagScope = next === "" ? null : next;
+  async setScope(scope: JournalScope | null): Promise<void> {
+    this.journalScope = scope;
     this.renderScopeBar();
     await this.reload();
     this.scrollToTop();
+  }
+
+  /**
+   * The tag-shaped entry point. `normalizeTag` lives here and nowhere else,
+   * so a caller cannot set a tag scope that skipped it — which is what the
+   * `#`-stripping and trimming in `entryTags.ts` exists to prevent.
+   */
+  async setTagScope(tag: string | null): Promise<void> {
+    if (tag === null) return this.setScope(null);
+    const next = normalizeTag(tag);
+    return this.setScope(next === "" ? null : { kind: "tag", tag: next });
   }
 
   /**
@@ -3037,6 +3076,13 @@ export class JournalView extends ItemView {
    * `newEntry`'s doc in `main.ts` already names once for a different path:
    * the filter would appear to do nothing, with no trace of why.
    */
+  requestScope(scope: JournalScope | null): void {
+    this.setScope(scope).catch((error: unknown) => {
+      console.error("Simple Journal: could not change the journal filter", error);
+      new Notice("Could not change the journal filter. See the developer console.");
+    });
+  }
+
   requestTagScope(tag: string | null): void {
     this.setTagScope(tag).catch((error: unknown) => {
       console.error("Simple Journal: could not change the tag filter", error);
@@ -3051,7 +3097,7 @@ export class JournalView extends ItemView {
    * timeline, with no explanation.
    */
   private async resetToNewest(): Promise<void> {
-    this.tagScope = null;
+    this.journalScope = null;
     this.anchorDate = null;
     this.renderScopeBar();
     await this.reload();

@@ -32,6 +32,7 @@
  * reference, mirroring `MountDeps` in `mountLifecycle.ts`.
  */
 import type { JournalEntry } from "../journal/entry";
+import { scopeEmptyText, type JournalScope } from "./journalScope";
 import { anchorPosition, compareEntries } from "../services/entryIndex";
 import { compareDayKeys, dayKey, formatDayHeader, formatMonthHeader } from "../utils/dates";
 
@@ -85,7 +86,7 @@ export interface TimelineDom {
   removeEmptyDayGroups(): void;
   insertEntryInPlace(entry: JournalEntry): void;
   appendEntry(entry: JournalEntry): void;
-  renderEmptyState(anchored?: boolean, scopeTag?: string | null): void;
+  renderEmptyState(anchored?: boolean, scope?: JournalScope | null): void;
   /** Clears `dayGroups`/`lastRenderedMonth`. Called by `clearTimeline`. */
   reset(): void;
   /**
@@ -351,11 +352,11 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
    * is silently excluding everything else would send the user looking in the
    * wrong place.
    */
-  function renderEmptyState(anchored = false, scopeTag: string | null = null): void {
+  function renderEmptyState(anchored = false, scope: JournalScope | null = null): void {
     deps.getTimelineEl().createDiv({
       cls: "journal-empty",
-      text: scopeTag
-        ? `No entries tagged #${scopeTag}.`
+      text: scope
+        ? scopeEmptyText(scope)
         : anchored
           ? "Nothing on or before this date."
           : "No journal entries yet. Use the + button above to write the first one.",
