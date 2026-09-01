@@ -11,6 +11,8 @@ import { JournalSettingsTab } from "./settings/SettingsTab";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/CalendarView";
 import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
+import { hitPaths, readJournalSnapshot } from "./services/journalSearch";
+import { SearchModal } from "./views/SearchModal";
 import { TagScopeModal } from "./views/TagScopeModal";
 
 export default class JournalEntriesPlugin extends Plugin {
@@ -101,6 +103,14 @@ export default class JournalEntriesPlugin extends Plugin {
       name: "Filter journal by tag",
       callback: () => {
         void this.filterByTag();
+      },
+    });
+
+    this.addCommand({
+      id: "search-journal",
+      name: "Search journal",
+      callback: () => {
+        void this.searchJournal();
       },
     });
 
@@ -384,6 +394,76 @@ export default class JournalEntriesPlugin extends Plugin {
     } catch (error) {
       console.error("Simple Journal: could not open the tag filter", error);
       new Notice("Could not open the tag filter. See the developer console.");
+    }
+  }
+
+  /**
+   * Opens the journal and asks what the user is looking for.
+   *
+   * Wrapped for the same reason `filterByTag` is: it is invoked as
+   * `void this.searchJournal()` and opens with the same `openJournal()`
+   * call, which can throw. Left unwrapped that throw is an unhandled
+   * rejection that never reaches the console — the command would appear to
+   * do nothing at all.
+   *
+   * The snapshot is read HERE, before the modal opens, and deliberately not
+   * inside `getSuggestions`: that runs on every keystroke, and a search that
+   * touches the disk per keystroke is the unscalable shape CLAUDE.md
+   * § Performance warns against. One read, then pure string work.
+   *
+   * Both outward calls in the callback are guarded. `requestScope` is the
+   * guarded wrapper every fire-and-forget scope change uses (see its doc on
+   * `JournalView`); `goToDateInJournal` has no such wrapper, and this
+   * callback has no async caller of its own to hand a rejection to, so it is
+   * caught at the call site instead.
+   */
+  async searchJournal(): Promise<void> {
+    try {
+      const view = await this.openJournal();
+
+      if (!view) {
+        console.error("Simple Journal: the journal view was not available after opening it");
+        new Notice("Could not open the journal.");
+        return;
+      }
+
+      const entries = this.journal.getEntries();
+      const active = view.activeScope();
+
+      // Nothing to search and nothing to clear — a prompt would be a dead
+      // end, the same guard `filterByTag` makes for a journal with no tags.
+      if (entries.length === 0 && active === null) {
+        new Notice("No journal entries yet.");
+        return;
+      }
+
+      const snapshot = await readJournalSnapshot(this.repository, entries);
+
+      new SearchModal(this.app, snapshot, active !== null, (choice) => {
+        switch (choice.kind) {
+          case "clear":
+            view.requestScope(null);
+            return;
+          case "all":
+            view.requestScope({ kind: "text", query: choice.query, paths: hitPaths(choice.hits) });
+            return;
+          case "hit":
+            this.goToDateInJournal(choice.hit.entry.created).catch((error: unknown) => {
+              console.error("Simple Journal: could not go to that entry", error);
+              new Notice("Could not go to that entry. See the developer console.");
+            });
+            return;
+          default:
+            // `unreadable` never reaches here — `onChooseSuggestion` refuses
+            // it — and the exhaustive default keeps that true if a kind is
+            // ever added: `tsc` reddens this line rather than letting a new
+            // row silently do nothing.
+            return;
+        }
+      }).open();
+    } catch (error) {
+      console.error("Simple Journal: could not open journal search", error);
+      new Notice("Could not open journal search. See the developer console.");
     }
   }
 
