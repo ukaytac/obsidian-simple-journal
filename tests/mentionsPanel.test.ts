@@ -41,7 +41,7 @@ interface Setup {
   /** Called when the panel's `journal.onChange` unsubscribe actually runs. */
   journalUnsubscribed: ReturnType<typeof vi.fn>;
   /** Observes the collapse toggle actually persisting, not merely flipping. */
-  saveSettings: ReturnType<typeof vi.fn<[], Promise<void>>>;
+  saveSettings: ReturnType<typeof vi.fn<() => Promise<void>>>;
 }
 
 /**

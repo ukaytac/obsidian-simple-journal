@@ -90,7 +90,7 @@ interface Setup {
   /** How many panels have subscribed to the journal and never unsubscribed. */
   livePanels: () => number;
   /** Observes a collapse actually being remembered, not merely drawn. */
-  saveSettings: ReturnType<typeof vi.fn<[], Promise<void>>>;
+  saveSettings: ReturnType<typeof vi.fn<() => Promise<void>>>;
 }
 
 /**

@@ -18,7 +18,7 @@ export default defineConfig([
     "node_modules/**",
     "docs/**",
     "tests/**",
-    "vitest.config.ts",
+    "vitest.config.mts",
     "esbuild.config.mjs",
   ]),
   ...obsidianmd.configs.recommended,
