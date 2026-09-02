@@ -10,9 +10,9 @@ versions were released without written notes.
 `Search journal` finds an entry by the words in it.
 
 Type, and matching entries appear with their time and the words around the
-match. There are two ways out. Pick one entry and the journal goes to it, with
-the rest of the timeline still there around it — nothing is filtered. Pick
-"Show all" and the timeline narrows to every entry that matched.
+match. There are two ways out. Pick one entry and its note opens in a new tab,
+with the journal left exactly as you had it. Pick "Show all" and the timeline
+narrows to every entry that matched.
 
 - **It searches what you wrote**, not properties and not filenames.
 - **Turkish casing works.** `istanbul` finds `İstanbul`; `ışık` finds `IŞIK`.

@@ -639,6 +639,9 @@ export interface FakeViewState {
  */
 const leafWorkspaces = new WeakMap<WorkspaceLeaf, FakeWorkspace>();
 
+/** Which `PaneType` a leaf was minted for, when it came from `getLeaf`. */
+const leafPaneKinds = new WeakMap<WorkspaceLeaf, "tab" | "split" | "window" | boolean | undefined>();
+
 /**
  * Minimal stand-in for Obsidian's `WorkspaceLeaf`. Real Obsidian hands a leaf
  * to a registered view's constructor and the view reads `app`/other state
@@ -667,6 +670,19 @@ export class WorkspaceLeaf {
 
   async setViewState(viewState: FakeViewState, _eState?: unknown): Promise<void> {
     this.viewState = { ...viewState };
+  }
+
+  /**
+   * Records the open on the workspace holding this leaf rather than on the
+   * leaf itself: this class shadows the real `WorkspaceLeaf` export, so
+   * test-only state added here is exactly what the header's policy warns can
+   * leak into production types. `FakeWorkspace` is free to carry it.
+   *
+   * Async with a discarded second parameter, like the real method, so a
+   * caller type-checked against the real `.d.ts` behaves the same way here.
+   */
+  async openFile(file: TFile, _state?: unknown): Promise<void> {
+    leafWorkspaces.get(this)?.recordOpen(this, file);
   }
 
   /**
@@ -716,6 +732,33 @@ export class FakeWorkspace extends FakeEvents {
    */
   getLeavesOfType(viewType: string): WorkspaceLeaf[] {
     return this.leaves.filter((leaf) => leaf.getViewState().type === viewType);
+  }
+
+  /**
+   * Mints a leaf, the way the real method does for every `PaneType` this mock
+   * has a notion of. The pane kind is recorded rather than modelled: this
+   * workspace has no split tree, so "tab" and "split" would be the same leaf
+   * either way, and a test that asserts WHICH kind was asked for reads
+   * `opened` below.
+   */
+  getLeaf(newLeaf?: "tab" | "split" | "window" | boolean): WorkspaceLeaf {
+    const leaf = this.addLeaf("empty");
+    leafPaneKinds.set(leaf, newLeaf);
+    return leaf;
+  }
+
+  /**
+   * Test-only: every `WorkspaceLeaf.openFile` this workspace's leaves have
+   * served, in order, with the pane kind the leaf was minted for. `getLeaf`
+   * is how production code asks for a new tab, and `openFile` is what it
+   * then puts in it — a test asserting "opened in a new tab" needs both
+   * halves, so they are recorded together.
+   */
+  opened: { file: TFile; pane: "tab" | "split" | "window" | boolean | undefined }[] = [];
+
+  /** Called by `WorkspaceLeaf.openFile()`; not part of the real API. */
+  recordOpen(leaf: WorkspaceLeaf, file: TFile): void {
+    this.opened.push({ file, pane: leafPaneKinds.get(leaf) });
   }
 
   /**
