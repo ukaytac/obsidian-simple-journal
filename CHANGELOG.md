@@ -15,10 +15,13 @@ with the journal left exactly as you had it. Pick "Show all" and the timeline
 narrows to every entry that matched.
 
 - **It searches what you wrote**, not properties and not filenames.
-- **Turkish casing works.** `istanbul` finds `İstanbul`; `ışık` finds `IŞIK`.
+- **Turkish casing works, and so does English's.** `istanbul` finds
+  `İstanbul`; `ışık` finds `IŞIK`; `i am` finds `I am happy`. All four of
+  `İ I ı i` are one letter here, so a search never misses a word over the dot
+  on an i. The cost is the other direction: `ısı` also finds `isi`. An extra
+  row is easier to read past than a missing one is to notice.
   Accents are not folded, so `acik` does not find `açık` — this folds case,
-  not accents. One consequence worth knowing: English's capital `I` folds to
-  `ı`, so `i am` does not find `I am happy`.
+  not accents.
 - **Every term must appear**, in any order. There is no query syntax — no
   quotes, no `OR`, no exclusion.
 - **A search filter is never remembered.** Restarting Obsidian, or writing a
@@ -31,8 +34,6 @@ narrows to every entry that matched.
   journal of a few hundred entries this is imperceptible. On a very large one
   it may not be; if it ever stutters, the fix is a different reading strategy
   and not a different search.
-- **This has not run on a phone**, as with the rest of this plugin's mobile
-  support.
 
 ## 1.2.0
 

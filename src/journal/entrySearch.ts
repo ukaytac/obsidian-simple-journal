@@ -17,27 +17,31 @@
 export const MIN_QUERY_LENGTH = 2;
 
 /**
- * Case folding for search: Turkish casing pairs, no locale.
+ * Case folding for search: the four i's are one letter, no locale.
  *
- * `İ` and `i` are the same letter; `I` and `ı` are the same letter; `i` and
- * `ı` are NOT. Everything else — `ö/o`, `ç/c`, `ş/s`, `ğ/g`, `ü/u`, `â/a` —
- * stays distinct, which is the user's choice: this folds case, not accents.
+ * `İ`, `I`, `ı` and `i` all fold to `i`. Everything else — `ö/o`, `ç/c`,
+ * `ş/s`, `ğ/g`, `ü/u`, `â/a` — stays distinct, which is the user's choice:
+ * this folds case, not accents.
  *
- * Two fixed substitutions before an ordinary `toLowerCase()`, rather than
- * `toLocaleLowerCase("tr")`. Same result for these letters, but no ICU and
- * no locale, so it cannot vary by platform — which is exactly what
- * `compareEntries` in `services/entryIndex.ts` gave up `localeCompare` to
- * guarantee for a synced vault.
+ * One fixed substitution before an ordinary `toLowerCase()`, rather than
+ * `toLocaleLowerCase("tr")`. No ICU and no locale, so it cannot vary by
+ * platform — which is exactly what `compareEntries` in
+ * `services/entryIndex.ts` gave up `localeCompare` to guarantee for a synced
+ * vault. It also leaves no `I`/`İ` behind for `toLowerCase()` to turn into
+ * `i` plus a combining dot (U+0307), which is what made `istanbul` miss
+ * `İstanbul` before any of this existed.
  *
- * Plain `toLowerCase()` alone was rejected: it turns `İ` into `i` plus a
- * combining dot (U+0307), so `istanbul` would not find `İstanbul`. In a
- * Turkish journal that is a daily failure, not a preference.
+ * Turkish casing alone — `İ`→`i`, `I`→`ı` — was the first answer and was
+ * wrong in the other direction: English's capital `I` folded to `ı`, so
+ * `i am` did not find `I am happy`. Two languages, the same daily failure,
+ * and no case mapping can be right for both while `i` and `ı` stay apart.
  *
- * The accepted cost is English's capital `I`, which folds to `ı` — so
- * `"I am happy"` is not found by `"i am"`. Turkish casing cannot be correct
- * and leave that alone at the same time. Pinned by a test in
- * `tests/entrySearch.test.ts` so it stays a decision rather than becoming a
- * bug report.
+ * So they do not stay apart, and the cost is over-matching: `ısı` also finds
+ * `isi`, `sık` also finds `sik`. That is the right direction for the error to
+ * run. An extra row in a list is something the user reads past; a missing row
+ * is a search that lost what they wrote. Both halves are pinned by tests in
+ * `tests/entrySearch.test.ts` so this stays a decision rather than becoming a
+ * bug report either way.
  *
  * Every substitution here is one code unit in, one code unit out. That is
  * load bearing beyond neatness: `buildSnippet` indexes the original string
@@ -46,7 +50,7 @@ export const MIN_QUERY_LENGTH = 2;
  * silently misalign every excerpt.
  */
 export function foldForSearch(text: string): string {
-  return text.replace(/İ/g, "i").replace(/I/g, "ı").toLowerCase();
+  return text.replace(/[İIı]/g, "i").toLowerCase();
 }
 
 /**

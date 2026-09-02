@@ -578,24 +578,35 @@ exclusion, no field prefixes, no fuzzy matching. A query under two characters
 matches nothing, because scoping the journal to something every entry contains
 is the same as having no scope.
 
-## Case folding: Turkish casing pairs, no locale
+## Case folding: the four i's are one letter, no locale
 
-`İ`→`i`, `I`→`ı`, then `toLowerCase()`. Two fixed substitutions, no ICU, no
-locale — identical on every platform, which is what `compareEntries` gave up
-`localeCompare` to guarantee for a synced vault.
+`İ`, `I`, `ı` and `i` all fold to `i`, then `toLowerCase()`. One fixed
+substitution, no ICU, no locale — identical on every platform, which is what
+`compareEntries` gave up `localeCompare` to guarantee for a synced vault. It
+also leaves nothing for `toLowerCase()` to turn into `i` plus a combining dot,
+which is what made `istanbul` miss `İstanbul` before any of this existed.
 
-`İ` and `i` are one letter; `I` and `ı` are one letter; `i` and `ı` are not.
 `ö/o`, `ç/c`, `ş/s`, `ğ/g`, `ü/u`, `â/a` all stay distinct: this folds case,
 not accents.
 
-Plain `toLowerCase()` was rejected because it turns `İ` into `i` plus a
-combining dot, so `istanbul` would not find `İstanbul` — a daily failure in a
-Turkish journal, not a preference.
+**Turkish casing alone was tried first and was wrong in the other direction.**
+`İ`→`i`, `I`→`ı` is the correct Turkish case mapping, and it made English's
+capital `I` fold to `ı`, so `i am` did not find `I am happy`. Two languages,
+the same daily failure, and no case mapping can be right for both while `i`
+and `ı` stay apart. They do not stay apart.
 
-**The accepted cost:** English loses its capital `I`. `"I am happy"` folds to
-`"ı am happy"` and is not found by `"i am"`. Turkish casing cannot be correct
-and leave that alone at the same time. Pinned by a test so it stays a decision
-rather than becoming a bug report.
+**The accepted cost is over-matching:** `ısı` also finds `isi`, `sık` also
+finds `sik`. That is the right direction for the error to run, and the reason
+is what a search is for. An extra row in a list is something the user reads
+past in a second; a missing row is a search that lost what they wrote, and
+they have no way to tell it apart from never having written it. Both halves
+are pinned by tests so this stays a decision rather than becoming a bug report
+in either direction.
+
+This is a **search** folding and not a linguistic one. That distinction is the
+whole justification: `Filter journal by tag` is where exact, case-insensitive
+matching lives (`# Tags` Rule 4), and it is unaffected — nothing here touches
+tags.
 
 The folding is also length-preserving, and that is load bearing rather than
 tidy: the excerpt shown in each row is sliced out of the original body using
@@ -1227,16 +1238,23 @@ Mobile is not a separate UI. It is the same timeline and the same code paths, wi
 
 Do not build a mobile-specific redesign.
 
-**None of the mobile code has run on a device.** The keyboard-scroll
-correction, the long-press menu and the touch targets were all written by
-reasoning from documented behaviour, and their timings — 300 ms for the
-keyboard, 500 ms for the long press — are guesses, not measurements. Treat them
-as unverified until someone runs `docs/manual-testing.md` on a phone.
+**The mobile code has now run on a device**, by hand, before 1.3.0 (2026-09-02
+— see `docs/manual-testing.md`). It no longer carries the "never executed
+anywhere" caveat that stood through 1.2.0.
 
-That caveat is not a formality. Losing a focus race on desktop took six
-attempts to diagnose, four of which shipped without changing anything, because
-the real ordering was not knowable from the source. A keyboard opening on a
-real device is less predictable than that, not more.
+One distinction survives that, and it is not pedantry. The keyboard-scroll
+correction and the long-press menu were *confirmed to work*; their timings —
+300 ms for the keyboard, 500 ms for the long press — were not *measured*. They
+remain the values reasoning picked, now known to feel right on one device
+rather than known to be correct on every device. So a mobile bug report about
+timing is a plausible bug report, not a contradiction of this paragraph, and
+the numbers are still the first thing to suspect.
+
+That distinction is not a formality either. Losing a focus race on desktop took
+six attempts to diagnose, four of which shipped without changing anything,
+because the real ordering was not knowable from the source. A keyboard opening
+on a real device is less predictable than that, not more — and one device is
+one device.
 
 ---
 

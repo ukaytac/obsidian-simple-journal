@@ -136,11 +136,15 @@ not their filenames. Every term has to appear, in any order, and there is no
 query syntax — no quotes, no `OR`, no exclusion. Obsidian's own search still
 answers the wider questions exactly as it did.
 
-**Turkish casing works.** `istanbul` finds `İstanbul`, and `ışık` finds `IŞIK`,
-on every platform. Accents are not folded, so `acik` does not find `açık` —
-this folds case, not accents. One consequence is worth knowing: English's
-capital `I` folds to `ı`, so `i am` does not find `I am happy`. Turkish casing
-cannot be correct and leave that alone at the same time.
+**Casing works in both languages.** `istanbul` finds `İstanbul`, `ışık` finds
+`IŞIK`, and `i am` finds `I am happy` — on every platform, with no dependence
+on your system locale. All four of `İ I ı i` count as one letter here, so a
+search never misses a word over the dot on an i. The cost runs the other way:
+`ısı` also finds `isi`. An extra row is easier to read past than a missing one
+is to notice.
+
+Accents are not folded, so `acik` does not find `açık` — this folds case, not
+accents. Filtering by tag is unaffected: that stays exact.
 
 A text filter is never saved, exactly like the tag one — restart Obsidian, or
 write a new entry, and the journal comes back whole. Only one filter is active

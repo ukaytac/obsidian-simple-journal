@@ -9,12 +9,33 @@ import {
 } from "../src/journal/entrySearch";
 
 describe("foldForSearch", () => {
-  it("folds Turkish casing pairs, keeping i and ı apart", () => {
+  it("folds Turkish casing pairs", () => {
     expect(foldForSearch("İstanbul")).toBe("istanbul");
     expect(foldForSearch("İSTANBUL")).toBe("istanbul");
-    expect(foldForSearch("Işık")).toBe("ışık");
-    expect(foldForSearch("IŞIK")).toBe("ışık");
-    expect(foldForSearch("ilik")).not.toBe(foldForSearch("ılık"));
+    expect(foldForSearch("Işık")).toBe("işik");
+    expect(foldForSearch("IŞIK")).toBe("işik");
+  });
+
+  /**
+   * The English capital `I` used to fold to `ı`, so `i am` did not find
+   * `I am happy` — a daily failure in an English sentence, mirroring the
+   * `İstanbul` one in a Turkish sentence. Both are fixed by folding all four
+   * of `İ I ı i` together.
+   */
+  it("folds English's capital I to the same i", () => {
+    expect(foldForSearch("I am happy")).toBe("i am happy");
+    expect(foldForSearch("I am happy").includes(foldForSearch("i am"))).toBe(true);
+  });
+
+  /**
+   * The cost of the line above, and the reason it is the right trade: dotted
+   * and dotless i are one letter to this search, so `ısı` also finds `isi`.
+   * That returns an extra row; the alternative returned none at all. A search
+   * may over-match — it may not lose what the user wrote.
+   */
+  it("merges dotted and dotless i, over-matching rather than missing", () => {
+    expect(foldForSearch("ısı")).toBe(foldForSearch("isi"));
+    expect(foldForSearch("sık")).toBe(foldForSearch("sik"));
   });
 
   it("leaves every other diacritic distinct", () => {
@@ -24,15 +45,6 @@ describe("foldForSearch", () => {
     expect(foldForSearch("gün")).not.toBe(foldForSearch("gun"));
   });
 
-  /**
-   * Not a bug: the price of `I` being the capital of `ı`. Turkish casing
-   * cannot be correct and leave English's capital `I` alone at the same
-   * time, and this journal is Turkish. Pinned so it stays a decision.
-   */
-  it("costs English its capital I, deliberately", () => {
-    expect(foldForSearch("I am happy")).toBe("ı am happy");
-    expect(foldForSearch("I am happy").includes(foldForSearch("i am"))).toBe(false);
-  });
 });
 
 describe("parseSearchQuery", () => {
@@ -60,8 +72,13 @@ describe("bodyMatchesTerms", () => {
     expect(bodyMatchesTerms(body, ["kahve", "çay"])).toBe(false);
   });
 
+  /**
+   * Through `parseSearchQuery`, not a hand-written term: `bodyMatchesTerms`
+   * takes terms that are ALREADY folded, and a raw `ı` here passed only
+   * because it used to fold to itself.
+   */
   it("matches inside a word, not only at a boundary", () => {
-    expect(bodyMatchesTerms("taşınma günü", ["şınm"])).toBe(true);
+    expect(bodyMatchesTerms("taşınma günü", parseSearchQuery("şınm"))).toBe(true);
   });
 
   it("matches nothing when there are no terms", () => {
