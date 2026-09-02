@@ -823,8 +823,9 @@ export interface FakeKeymapHandler {
  * exactly the part a fake cannot honestly reproduce. Tests therefore invoke a
  * registered handler directly (`journalViewHarness.ts`'s `pressEscape`), which
  * pins what the handler decides and deliberately claims nothing about when
- * Obsidian calls it — see `docs/manual-testing-open.md` for the one ordering
- * question left open to a person.
+ * Obsidian calls it — see `docs/manual-testing.md` for the one ordering
+ * question left open to a person (whether vim's keymap consumes Escape
+ * first).
  */
 export class Scope {
   /** Inspection surface the real `Scope` lacks — see this file's header. */
