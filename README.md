@@ -35,6 +35,9 @@ files.
   a single thread back — still newest first, still continuous. Nothing is
   hidden permanently: the filter names itself at the top of the timeline and
   is gone the moment you clear it or restart.
+- **Searchable by what you wrote.** Find an entry by the words in it, in your
+  own language — Turkish casing included. Open the one you were looking for, or
+  narrow the timeline to everything you wrote about it.
 - **Readable from the other side.** Link a note from an entry and that note can
   show the entries themselves, with their text — not a column of timestamps,
   which is all a backlinks pane can make of titleless files.
@@ -68,6 +71,7 @@ added. Two entries created in the same second get a numeric suffix
 | `Go to today` | Scrolls the timeline back to the top |
 | `Open calendar` | Reveals the calendar in the sidebar |
 | `Filter journal by tag` | Narrows the timeline to one tag |
+| `Search journal` | Finds an entry by the words in it |
 | `Open journal mentions` | Reveals the mentions panel in the sidebar |
 | `Insert journal mentions block` | Writes a mentions block at the cursor |
 
@@ -113,6 +117,35 @@ Matching is exact and case-insensitive: filtering by `#work` does not pull in
 The filter is never saved. Restart Obsidian and the journal comes back whole —
 a filter restored at startup would hide most of your journal with no visible
 reason.
+
+## Search
+
+`Search journal` answers two questions with one list: *take me to that entry*,
+and *show me everything I wrote about this*.
+
+Type, and matching entries appear with their time and the words around the
+match. Then either:
+
+- **pick one entry** — its note opens in a new tab, and the journal you were
+  reading is left exactly as it was; or
+- **pick "Show all"** — the timeline narrows to every entry that matched, named
+  at the top with a `✕` beside it, the same way the tag filter is.
+
+It searches what you wrote: the text of your entries, not their properties and
+not their filenames. Every term has to appear, in any order, and there is no
+query syntax — no quotes, no `OR`, no exclusion. Obsidian's own search still
+answers the wider questions exactly as it did.
+
+**Turkish casing works.** `istanbul` finds `İstanbul`, and `ışık` finds `IŞIK`,
+on every platform. Accents are not folded, so `acik` does not find `açık` —
+this folds case, not accents. One consequence is worth knowing: English's
+capital `I` folds to `ı`, so `i am` does not find `I am happy`. Turkish casing
+cannot be correct and leave that alone at the same time.
+
+A text filter is never saved, exactly like the tag one — restart Obsidian, or
+write a new entry, and the journal comes back whole. Only one filter is active
+at a time: searching replaces a tag filter, and filtering by tag replaces a
+search.
 
 ## Mentions
 
