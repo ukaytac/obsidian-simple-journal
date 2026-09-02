@@ -528,10 +528,40 @@ that with a looser guarantee.
 
 ## Rule 3 — Two exits, one door
 
-Choosing a result **anchors** the timeline to that entry, unfiltered — the
-calendar's mechanism, and the mentions panel's. Choosing "Show all N matches"
-**scopes** the timeline to the query — the tag scope's mechanism. Neither is a
-new concept; search only opens a new door onto two that already existed.
+Choosing a result **opens that entry's note** in a new tab, leaving the
+timeline exactly as it was — `# Entry Actions`' "Open source note", reached
+from a second place. Choosing "Show all N matches" **scopes** the timeline to
+the query — the tag scope's mechanism. Neither is a new concept; search only
+opens a new door onto two that already existed.
+
+Choosing a result once **anchored** the timeline to the entry's day, the
+calendar's mechanism and the mentions panel's. That was wrong here, and the
+two reasons are worth keeping because they are about what an anchor *is*.
+
+An anchor renders the anchored day and everything older, and nothing newer. A
+calendar day is a point on the chronological axis the user deliberately
+travelled to, so that exclusion is the feature: they asked to be back then. A
+search hit is not a point in time — it is **one entry**, which happens to have
+a date. Anchoring to its day therefore hid the newer half of the journal in
+answer to a question that was never about dates, and the timeline read as
+truncated with no cause the user could connect to what they had done. It is the
+same failure `# Tags` names for a restored scope, arriving by a different route.
+
+It also missed. An anchor lands on the newest entry of the day it anchors to,
+which is the matched entry only by coincidence: search for something written at
+09:34 on a day that also holds a 22:41 entry and the timeline lands on the
+22:41 one, with the actual match somewhere below the fold. The one thing the
+user picked out of a list was the one thing not on screen.
+
+Scrolling the timeline to the matched entry instead — keeping the journal
+continuous — was considered and rejected as a bigger feature than the exit
+needs: the entry may sit thousands of entries below the loaded window, so it
+means paging forward from the newest entry until it arrives, and `# Performance`
+is explicit that the whole history must never be mounted at once. The note is
+already the place that shows one entry and only that entry, and opening it
+costs nothing.
+
+That the timeline stays untouched is pinned by `tests/mainSearch.test.ts`.
 
 ## Rule 4 — One scope at a time
 

@@ -394,11 +394,11 @@ either way, because nothing in the suite can settle them.
       characters you think it does.
 
 - [ ] **Both exits do different things.** Search a word that several entries
-      share. Choose one result: the timeline lands on that entry with older
-      entries below it and NO filter — scroll up and the newer ones are still
-      there. Search again and choose "Show all": now only matches are shown
-      and the bar names the query in quotes. Escape, or the bar's ×, puts the
-      whole journal back.
+      share. Choose one result: that entry's own note opens in a NEW tab, and
+      the journal tab behind it is untouched — same scroll position, no filter,
+      nothing hidden. Search again and choose "Show all": now only matches are
+      shown and the bar names the query in quotes. Escape (outside an entry),
+      or the bar's ×, puts the whole journal back.
 
 - [ ] **The excerpt is legible in both themes.** In light and dark, the
       matched word reads as emphasised without the row looking striped, and a

@@ -411,11 +411,18 @@ export default class JournalEntriesPlugin extends Plugin {
    * touches the disk per keystroke is the unscalable shape CLAUDE.md
    * § Performance warns against. One read, then pure string work.
    *
+   * The two exits do different things and touch different surfaces, per
+   * CLAUDE.md § Search Rule 3: choosing one result opens that entry's note,
+   * leaving the timeline exactly as it was, while "Show all" scopes the
+   * timeline to the query. Choosing a result deliberately does NOT anchor:
+   * an anchor is the calendar's mechanism and hides every entry newer than
+   * the one anchored to, which read as a truncated journal.
+   *
    * Both outward calls in the callback are guarded. `requestScope` is the
    * guarded wrapper every fire-and-forget scope change uses (see its doc on
-   * `JournalView`); `goToDateInJournal` has no such wrapper, and this
-   * callback has no async caller of its own to hand a rejection to, so it is
-   * caught at the call site instead.
+   * `JournalView`); `openFile` returns a bare promise, and this callback has
+   * no async caller of its own to hand a rejection to, so it is caught at
+   * the call site instead.
    */
   async searchJournal(): Promise<void> {
     try {
@@ -448,10 +455,18 @@ export default class JournalEntriesPlugin extends Plugin {
             view.requestScope({ kind: "text", query: choice.query, paths: hitPaths(choice.hits) });
             return;
           case "hit":
-            this.goToDateInJournal(choice.hit.entry.created).catch((error: unknown) => {
-              console.error("Simple Journal: could not go to that entry", error);
-              new Notice("Could not go to that entry. See the developer console.");
-            });
+            // The entry's own note, in a new tab: the same call the entry
+            // menu's "Open source note" makes (see `JournalView`). NOT
+            // `getLeaf(false)`, which reuses the active leaf — that is the
+            // journal this command has just revealed, so the timeline itself
+            // would be replaced by the note.
+            this.app.workspace
+              .getLeaf("tab")
+              .openFile(choice.hit.entry.file)
+              .catch((error: unknown) => {
+                console.error("Simple Journal: could not open that entry's note", error);
+                new Notice("Could not open that entry. See the developer console.");
+              });
             return;
           default:
             // `unreadable` never reaches here — `onChooseSuggestion` refuses
