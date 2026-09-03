@@ -71,9 +71,12 @@ hundred files" is several hundred files.
       Then No subfolders, and confirm the next one lands in `Journal/`
       directly. The timeline must look identical in all three cases — that it
       does is the whole reason the setting is safe.
-- [ ] **Changing the setting moves nothing**, and the timeline still shows
-      every entry. Switch shapes a few times with a journal that has entries
-      in more than one of them; nothing on screen should change at all.
+- [ ] **Changing the setting offers the move, and declining it moves
+      nothing.** Switch shapes with a journal that has entries in another one:
+      the reorganize confirmation appears by itself. Dismiss it, then confirm
+      in the file explorer that not one file moved and the timeline still
+      shows every entry. Switch to a shape the journal is already in and no
+      dialog should appear at all.
 - [ ] **The preview's numbers are the real ones.** With entries in more than
       one shape, plus one entry you filed into `Journal/inbox/` and one you
       named yourself, run **Reorganize journal folders**. The dialog's "will

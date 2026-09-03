@@ -609,6 +609,11 @@ export default class JournalEntriesPlugin extends Plugin {
    * plugin's largest operation, so it gets an explicit act, a preview, and a
    * confirmation — see CLAUDE.md § Reorganizing entry folders.
    *
+   * Also reached from the `Entry folders` dropdown, with `offer: true` — see
+   * `JournalSettingsTab.setLayout`. Same path, same confirmation, one
+   * difference: an offer says nothing when there is nothing to move, because
+   * the user asked to change a setting rather than asking this question.
+   *
    * Nothing is written before the user confirms: `planReorganize` only reads.
    * With nothing to move this says so and opens no dialog at all — a
    * confirmation offering to move zero entries is a dead end, the same guard
@@ -620,12 +625,17 @@ export default class JournalEntriesPlugin extends Plugin {
    * rebuild here means the timeline and the calendar are correct the moment
    * the notice appears.
    */
-  async reorganizeFolders(): Promise<void> {
+  async reorganizeFolders(options: { offer?: boolean } = {}): Promise<void> {
     try {
       const plan = this.repository.planReorganize();
 
       if (plan.moves.length === 0) {
-        new Notice("Every journal entry is already where this setting puts it.");
+        // Silent when this was offered rather than asked for: the user changed
+        // a dropdown, and "there was nothing to do" is an answer to a question
+        // they did not ask. Invoked from the palette it is the whole answer.
+        if (!options.offer) {
+          new Notice("Every journal entry is already where this setting puts it.");
+        }
         return;
       }
 

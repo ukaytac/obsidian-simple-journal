@@ -22,8 +22,10 @@ until you change it.
 - **Changing it moves nothing.** It decides where the next entry is written.
   The timeline reads your entries wherever they are, so a journal holding more
   than one shape works exactly as before.
-- **`Reorganize journal folders`** brings existing entries over to the shape
-  you picked. It counts them and tells you before it moves anything.
+- **Picking a shape offers to move the rest**, and you can say no. The same
+  offer is a command, `Reorganize journal folders`, whenever you want it
+  later. Either way it counts the entries and tells you before it moves
+  anything.
 - **It never touches what is inside your entries.** Only their locations
   change: nothing is read from them and nothing is written to them.
 - **It never overwrites a file**, and it leaves alone anything you filed into a

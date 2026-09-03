@@ -20,33 +20,38 @@ interface FakePlugin {
   app: unknown;
   settings: {
     journalFolder: string;
+    entryFolders: string;
     showMentionsUnderNotes: boolean;
     mentionsSidebar: boolean;
   };
   saveSettings: () => Promise<void>;
   refreshJournal: () => void;
   applyMentionSettings: (sidebarTurnedOff?: boolean) => void;
+  reorganizeFolders: (options?: { offer?: boolean }) => Promise<void>;
 }
 
 function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
   const saveSettings = vi.fn(() => Promise.resolve());
   const refreshJournal = vi.fn();
   const applyMentionSettings = vi.fn();
+  const reorganizeFolders = vi.fn(() => Promise.resolve());
   const plugin: FakePlugin = {
     app: {},
     settings: {
       journalFolder: initialFolder,
+      entryFolders: "year-month",
       showMentionsUnderNotes: false,
       mentionsSidebar: false,
     },
     saveSettings,
     refreshJournal,
     applyMentionSettings,
+    reorganizeFolders,
   };
   // The tab only ever touches app/settings/saveSettings/refreshJournal/
   // applyMentionSettings.
   const tab = new JournalSettingsTab(plugin as never);
-  return { tab, plugin, saveSettings, refreshJournal, applyMentionSettings };
+  return { tab, plugin, saveSettings, refreshJournal, applyMentionSettings, reorganizeFolders };
 }
 
 describe("JournalSettingsTab, declarative path", () => {
@@ -257,5 +262,62 @@ describe("mentions toggles", () => {
     const { tab, plugin } = setup();
     tab.setControlValue("mentionsSidebar", "yes");
     expect(plugin.settings.mentionsSidebar).toBe(false);
+  });
+});
+
+describe("entry folders", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("commits the chosen layout immediately — a dropdown has no half-typed state", async () => {
+    const { tab, plugin, saveSettings } = setup();
+
+    tab.setControlValue("entryFolders", "flat");
+
+    expect(plugin.settings.entryFolders).toBe("flat");
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    await vi.runAllTimersAsync();
+  });
+
+  /**
+   * The discoverability problem this solves: the setting governs where the
+   * NEXT entry goes, so a user who switches it and looks at their vault sees
+   * nothing moved, and the command that would move things is in a palette
+   * they have no reason to open. So the change offers it — as the same
+   * confirmation the command shows, which they can cancel.
+   */
+  it("offers to reorganize once the new layout is saved", async () => {
+    const { tab, reorganizeFolders } = setup();
+
+    tab.setControlValue("entryFolders", "flat");
+    await vi.runAllTimersAsync();
+
+    expect(reorganizeFolders).toHaveBeenCalledTimes(1);
+    expect(reorganizeFolders).toHaveBeenCalledWith({ offer: true });
+  });
+
+  it("ignores a layout it does not recognise, rather than storing it", async () => {
+    const { tab, plugin, saveSettings, reorganizeFolders } = setup();
+
+    tab.setControlValue("entryFolders", "fortnightly");
+
+    expect(plugin.settings.entryFolders).toBe("year-month");
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(reorganizeFolders).not.toHaveBeenCalled();
+    await vi.runAllTimersAsync();
+  });
+
+  it("does not offer when the other controls change", async () => {
+    const { tab, reorganizeFolders } = setup();
+
+    tab.setControlValue("mentionsSidebar", true);
+    await vi.runAllTimersAsync();
+
+    expect(reorganizeFolders).not.toHaveBeenCalled();
   });
 });

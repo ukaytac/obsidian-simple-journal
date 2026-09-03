@@ -254,9 +254,21 @@ the journal folder's own root is not somewhere.
 ## Reorganizing entry folders
 
 `Reorganize journal folders` brings entries the plugin manages into the
-configured shape. It is a command and not something the dropdown does, because
-changing where the next entry goes should be instant and free while moving
-several hundred existing files is this plugin's largest operation.
+configured shape.
+
+**Changing the setting offers it, and offering is not doing it.** What the
+dropdown opens is this command's own confirmation, with its counts and its
+Cancel — so nothing moves that the user did not agree to move, which is the
+line that matters. The reason it is offered at all is that the alternative
+failed the user: the setting governs where the NEXT entry goes, so someone who
+switches to `flat` and looks at their vault sees nothing moved and concludes
+the setting is broken, while the command that would move things sits in a
+palette they have no reason to open. An offer with nothing to move says
+nothing, because at that point the user asked to change a setting rather than
+asking this question.
+
+It stays a command as well, because a command is how you reach a thing later —
+after adding entries by hand, or after changing the journal folder.
 
 It is the bulk form of the placement rule above rather than a second idea:
 same target function, same setting, no timestamp touched. What it adds is a

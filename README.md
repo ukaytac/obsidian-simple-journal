@@ -71,14 +71,16 @@ Year             Journal/2026/2026-08-12-09-34-21.md
 No subfolders    Journal/2026-08-12-09-34-21.md
 ```
 
-Changing it decides where the *next* entry goes and moves nothing on its own —
-the timeline reads your entries wherever they are, so a journal holding more
-than one shape works fine. To bring everything over to the shape you picked,
-run **Reorganize journal folders**: it tells you how many entries will move
-before it moves any, never touches what is inside them, never overwrites a
-file, and leaves alone anything you filed into a folder of your own or named
-yourself. Emptied year and month folders go to your trash rather than being
-deleted.
+Changing it decides where the *next* entry goes. Entries you already have are
+not moved — the timeline reads them wherever they are, so a journal holding
+more than one shape works fine.
+
+Picking a new shape then **offers** to bring the rest over, and you can say
+no; the same offer is available any time as the **Reorganize journal folders**
+command. Either way it tells you how many entries will move before it moves
+any, never touches what is inside them, never overwrites a file, and leaves
+alone anything you filed into a folder of your own or named yourself. Emptied
+year and month folders go to your trash rather than being deleted.
 
 ## Commands
 
@@ -237,10 +239,8 @@ follows the plugin's own naming convention.
 `Journal`, and is created automatically when the first entry is written.
 
 **Entry folders** — where new entries are filed inside it: by year and month
-(the default), by year, or not at all. Entries you already have are not moved
-by this; they stay where they are and the timeline still shows all of them. To
-move them into the shape you pick, run **Reorganize journal folders** — see
-**Storage** above.
+(the default), by year, or not at all. Picking a shape offers to move the
+entries you already have, and you can decline; see **Storage** above.
 
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your

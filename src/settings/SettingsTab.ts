@@ -12,23 +12,9 @@ const SIDEBAR_KEY = "mentionsSidebar";
 const FOLDER_NAME = "Journal folder";
 const FOLDER_DESC = "Vault folder that holds journal entries. Created when the first entry is written.";
 const LAYOUT_NAME = "Entry folders";
-/**
- * Three sentences rather than one, and each earns its place by answering a
- * question the user would otherwise answer wrongly by themselves.
- *
- * The failure this exists to prevent: someone picks No subfolders, looks at
- * their vault, sees every entry still under `2026/08`, and concludes the
- * setting did not work. It did — it governs the next entry — but nothing said
- * so, and the command that moves the rest sits in a palette they have no
- * reason to open. So: what this controls, that nothing already written moves
- * or disappears, and the name of the command that does move it.
- */
 const LAYOUT_DESC =
-  "Where new entries are filed inside the journal folder. " +
-  "Entries you already have are not moved: they stay where they are, and the timeline still " +
-  "shows all of them. " +
-  "To move them into the shape you pick here, run the Reorganize journal folders command — it " +
-  "tells you how many will move before it moves any.";
+  "Where new entries are filed. Existing entries move only when you run the " +
+  "Reorganize journal folders command.";
 
 /**
  * Each option names its own example path, because "Year" and "No subfolders"
@@ -92,14 +78,24 @@ export class JournalSettingsTab extends PluginSettingTab {
    * Commits immediately, like the toggles and unlike the folder field: a
    * dropdown has no half-typed state.
    *
-   * Nothing is refreshed and nothing moves. The layout decides where the NEXT
-   * entry is written, and the timeline reads entries wherever they are, so
-   * there is nothing on screen for this to change — which is the whole reason
-   * the setting can be instant and the migration has to be a command.
+   * The layout decides where the NEXT entry is written, and the timeline reads
+   * entries wherever they are, so there is nothing on screen for this to
+   * change and nothing to refresh.
+   *
+   * It then OFFERS to move what already exists, because the alternative is
+   * worse than it sounds: someone switches to No subfolders, looks at their
+   * vault, sees everything still under `2026/08`, and concludes the setting
+   * did not work. What is offered is the command's own confirmation, with its
+   * counts and its Cancel — so this still cannot move a file the user did not
+   * agree to move, which is the line `# Storage Model` draws.
    */
   private setLayout(value: EntryFolderLayout): void {
     this.plugin.settings.entryFolders = value;
-    void this.plugin.saveSettings();
+    // Offered only after the save resolves, and in that order for a reason:
+    // the plan is computed from the live setting, and a reorganize that
+    // succeeded against a setting that failed to save would leave the journal
+    // in a shape `data.json` does not remember.
+    void this.plugin.saveSettings().then(() => this.plugin.reorganizeFolders({ offer: true }));
   }
 
   /**
