@@ -62,6 +62,24 @@ Each file carries a single `created` property and your text. No heading is
 added. Two entries created in the same second get a numeric suffix
 (`-2`, `-3`, ...) rather than overwriting each other.
 
+**The folders are your choice.** `Entry folders` in the settings offers three
+shapes:
+
+```
+Year and month   Journal/2026/08/2026-08-12-09-34-21.md
+Year             Journal/2026/2026-08-12-09-34-21.md
+No subfolders    Journal/2026-08-12-09-34-21.md
+```
+
+Changing it decides where the *next* entry goes and moves nothing on its own —
+the timeline reads your entries wherever they are, so a journal holding more
+than one shape works fine. To bring everything over to the shape you picked,
+run **Reorganize journal folders**: it tells you how many entries will move
+before it moves any, never touches what is inside them, never overwrites a
+file, and leaves alone anything you filed into a folder of your own or named
+yourself. Emptied year and month folders go to your trash rather than being
+deleted.
+
 ## Commands
 
 | Command | What it does |
@@ -72,6 +90,7 @@ added. Two entries created in the same second get a numeric suffix
 | `Open calendar` | Reveals the calendar in the sidebar |
 | `Filter journal by tag` | Narrows the timeline to one tag |
 | `Search journal` | Finds an entry by the words in it |
+| `Reorganize journal folders` | Moves existing entries into the folder shape you chose |
 | `Open journal mentions` | Reveals the mentions panel in the sidebar |
 | `Insert journal mentions block` | Writes a mentions block at the cursor |
 
@@ -216,6 +235,10 @@ follows the plugin's own naming convention.
 
 **Journal folder** — the vault folder that holds journal entries. Defaults to
 `Journal`, and is created automatically when the first entry is written.
+
+**Entry folders** — how new entries are foldered inside it: by year and month
+(the default), by year, or not at all. See **Storage** above, including what
+the **Reorganize journal folders** command does with entries you already have.
 
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your

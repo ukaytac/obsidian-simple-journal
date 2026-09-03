@@ -3,6 +3,48 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.4.0
+
+### Entry folders
+
+Journal entries have always been filed under `Journal/2026/08/`. Now that is a
+setting, with three shapes:
+
+```
+Year and month   Journal/2026/08/2026-08-12-09-34-21.md
+Year             Journal/2026/2026-08-12-09-34-21.md
+No subfolders    Journal/2026-08-12-09-34-21.md
+```
+
+It defaults to year and month, so nothing about an existing journal changes
+until you change it.
+
+- **Changing it moves nothing.** It decides where the next entry is written.
+  The timeline reads your entries wherever they are, so a journal holding more
+  than one shape works exactly as before.
+- **`Reorganize journal folders`** brings existing entries over to the shape
+  you picked. It counts them and tells you before it moves anything.
+- **It never touches what is inside your entries.** Only their locations
+  change: nothing is read from them and nothing is written to them.
+- **It never overwrites a file**, and it leaves alone anything you filed into a
+  folder of your own or named yourself.
+- **Links follow**, as long as Obsidian is set to update internal links
+  automatically. If a move fails partway, running the command again finishes
+  the job.
+- **Emptied year and month folders go to your trash**, not straight to
+  deletion.
+
+### One behaviour change worth knowing
+
+Correcting an entry's time has always moved its file, so the filename — which
+*is* the timestamp — keeps telling the truth. It now moves it to whatever the
+folder setting says, which is what makes the setting mean something.
+
+One case is different from before: an entry sitting directly in your journal
+folder, rather than in a year or month subfolder, used to stay there through a
+time correction and now moves into the shape you chose. Entries you filed into
+a folder of your own, or named yourself, are still never moved.
+
 ## 1.3.0
 
 ### Search

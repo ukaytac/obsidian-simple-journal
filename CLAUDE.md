@@ -192,11 +192,105 @@ Example:
 Journal/2026/08/2026-08-12-17-23-41.md
 ```
 
-This must be configurable later, but V1 can start with these defaults.
+The filename format is not configurable. The nesting is: see
+`## Entry folders` below, which is the "must be configurable later" this
+section promised.
 
 Avoid filenames based on journal text.
 
 Do not generate slugs from the first sentence.
+
+## Entry folders
+
+Three shapes, one setting (`entryFolders`), defaulting to the nesting above so
+an upgraded journal changes nothing:
+
+```text
+year-month   Journal/2026/08/2026-08-12-17-23-41.md
+year         Journal/2026/2026-08-12-17-23-41.md
+flat         Journal/2026-08-12-17-23-41.md
+```
+
+**Three fixed shapes, and not a pattern language.** A format string with
+tokens means a parser, a validator, an error state, and a class of
+configurations a user can break their own journal with. `# Settings`' warning
+against premature configurability applies to the shape of a setting, not only
+to its existence. Day-level nesting is one more shape in the same seam if it
+is ever wanted.
+
+**Nothing about reading is layout-dependent, and that is what makes this
+cheap.** `listEntries` walks the journal folder recursively and asks about
+every Markdown file it meets; chronology comes from `entryDate.ts`, never from
+a path. So a journal holding all three shapes at once is not a broken state —
+it is the state the plugin already handled, which is why the migration below
+can be a command the user chooses rather than an obligation.
+
+**One target, one permission.** `journal/folderLayout.ts` is the only place a
+folder is computed, and all three writers call it with the current setting:
+`createEntry`, `renameEntryToMatch` after a corrected timestamp, and
+`reorganizeEntries`. They therefore cannot drift apart about where an entry
+belongs — the guarantee `withFreeName` already gives those same three about
+collision suffixes. The second question is a boolean, `isManagedFolder`: is
+this one of the three shapes the plugin produces, or a folder the user filed
+something into on purpose? An entry in `Journal/inbox/` keeps its folder and
+has only its filename corrected, exactly as before.
+
+So a corrected timestamp places an entry at **current setting + corrected
+date**. Under `flat`, correcting an entry still sitting in `2026/08` brings it
+out to `Journal/`. Two alternative rules were considered and rejected, and the
+reasons are in
+`docs/superpowers/specs/2026-09-02-folder-layout-design.md`: gating the move on
+"the setting's shape, else leave it" can leave a file named `2027-01-…` inside
+a folder named `2026`, which is the self-contradiction this rename exists to
+remove one level up; and preserving each file's own shape asks the plugin to
+maintain three layouts forever, so a journal never converges.
+
+One earlier behaviour changed with this: an entry sitting directly in the
+journal root is movable now. The filename convention is what answers "is this
+ours" — nobody hand-types `YYYY-MM-DD-HH-mm-ss[-N].md` — while the folder gate
+answers only the narrower "did the user file this somewhere on purpose", and
+the journal folder's own root is not somewhere.
+
+## Reorganizing entry folders
+
+`Reorganize journal folders` brings entries the plugin manages into the
+configured shape. It is a command and not something the dropdown does, because
+changing where the next entry goes should be instant and free while moving
+several hundred existing files is this plugin's largest operation.
+
+It is the bulk form of the placement rule above rather than a second idea:
+same target function, same setting, no timestamp touched. What it adds is a
+preview and a confirmation, and those are about scale.
+
+Seven properties make it safe, each written against a specific failure, and
+each pinned by a test in `tests/reorganizeEntries.test.ts`:
+
+1. **Paths only, never bytes.** No entry is read and no entry's contents are
+   written. Nothing this operation can get wrong reaches what the user wrote.
+2. **Only files the plugin itself would have placed** — the filename
+   convention, and `isManagedFolder`.
+3. **Never overwrites.** Targets go through `withFreeName`, so two entries
+   written in the same second in different month folders — which `flat` stops
+   separating — suffix rather than one clobbering the other.
+4. **Links follow**, via `fileManager.renameFile` and never `vault.rename`.
+   That is conditional on the user's own "automatically update internal links"
+   preference, which this plugin cannot read without `vault.getConfig` — not
+   public API — so the confirmation states the condition instead of guessing.
+5. **Previewed before anything is written.** `planReorganize` only reads.
+6. **Idempotent and resumable.** Each target is computed from the entry's own
+   date and the current setting; there is no progress state to keep or
+   corrupt, so an interrupted run is finished by running it again.
+7. **One failure does not stop the rest.** Failures are logged per file,
+   counted, and reported — `# Error Handling` asks to fail visibly, and
+   stopping at the first would hide the others while still leaving a
+   half-moved tree.
+
+Emptied folders are **trashed, not deleted**: `fileManager.trashFile` respects
+the user's configured trash behaviour, so it is recoverable. Innermost first,
+walking up so a year holding only emptied months goes too, and never the
+journal root itself — that is the flat layout's own target and not the
+plugin's to remove. A folder still holding anything is not empty and is left
+alone.
 
 Do not rename files when their content changes.
 
@@ -990,10 +1084,13 @@ Filter journal by tag
 Open journal mentions
 Insert journal mentions block
 Search journal
+Reorganize journal folders
 ```
 
 Nothing is queued behind these. A new command needs a section of its own in
-this document first, the way each of the five above has one.
+this document first, the way each of the six above has one — the last of them
+under `# Storage Model`, because what it does is storage rather than
+navigation.
 
 When opening the journal, focusing the newest entries is the default.
 
@@ -1183,8 +1280,15 @@ Initial settings:
 Journal folder
 ```
 
-Since added, both off by default and both covered by `# Mentions` Rule 5 —
-they gate optional surfaces rather than configure the journal itself:
+Since added, and the only one of the three that configures the journal itself
+rather than gating an optional surface — see `# Storage Model`'s
+`## Entry folders`:
+
+```text
+Entry folders
+```
+
+And these two, both off by default and both covered by `# Mentions` Rule 5:
 
 ```text
 Show mentions under notes
@@ -1198,10 +1302,17 @@ It is remembered UI state, written only by the header the user clicks (see
 `# Mentions` Rule 3). A control in the tab for it would be a second way to say
 the same thing, in a place the panel it is about cannot be seen.
 
-Potential future settings:
+Every setting is validated by `sanitizeSettings` in `settings/settings.ts` —
+pure, unit-tested, and the only thing that decides what a hand-edited
+`data.json` may hand to the rest of the plugin. A new setting is validated
+there or it is not validated at all.
+
+Potential future settings. `Folder pattern` is struck through rather than
+removed: it was answered by `Entry folders`, three fixed shapes instead of a
+format string, and the reasoning for that narrowing is in `# Storage Model`:
 
 ```text
-Folder pattern
+~~Folder pattern~~ → Entry folders, done
 Filename pattern
 Timestamp format
 Date header format
@@ -1382,6 +1493,7 @@ src/
     entry.ts
     entryRepository.ts
     entryDate.ts
+    folderLayout.ts
 
   views/
     JournalView.ts
@@ -1677,6 +1789,10 @@ Still NOT to implement:
 * activity heatmaps — the calendar marks which days hold entries, deliberately
   as a plain dot; density shading is a different feature and remains out
 * multiple journals
+* a folder or filename pattern language. `Entry folders` answers the folder
+  question with three fixed shapes; a format string with tokens is a parser, a
+  validator, and a way for a user to break their own journal. Filenames are
+  not configurable at all
 * encryption
 * sync
 * templates

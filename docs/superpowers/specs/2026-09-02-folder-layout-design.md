@@ -1,7 +1,7 @@
 # Entry folders: a choice of three, and a safe way to move what exists
 
 **Date:** 2026-09-02
-**Status:** approved, not yet implemented
+**Status:** approved, implemented in 1.4.0
 **Target version:** 1.4.0
 
 ## What this is

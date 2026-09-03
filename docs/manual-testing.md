@@ -59,6 +59,50 @@ nobody has written down, which is worse than leaving them open:
   to be written down rather than assumed. `tests/obsidian-mock.ts`'s `Scope`
   points here for it.
 
+## Entry folders and reorganizing — needs a real vault
+
+Open, because 1.4.0 added them after the session above closed. Nothing here is
+provable by a fake: `renameFile`'s link rewriting is Obsidian's, the trash is
+the user's own configured behaviour, and the only honest test of "several
+hundred files" is several hundred files.
+
+- [ ] **Each shape writes where it says.** Set `Entry folders` to Year, run
+      **New journal entry**, and confirm the file lands in `Journal/2026/`.
+      Then No subfolders, and confirm the next one lands in `Journal/`
+      directly. The timeline must look identical in all three cases — that it
+      does is the whole reason the setting is safe.
+- [ ] **Changing the setting moves nothing**, and the timeline still shows
+      every entry. Switch shapes a few times with a journal that has entries
+      in more than one of them; nothing on screen should change at all.
+- [ ] **The preview's numbers are the real ones.** With entries in more than
+      one shape, plus one entry you filed into `Journal/inbox/` and one you
+      named yourself, run **Reorganize journal folders**. The dialog's "will
+      move" and "will stay" counts must match what actually happens, and the
+      two you set aside must be the ones that stay.
+- [ ] **Cancel means cancel.** Dismiss the dialog and confirm not one file
+      moved.
+- [ ] **Links survive.** Link an entry from a note, reorganize, then check the
+      note's link still resolves — with Obsidian's *automatically update
+      internal links* on. Turn it off, reorganize another entry, and confirm
+      the link breaks: the dialog says this happens, and a warning nobody has
+      verified is worse than none.
+- [ ] **Trash, not deletion.** After a move that empties `Journal/2026/08`,
+      that folder and the `2026` above it are in the vault trash (or the
+      system trash, per your setting) and recoverable — not simply gone. A
+      folder where you left an image or a note of your own must still be
+      there.
+- [ ] **Interrupting is survivable.** Reorganize a large journal and quit
+      Obsidian partway through. Reopen, run the command again, and confirm it
+      finishes rather than reporting failures or moving anything twice.
+- [ ] **Several hundred entries.** Run it on the real journal and watch for
+      two things: the notice's count matches the vault, and the timeline is
+      correct as soon as the notice appears rather than a few seconds later.
+- [ ] **A correction under each shape.** With the setting on No subfolders,
+      use **Change entry time** on an entry still in `2026/08` and confirm it
+      comes out to `Journal/`. With Year and month, correct an entry in
+      `Journal/` and confirm it goes in. Then do the same to an entry in
+      `Journal/inbox/` and confirm only its filename changed.
+
 ## Fixed: the composer opened without the caret in it
 
 With the Journal tab **closed**, from any other note, the `New journal entry`
