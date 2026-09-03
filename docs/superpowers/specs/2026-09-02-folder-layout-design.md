@@ -51,56 +51,87 @@ abstractions" and § Settings' "avoid premature configurability" intact.
 Day-level nesting (`Journal/2026/08/12/`) was offered and declined. It is one
 more shape in the same seam if it is ever wanted.
 
-## One reader: what shape is this file's folder in?
+## One target, one permission
 
-`isYearMonthFolder` exists today to gate `renameEntryToMatch`'s folder move: an
-entry in `root/YYYY/MM` is machine-managed and may be relocated when its month
-changes; an entry in `Journal/inbox/` is somewhere the user chose and is left
-alone. With three shapes it generalises to one function:
+Everything the plugin writes goes where the setting says. There is exactly one
+function that computes a folder:
 
 ```ts
-folderShapeOf(root, folder): EntryFolderLayout | null
+entryFolderPath(root, date, layout): string
 ```
 
-`"year-month"` for `root/YYYY/MM`, `"year"` for `root/YYYY`, `"flat"` for `root`
-itself, and `null` for anything else — `Journal/inbox`, `root/2026/8`
-(unpadded), `root/26/08`, a folder outside the root.
+and all three writers call it with the **current setting**: `createEntry` for a
+new entry, `renameEntryToMatch` after a time correction, and
+`reorganizeEntries` for the migration. They therefore cannot drift apart about
+where an entry belongs — the same structural guarantee `withFreeName` already
+gives the three of them about collision suffixes.
 
-**A time correction preserves the file's own shape and updates the date
-components in it.** Not the shape the setting currently names:
+So a corrected timestamp places the entry at "current setting + corrected
+date". With the setting on **No subfolders**, correcting an entry still sitting
+in `2026/08` moves it to `Journal/`. With the setting on **Year and month**, an
+entry in `2026/` whose date is corrected into 2027 moves to `2027/01/`.
 
-| The file | Corrected to Jan 2027 | Lands at |
-| --- | --- | --- |
-| `Journal/2026/08/…` | | `Journal/2027/01/…` |
-| `Journal/2026/…` | | `Journal/2027/…` |
-| `Journal/…` (flat) | | unchanged, in place |
-| `Journal/inbox/…` | | in place; filename only |
+The second question is permission, and it is a boolean:
 
-So the layout setting has **no interaction at all** with correcting a time. It
-answers one question — where a *new* entry is written — and `folderShapeOf`
-answers the other, from the file itself.
+```ts
+isManagedFolder(root, folder): boolean
+```
 
-An earlier draft of this spec gated the move on the *current setting's* shape
-instead, and that was wrong in a way worth recording. With the setting on
-**Year and month** and a file still in the year-only shape at `Journal/2026/`,
-a correction crossing into 2027 would have left a file named `2027-01-…` inside
-a folder named `2026` — the folder contradicting the filename, which is the
-exact contradiction § Storage Model invented this rename to remove, one level
-up. Preserving the file's own shape cannot produce that state.
+True for the three shapes this plugin produces — `root`, `root/YYYY`,
+`root/YYYY/MM` — and false for anything else: `Journal/inbox`, `root/2026/8`
+(unpadded), `root/26/08`, a folder outside the root. It replaces today's
+`isYearMonthFolder` and gates both the correction's move and the migration.
 
-It is also bit-for-bit today's behaviour for today's journals: a
-`root/YYYY/MM` entry moves as it always has, a flat entry stays as it always
-has (its shape's target is the root, so there is nothing to move), and an entry
-under a user-chosen folder is untouched as it always has been.
+An entry in a folder `isManagedFolder` rejects keeps its folder and has only
+its filename corrected — today's rule, unchanged, for the reason today's
+comment gives: a location the user chose on purpose is not this plugin's to
+overwrite.
 
-**One accepted ambiguity.** `folderShapeOf` classifies by shape alone, so a
-folder the user made and named `2026` reads as the year shape. Today's comment
-argues `root/YYYY/MM` is "never a folder a user could plausibly have typed by
-hand", and that argument is genuinely weaker for a bare year. The consequence
-is bounded and benign: the only thing that changes is that a correction
-crossing a year boundary moves the file to `2027`, which is what a folder named
-by year would have wanted anyway. The migration's second gate — the filename
-convention — is what keeps a hand-named file in such a folder out of reach.
+### The two rules this replaced, and why they lost
+
+Recorded because the choice is not obvious, and a later reader deserves the
+alternatives rather than a fait accompli.
+
+**A — "move only within the shape the setting names, otherwise leave it."**
+Produced a state the rename exists to prevent. Setting on year-and-month, file
+in the year-only shape at `Journal/2026/`, correction crossing into 2027: the
+file ends up named `2027-01-…` inside a folder named `2026`. That is the folder
+contradicting the filename, which is exactly the self-contradiction
+§ Storage Model invented this rename to remove, one level up.
+
+**B — "preserve each file's own shape, updating the date components in it."**
+Fixes A's contradiction, and asks the plugin to maintain two or three layouts
+simultaneously and forever: a file born under year-only stays year-only, so a
+journal never converges without the command, and every shape stays a live
+maintenance target. It also needed a third function (`folderShapeOf`, returning
+which shape a folder is) that the accepted rule does not.
+
+**C — the accepted rule above.** One layout is ever written to, one function
+computes it, one boolean decides whether a file may be moved at all, and the
+contradiction in A is unreachable by construction.
+
+### What C changes for existing journals, deliberately
+
+For an entry in `root/YYYY/MM` — every entry this plugin has ever created —
+nothing changes: the setting defaults to year-and-month, so the computed target
+is what `isYearMonthFolder` and `entryFolderPath` produce today.
+
+One case does change. A file sitting **directly in the journal root** with a
+plugin-convention filename is movable now, where today it is left alone: with
+the setting on year-and-month, correcting its time moves it into
+`root/YYYY/MM`.
+
+That is accepted rather than overlooked, and the reasoning is about which gate
+carries which question. **The filename gate answers "is this ours?"** —
+`YYYY-MM-DD-HH-mm-ss[-N].md` is this plugin's convention and nobody types it by
+hand. **The folder gate answers the narrower "did the user file this somewhere
+on purpose?"** — and `Journal/inbox/` is filing something somewhere, while the
+journal folder's own root is not.
+
+The residual risk is a conventionally-named file a user deliberately parked in
+the root: a time correction will move it. Bounded on both sides — the bulk
+command previews and confirms before touching anything, and a single
+correction moves one file with `renameFile`, so links follow.
 
 ## The migration, and what "safe" means concretely
 
@@ -117,9 +148,9 @@ Seven properties, each answering a specific way this could go wrong:
    § Error Handling's "never risk data loss" most wants here.
 2. **Only files the plugin itself would have placed.** Two gates, the same two
    `renameEntryToMatch` already applies: the filename parses as
-   `YYYY-MM-DD-HH-mm-ss[-N].md`, **and** `folderShapeOf` returns a shape for
-   its current folder rather than `null`. An entry the user filed under
-   `Journal/inbox/`, or named themselves, is never touched.
+   `YYYY-MM-DD-HH-mm-ss[-N].md`, **and** `isManagedFolder` accepts its current
+   folder. An entry the user filed under `Journal/inbox/`, or named themselves,
+   is never touched.
 3. **Never overwrites.** Targets go through `withFreeName`, the same function
    `createEntry` and `renameEntryToMatch` share, so a target already held by
    another entry from the same second gets the deterministic `-2`, `-3`, …
@@ -144,11 +175,11 @@ Seven properties, each answering a specific way this could go wrong:
    leave a half-moved tree *and* hide the other two failures; because the
    command is idempotent, continuing and reporting is strictly better.
 
-This command is the only place the layout **setting** decides where an
-existing file goes. That is the whole division of labour: the setting governs
-new entries, a time correction preserves each file's own shape, and this
-command — asked for explicitly, previewed, confirmed — is how a journal is
-brought over to one shape.
+This command is the bulk form of the rule above rather than a second concept:
+apply the same "current setting + the entry's own date" placement to every
+managed entry, touching no timestamp. What makes it a command is scale, not
+semantics — hundreds of `renameFile` calls at once want a preview and a
+confirmation that one deliberate time correction does not.
 
 **Empty folders left behind** are trashed, not deleted: after the move, a
 folder that is (a) under the journal root, (b) one of the machine shapes, and
@@ -171,7 +202,7 @@ behind for the user to sweep up by hand is not tidier for being timid.
 
 | File | Change |
 | --- | --- |
-| `src/journal/folderLayout.ts` | New, pure. The `EntryFolderLayout` type, `entryFolderPath(root, date, layout)`, and `folderShapeOf(root, folder)` |
+| `src/journal/folderLayout.ts` | New, pure. The `EntryFolderLayout` type, `entryFolderPath(root, date, layout)`, and `isManagedFolder(root, folder)` |
 | `src/utils/dates.ts` | `entryFolderPath` moves out to the module above; date formatting stays |
 | `src/journal/entryRepository.ts` | Takes a layout getter beside its folder getter; `createEntry` and `renameEntryToMatch` use it; new `reorganizeEntries()` returning a report |
 | `src/settings/settings.ts` | `entryFolders` field, default `"year-month"`, validated on load like the rest — an unknown value falls back to the default rather than throwing |
@@ -186,19 +217,16 @@ Pure, in a new `tests/folderLayout.test.ts`:
 
 * each layout's path for a date, including the root-folder edge cases the
   existing `normalizeRoot` handles
-* `folderShapeOf` returns each of the three shapes for the folder that
-  produces it, and `null` for `root/inbox`, `root/2026/8` (unpadded),
-  `root/26/08`, and a folder outside the root
-* `entryFolderPath(root, date, folderShapeOf(root, folder))` is the identity
-  for a folder already correct for that date — the property the rename's
-  no-op check depends on
+* `isManagedFolder` accepts the three shapes and rejects `root/inbox`,
+  `root/2026/8` (unpadded), `root/26/08`, and a folder outside the root
 
 Repository-level:
 
 * `createEntry` writes to the right folder under each layout
-* `renameEntryToMatch` preserves each shape while updating its date
-  components — the four rows of the table above, including the year-crossing
-  case that the discarded rule got wrong
+* `renameEntryToMatch` places the file per the current setting: out of
+  `2026/08` and into the root under **No subfolders**, out of `2026/` and into
+  `2027/01/` under **Year and month**, and — unchanged from today — filename
+  only, folder untouched, for an entry under `Journal/inbox/`
 * `reorganizeEntries` moves managed entries, skips user-placed folders and
   hand-named files, suffixes rather than overwrites a taken target, counts a
   failure without abandoning the remaining files, and trashes a folder it
