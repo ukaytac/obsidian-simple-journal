@@ -12,9 +12,23 @@ const SIDEBAR_KEY = "mentionsSidebar";
 const FOLDER_NAME = "Journal folder";
 const FOLDER_DESC = "Vault folder that holds journal entries. Created when the first entry is written.";
 const LAYOUT_NAME = "Entry folders";
+/**
+ * Three sentences rather than one, and each earns its place by answering a
+ * question the user would otherwise answer wrongly by themselves.
+ *
+ * The failure this exists to prevent: someone picks No subfolders, looks at
+ * their vault, sees every entry still under `2026/08`, and concludes the
+ * setting did not work. It did — it governs the next entry — but nothing said
+ * so, and the command that moves the rest sits in a palette they have no
+ * reason to open. So: what this controls, that nothing already written moves
+ * or disappears, and the name of the command that does move it.
+ */
 const LAYOUT_DESC =
-  "How new entries are foldered inside the journal folder. Existing entries stay where they are; " +
-  "the Reorganize journal folders command moves them.";
+  "Where new entries are filed inside the journal folder. " +
+  "Entries you already have are not moved: they stay where they are, and the timeline still " +
+  "shows all of them. " +
+  "To move them into the shape you pick here, run the Reorganize journal folders command — it " +
+  "tells you how many will move before it moves any.";
 
 /**
  * Each option names its own example path, because "Year" and "No subfolders"

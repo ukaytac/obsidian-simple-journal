@@ -236,9 +236,11 @@ follows the plugin's own naming convention.
 **Journal folder** — the vault folder that holds journal entries. Defaults to
 `Journal`, and is created automatically when the first entry is written.
 
-**Entry folders** — how new entries are foldered inside it: by year and month
-(the default), by year, or not at all. See **Storage** above, including what
-the **Reorganize journal folders** command does with entries you already have.
+**Entry folders** — where new entries are filed inside it: by year and month
+(the default), by year, or not at all. Entries you already have are not moved
+by this; they stay where they are and the timeline still shows all of them. To
+move them into the shape you pick, run **Reorganize journal folders** — see
+**Storage** above.
 
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your
