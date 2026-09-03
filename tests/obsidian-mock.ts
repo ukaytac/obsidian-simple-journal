@@ -997,6 +997,15 @@ export class ButtonComponent {
     this.buttonEl.disabled = disabled;
     return this;
   }
+  setButtonText(text: string): this {
+    this.buttonEl.textContent = text;
+    return this;
+  }
+  /** Real Obsidian styles the call-to-action button with this class. */
+  setCta(): this {
+    this.buttonEl.classList.add("mod-cta");
+    return this;
+  }
   onClick(callback: (evt: MouseEvent) => unknown): this {
     this.buttonEl.addEventListener("click", callback as (evt: MouseEvent) => void);
     return this;

@@ -83,6 +83,7 @@ function setup(entryCount = 2): Setup {
   plugin.app = app as unknown as App;
   plugin.settings = {
     journalFolder: "Diary",
+    entryFolders: "year-month",
     showMentionsUnderNotes: true,
     mentionsSidebar: false,
     mentionsFooterCollapsed: false,

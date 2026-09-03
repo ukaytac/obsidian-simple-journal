@@ -1,18 +1,20 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
-import { EntryRepository } from "./journal/entryRepository";
+import { EntryRepository, type ReorganizePlan } from "./journal/entryRepository";
 import { collectTags } from "./journal/entryTags";
 import { destroyMentionPanels, refreshMentionPanels } from "./mentions/MentionsPanel";
 import { MentionsView, VIEW_TYPE_MENTIONS } from "./mentions/MentionsView";
 import { MENTIONS_BLOCK_SNIPPET, registerMentionsCodeBlock } from "./mentions/mentionsCodeBlock";
 import { createMentionsFooter, type MentionsFooter } from "./mentions/mentionsFooter";
 import { JournalService } from "./services/journalService";
-import { DEFAULT_SETTINGS, type JournalSettings } from "./settings/settings";
+import { DEFAULT_SETTINGS, sanitizeSettings, type JournalSettings } from "./settings/settings";
 import { JournalSettingsTab } from "./settings/SettingsTab";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/CalendarView";
 import { createEntryEditorFactory, type EntryEditorFactory } from "./views/EntryEditor";
 import { JournalView, VIEW_TYPE_JOURNAL } from "./views/JournalView";
 import { hitPaths, readJournalSnapshot } from "./services/journalSearch";
 import { SearchModal } from "./views/SearchModal";
+import { ReorganizeModal, reorganizeSummary } from "./views/ReorganizeModal";
+import { entryFolderPath } from "./journal/folderLayout";
 import { TagScopeModal } from "./views/TagScopeModal";
 
 export default class JournalEntriesPlugin extends Plugin {
@@ -25,7 +27,11 @@ export default class JournalEntriesPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    this.repository = new EntryRepository(this.app, () => this.settings.journalFolder);
+    this.repository = new EntryRepository(
+      this.app,
+      () => this.settings.journalFolder,
+      () => this.settings.entryFolders,
+    );
     this.editorFactory = createEntryEditorFactory(this.app);
 
     this.journal = new JournalService(this.app, this.repository);
@@ -119,6 +125,14 @@ export default class JournalEntriesPlugin extends Plugin {
     // it here almost always wants, and an unwanted directive is more work to
     // remove than a wanted one is to add.
     this.addCommand({
+      id: "reorganize-journal-folders",
+      name: "Reorganize journal folders",
+      callback: () => {
+        void this.reorganizeFolders();
+      },
+    });
+
+    this.addCommand({
       id: "insert-mentions-block",
       name: "Insert journal mentions block",
       editorCallback: (editor) => {
@@ -211,33 +225,11 @@ export default class JournalEntriesPlugin extends Plugin {
     // `loadData` is typed `any`: it returns whatever JSON is on disk, which a
     // user or an older build may have written, so nothing about its shape is
     // guaranteed. Naming that as `unknown` rather than spreading `any` keeps
-    // the validation below the only thing that decides what is usable — and
-    // that check is why a hand-edited data.json cannot poison the folder path.
+    // `sanitizeSettings` the only thing that decides what is usable — and it
+    // lives in `settings.ts`, pure and unit-tested, because a check no test
+    // can reach is a check nobody can trust.
     const stored: unknown = await this.loadData();
-    this.settings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      typeof stored === "object" && stored !== null ? (stored as Partial<JournalSettings>) : {},
-    );
-
-    if (typeof this.settings.journalFolder !== "string" || this.settings.journalFolder.trim() === "") {
-      this.settings.journalFolder = DEFAULT_SETTINGS.journalFolder;
-    }
-
-    // Same reasoning as the folder check above: `data.json` is user-editable,
-    // so a non-boolean here must not reach the code that reads it.
-    if (typeof this.settings.showMentionsUnderNotes !== "boolean") {
-      this.settings.showMentionsUnderNotes = DEFAULT_SETTINGS.showMentionsUnderNotes;
-    }
-    if (typeof this.settings.mentionsSidebar !== "boolean") {
-      this.settings.mentionsSidebar = DEFAULT_SETTINGS.mentionsSidebar;
-    }
-    // Remembered UI state rather than a configured setting, but it is written
-    // to the same `data.json` and read by the same code, so it gets the same
-    // check: nothing here may reach a panel as a non-boolean.
-    if (typeof this.settings.mentionsFooterCollapsed !== "boolean") {
-      this.settings.mentionsFooterCollapsed = DEFAULT_SETTINGS.mentionsFooterCollapsed;
-    }
+    this.settings = sanitizeSettings(stored);
   }
 
   /**
@@ -605,6 +597,73 @@ export default class JournalEntriesPlugin extends Plugin {
   async goToDateInJournal(date: Date): Promise<void> {
     const view = await this.openJournal();
     if (view) await view.goToDate(date);
+  }
+
+  /**
+   * `Reorganize journal folders`: brings entries the plugin manages into the
+   * folder layout the setting names.
+   *
+   * A command rather than something the dropdown does, and the reason is
+   * scale. Changing where NEW entries go should be instant and free, the way
+   * the other settings are. Moving several hundred existing files is this
+   * plugin's largest operation, so it gets an explicit act, a preview, and a
+   * confirmation — see CLAUDE.md § Reorganizing entry folders.
+   *
+   * Nothing is written before the user confirms: `planReorganize` only reads.
+   * With nothing to move this says so and opens no dialog at all — a
+   * confirmation offering to move zero entries is a dead end, the same guard
+   * `filterByTag` and `searchJournal` make for a journal with nothing to
+   * offer.
+   *
+   * `refreshJournal` afterwards rather than waiting for the vault events:
+   * hundreds of renames arrive at `JournalService` debounced, and an index
+   * rebuild here means the timeline and the calendar are correct the moment
+   * the notice appears.
+   */
+  async reorganizeFolders(): Promise<void> {
+    try {
+      const plan = this.repository.planReorganize();
+
+      if (plan.moves.length === 0) {
+        new Notice("Every journal entry is already where this setting puts it.");
+        return;
+      }
+
+      // A concrete path for the dialog: where an entry written right now
+      // would go. "Year" and "No subfolders" are guesses until you see one.
+      const example = entryFolderPath(
+        this.repository.rootPath(),
+        new Date(),
+        this.settings.entryFolders,
+      );
+
+      new ReorganizeModal(this.app, plan, example, () => {
+        void this.applyReorganize(plan);
+      }).open();
+    } catch (error) {
+      console.error("Simple Journal: could not work out what to reorganize", error);
+      new Notice("Could not reorganize the journal folders. See the developer console.");
+    }
+  }
+
+  /**
+   * Runs a confirmed plan. Separate from the method above because it is what
+   * the modal's callback fires, with no async caller of its own to hand a
+   * rejection to — so the catch has to live here.
+   */
+  private async applyReorganize(plan: ReorganizePlan): Promise<void> {
+    try {
+      const report = await this.repository.reorganizeEntries(plan);
+      this.refreshJournal();
+      new Notice(reorganizeSummary(report));
+    } catch (error) {
+      // Individual failures are already counted and reported by the report
+      // above; reaching here means the run itself came apart. Entries are
+      // moved one at a time, so whatever moved before this stays moved — and
+      // the command is idempotent, so re-running finishes the job.
+      console.error("Simple Journal: reorganizing the journal folders failed", error);
+      new Notice("Reorganizing stopped early. See the developer console.");
+    }
   }
 
   refreshJournal(): void {

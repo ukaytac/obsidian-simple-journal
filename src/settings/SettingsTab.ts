@@ -1,14 +1,38 @@
 import { debounce, PluginSettingTab, Setting, type SettingDefinitionItem } from "obsidian";
 import type JournalEntriesPlugin from "../main";
 import { DEFAULT_SETTINGS } from "./settings";
+import { ENTRY_FOLDER_LAYOUTS, type EntryFolderLayout } from "../journal/folderLayout";
 
 /** The control keys this tab declares. */
 const FOLDER_KEY = "journalFolder";
+const LAYOUT_KEY = "entryFolders";
 const UNDER_NOTES_KEY = "showMentionsUnderNotes";
 const SIDEBAR_KEY = "mentionsSidebar";
 
 const FOLDER_NAME = "Journal folder";
 const FOLDER_DESC = "Vault folder that holds journal entries. Created when the first entry is written.";
+const LAYOUT_NAME = "Entry folders";
+const LAYOUT_DESC =
+  "How new entries are foldered inside the journal folder. Existing entries stay where they are; " +
+  "the Reorganize journal folders command moves them.";
+
+/**
+ * Each option names its own example path, because "Year" and "No subfolders"
+ * are guesses until you see what they produce. The example uses the
+ * placeholder folder name rather than the user's own: it is illustrating the
+ * shape, and a live folder name would make the option label move around as
+ * they type in the field above.
+ */
+const LAYOUT_OPTIONS: Record<EntryFolderLayout, string> = {
+  "year-month": `Year and month — ${DEFAULT_SETTINGS.journalFolder}/2026/08/`,
+  year: `Year — ${DEFAULT_SETTINGS.journalFolder}/2026/`,
+  flat: `No subfolders — ${DEFAULT_SETTINGS.journalFolder}/`,
+};
+
+function isLayoutKey(value: unknown): value is EntryFolderLayout {
+  return ENTRY_FOLDER_LAYOUTS.includes(value as EntryFolderLayout);
+}
+
 const UNDER_NOTES_NAME = "Show mentions under notes";
 const UNDER_NOTES_DESC =
   "Add a panel at the bottom of a note listing the journal entries that link to it.";
@@ -48,6 +72,20 @@ export class JournalSettingsTab extends PluginSettingTab {
 
   constructor(private readonly plugin: JournalEntriesPlugin) {
     super(plugin.app, plugin);
+  }
+
+  /**
+   * Commits immediately, like the toggles and unlike the folder field: a
+   * dropdown has no half-typed state.
+   *
+   * Nothing is refreshed and nothing moves. The layout decides where the NEXT
+   * entry is written, and the timeline reads entries wherever they are, so
+   * there is nothing on screen for this to change — which is the whole reason
+   * the setting can be instant and the migration has to be a command.
+   */
+  private setLayout(value: EntryFolderLayout): void {
+    this.plugin.settings.entryFolders = value;
+    void this.plugin.saveSettings();
   }
 
   /**
@@ -92,6 +130,11 @@ export class JournalSettingsTab extends PluginSettingTab {
         },
       },
       {
+        name: LAYOUT_NAME,
+        desc: LAYOUT_DESC,
+        control: { type: "dropdown", key: LAYOUT_KEY, options: LAYOUT_OPTIONS },
+      },
+      {
         name: UNDER_NOTES_NAME,
         desc: UNDER_NOTES_DESC,
         control: { type: "toggle", key: UNDER_NOTES_KEY },
@@ -112,6 +155,7 @@ export class JournalSettingsTab extends PluginSettingTab {
    */
   getControlValue(key: string): unknown {
     if (key === FOLDER_KEY) return this.plugin.settings.journalFolder;
+    if (key === LAYOUT_KEY) return this.plugin.settings.entryFolders;
     if (key === UNDER_NOTES_KEY) return this.plugin.settings.showMentionsUnderNotes;
     if (key === SIDEBAR_KEY) return this.plugin.settings.mentionsSidebar;
     return undefined;
@@ -121,6 +165,13 @@ export class JournalSettingsTab extends PluginSettingTab {
     if (key === FOLDER_KEY) {
       this.pendingFolder = normalizeFolder(value);
       this.saveAndRefresh();
+      return;
+    }
+    if (key === LAYOUT_KEY) {
+      // Guarded rather than cast: this value arrives from Obsidian's own
+      // control, and an unrecognised one must not reach `entryFolderPath`,
+      // which has no case for it. Same reasoning as `sanitizeSettings`.
+      if (isLayoutKey(value)) this.setLayout(value);
       return;
     }
     if (key === UNDER_NOTES_KEY || key === SIDEBAR_KEY) {
@@ -150,6 +201,18 @@ export class JournalSettingsTab extends PluginSettingTab {
           .onChange((value) => {
             this.pendingFolder = normalizeFolder(value);
             this.saveAndRefresh();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(LAYOUT_NAME)
+      .setDesc(LAYOUT_DESC)
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions(LAYOUT_OPTIONS)
+          .setValue(this.plugin.settings.entryFolders)
+          .onChange((value) => {
+            if (isLayoutKey(value)) this.setLayout(value);
           }),
       );
 

@@ -188,10 +188,11 @@ describe("mentions toggles", () => {
     vi.useRealTimers();
   });
 
-  it("declares all three settings, so Obsidian's settings search indexes them", () => {
+  it("declares every setting, so Obsidian's settings search indexes them", () => {
     const { tab } = setup();
     expect(tab.getSettingDefinitions().map((d) => (d as { name: string }).name)).toEqual([
       "Journal folder",
+      "Entry folders",
       "Show mentions under notes",
       "Mentions sidebar",
     ]);

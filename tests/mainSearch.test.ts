@@ -51,6 +51,7 @@ function setup(): Setup {
   plugin.app = app as unknown as App;
   plugin.settings = {
     journalFolder: "Journal",
+    entryFolders: "year-month",
     showMentionsUnderNotes: false,
     mentionsSidebar: false,
     mentionsFooterCollapsed: false,
