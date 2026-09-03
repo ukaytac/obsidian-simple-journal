@@ -19,9 +19,9 @@ No subfolders    Journal/2026-08-12-09-34-21.md
 It defaults to year and month, so nothing about an existing journal changes
 until you change it.
 
-- **Changing it moves nothing.** It decides where the next entry is written.
-  The timeline reads your entries wherever they are, so a journal holding more
-  than one shape works exactly as before.
+- **Changing it moves nothing by itself.** It decides where the next entry is
+  written. The timeline reads your entries wherever they are, so a journal
+  holding more than one shape works exactly as before.
 - **Picking a shape offers to move the rest**, and you can say no. The same
   offer is a command, `Reorganize journal folders`, whenever you want it
   later. Either way it counts the entries and tells you before it moves
