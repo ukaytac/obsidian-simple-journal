@@ -24,7 +24,8 @@ import { JournalView } from "../src/views/JournalView";
 import { TextareaEditor } from "../src/views/TextareaEditor";
 import type { EntryEditorFactory } from "../src/views/EntryEditor";
 import type JournalEntriesPlugin from "../src/main";
-import { entryFolderPath, formatCreatedProperty, formatEntryFilename } from "../src/utils/dates";
+import { formatCreatedProperty, formatEntryFilename } from "../src/utils/dates";
+import { entryFolderPath } from "../src/journal/folderLayout";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
 
@@ -88,7 +89,7 @@ export function createHarness(folder = "Journal"): Harness {
  * metadata cache in sync with file content.
  */
 export function addEntry(harness: Harness, created: Date, body = "", suffix = ""): TFile {
-  const dir = entryFolderPath(harness.folder, created);
+  const dir = entryFolderPath(harness.folder, created, "year-month");
   const path = `${dir}/${formatEntryFilename(created)}${suffix}.md`;
   const content = `---\ncreated: "${formatCreatedProperty(created)}"\n---\n\n${body}`;
   return harness.app.vault.addFile(path, content) as unknown as TFile;

@@ -13,13 +13,30 @@ import {
 } from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
 import {
-  entryFolderPath,
   formatCreatedProperty,
   formatEntryFilename,
   parseEntryFilename,
 } from "../utils/dates";
+import {
+  DEFAULT_ENTRY_FOLDER_LAYOUT,
+  entryFolderPath,
+  isManagedFolder,
+  type EntryFolderLayout,
+} from "./folderLayout";
 
 const MAX_COLLISION_ATTEMPTS = 100;
+
+/**
+ * Joins a folder and a filename stem into an entry path.
+ *
+ * A plain `${folder}/${stem}.md` is wrong for exactly one case, and it is
+ * reachable: the flat layout on a journal folder that is the vault root gives
+ * `entryFolderPath` nothing to return but "", and interpolating that yields a
+ * leading slash — a different path from the one the vault knows.
+ */
+function entryPath(folder: string, stem: string): string {
+  return folder === "" ? `${stem}.md` : `${folder}/${stem}.md`;
+}
 
 const ASCII_ONLY = /^\p{ASCII}*$/u;
 
@@ -62,9 +79,16 @@ export class EntryRepository {
   /** Memoized normalization of the raw setting value, keyed on that raw string. */
   private rawRootCache: { raw: string; normalized: string } | null = null;
 
+  /**
+   * `getLayout` is optional and defaults to the product default, so a caller
+   * that has nothing to say about folder layouts — every test that predates
+   * the setting, and any future one that is not about placement — behaves
+   * exactly like an upgraded journal. `main.ts` passes the real setting.
+   */
   constructor(
     private readonly app: App,
     private readonly getFolder: () => string,
+    private readonly getLayout: () => EntryFolderLayout = () => DEFAULT_ENTRY_FOLDER_LAYOUT,
   ) {}
 
   /** The configured journal root: trimmed, defaulted, NFC-normalized. */
@@ -240,7 +264,7 @@ export class EntryRepository {
    * `writeBody` and `preserveSeparator`.
    */
   async createEntry(at: Date, body = ""): Promise<TFile> {
-    const folder = entryFolderPath(this.resolveFolder().resolved, at);
+    const folder = entryFolderPath(this.resolveFolder().resolved, at, this.getLayout());
     await this.ensureFolder(folder);
 
     const stem = formatEntryFilename(at);
@@ -293,7 +317,7 @@ export class EntryRepository {
   ): Promise<TFile> {
     for (let attempt = 1; attempt <= MAX_COLLISION_ATTEMPTS; attempt++) {
       const name = attempt === 1 ? stem : `${stem}-${attempt}`;
-      const path = `${folder}/${name}.md`;
+      const path = entryPath(folder, name);
 
       const existing = this.app.vault.getAbstractFileByPath(path);
       if (selfFile && existing === selfFile) return selfFile;
@@ -311,25 +335,6 @@ export class EntryRepository {
   }
 
   /**
-   * True when `folder` is exactly `root/YYYY/MM` for some four-digit year and
-   * two-digit month — the shape `createEntry`/`renameEntryToMatch` compute
-   * via `entryFolderPath`, never a folder a user could plausibly have typed
-   * by hand. Used to gate `renameEntryToMatch`'s folder move: an entry
-   * living in such a folder is treated as machine-managed and safe to
-   * relocate when its month/year changes, but one living anywhere else
-   * (`Journal/inbox/...`, a flat `Journal/...`, or any other custom
-   * subfolder the user put it in on purpose) is left exactly where it is —
-   * the same "a location the user chose is not this plugin's to overwrite"
-   * principle as leaving a non-conventional FILENAME untouched, applied to
-   * the folder instead.
-   */
-  private isYearMonthFolder(root: string, folder: string): boolean {
-    if (!folder.startsWith(`${root}/`)) return false;
-    const rest = folder.slice(root.length + 1).split("/");
-    return rest.length === 2 && /^\d{4}$/.test(rest[0]) && /^\d{2}$/.test(rest[1]);
-  }
-
-  /**
    * Moves (and/or renames) `file` so its filename matches `at`, the entry's
    * corrected `created` timestamp — used by `JournalView.commitEntryTimeChange`
    * after `setEntryCreated` has already written the new `created` value, so
@@ -343,12 +348,14 @@ export class EntryRepository {
    * filename as an internal identifier precisely so nothing (including this)
    * ever re-derives it from content a user didn't choose it from.
    *
-   * The FOLDER move is gated the same way, via `isYearMonthFolder`: only an
-   * entry already living directly under the machine-managed `root/YYYY/MM`
-   * shape is relocated to the new month/year. An entry in a folder the user
-   * chose on purpose (`Journal/inbox/...`, a flat `Journal/...`, or any
-   * other custom subfolder) stays exactly where it is — only its filename
-   * (still gated on the convention check above) is corrected in place.
+   * The FOLDER move is gated separately, via `isManagedFolder`: an entry in
+   * one of the three shapes this plugin produces is relocated to where the
+   * CURRENT layout setting puts an entry with this timestamp — which is the
+   * same function `createEntry` computes its folder with, so the two cannot
+   * disagree. An entry in a folder the user chose on purpose
+   * (`Journal/inbox/...`, or any other custom subfolder) stays exactly where
+   * it is: only its filename, still gated on the convention check above, is
+   * corrected in place.
    *
    * A no-op, returning `file` unchanged with no vault call at all, when the
    * computed target path already equals the file's current path (e.g. the
@@ -379,12 +386,12 @@ export class EntryRepository {
     const root = this.resolveFolder().resolved;
     const lastSlash = file.path.lastIndexOf("/");
     const currentFolder = lastSlash === -1 ? "" : file.path.slice(0, lastSlash);
-    const folder = this.isYearMonthFolder(root, currentFolder)
-      ? entryFolderPath(root, at)
+    const folder = isManagedFolder(root, currentFolder)
+      ? entryFolderPath(root, at, this.getLayout())
       : currentFolder;
 
     const stem = formatEntryFilename(at);
-    const targetPath = `${folder}/${stem}.md`;
+    const targetPath = entryPath(folder, stem);
 
     if (targetPath === file.path) return file;
 
@@ -402,6 +409,10 @@ export class EntryRepository {
   }
 
   private async ensureFolder(path: string): Promise<void> {
+    // The vault root always exists and cannot be created — what a flat layout
+    // asks for when the journal folder is the vault itself.
+    if (path === "") return;
+
     const parts = path.split("/");
     let current = "";
 

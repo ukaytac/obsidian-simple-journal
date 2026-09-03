@@ -65,17 +65,6 @@ export function parseEntryFilename(basename: string): ParsedEntryFilename | null
   return { date, collision: collision ? Number(collision) : 1 };
 }
 
-/** Strips leading and trailing slashes so settings like "/Journal/" behave. */
-function normalizeRoot(root: string): string {
-  return root.replace(/^\/+|\/+$/g, "");
-}
-
-export function entryFolderPath(root: string, date: Date): string {
-  const normalizedRoot = normalizeRoot(root);
-  const yearMonth = `${date.getFullYear()}/${pad(date.getMonth() + 1)}`;
-  return normalizedRoot ? `${normalizedRoot}/${yearMonth}` : yearMonth;
-}
-
 /** ISO 8601 with an explicit local offset, e.g. 2026-08-12T22:41:52+03:00. */
 export function formatCreatedProperty(date: Date): string {
   const offsetMinutes = -date.getTimezoneOffset();

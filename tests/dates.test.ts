@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   compareDayKeys,
   dayKey,
-  entryFolderPath,
   formatCreatedProperty,
   formatDateTimeLocalValue,
   formatDayHeader,
@@ -66,21 +65,6 @@ describe("parseEntryFilename", () => {
   it("rejects a zero or zero-padded collision suffix", () => {
     expect(parseEntryFilename("2026-08-12-22-41-52-0")).toBeNull();
     expect(parseEntryFilename("2026-08-12-22-41-52-02")).toBeNull();
-  });
-});
-
-describe("entryFolderPath", () => {
-  it("nests by year and zero-padded month", () => {
-    expect(entryFolderPath("Journal", d)).toBe("Journal/2026/08");
-  });
-
-  it("normalizes a folder setting with stray slashes", () => {
-    expect(entryFolderPath("/Journal/", d)).toBe("Journal/2026/08");
-  });
-
-  it("does not produce a leading slash for an empty root", () => {
-    expect(entryFolderPath("", d)).toBe("2026/08");
-    expect(entryFolderPath("/", d)).toBe("2026/08");
   });
 });
 

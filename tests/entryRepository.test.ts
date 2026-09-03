@@ -4,10 +4,22 @@ import { createFakeApp } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { UnsafeFrontmatterError } from "../src/journal/markdownDoc";
 import { formatCreatedProperty } from "../src/utils/dates";
+import type { EntryFolderLayout } from "../src/journal/folderLayout";
 
 function setup() {
   const fake = createFakeApp();
   const repo = new EntryRepository(fake as unknown as App, () => "Journal");
+  return { fake, repo };
+}
+
+/**
+ * The same repository with an explicit folder layout. `setup` above leaves it
+ * unpassed on purpose, so every test that says nothing about layouts keeps
+ * exercising the default the way an upgraded journal does.
+ */
+function setupWithLayout(layout: EntryFolderLayout) {
+  const fake = createFakeApp();
+  const repo = new EntryRepository(fake as unknown as App, () => "Journal", () => layout);
   return { fake, repo };
 }
 
@@ -786,12 +798,78 @@ describe("renameEntryToMatch", () => {
     expect([...fake.vault.folders]).not.toContain("Journal/2026/09");
   });
 
-  it("keeps a conventionally-named entry directly under a flat journal root, renaming the file only", async () => {
+  /**
+   * The journal root counts as a managed shape, so this entry moves into the
+   * folder the CURRENT setting names — it does not stay flat. Until the
+   * layout setting existed this test asserted the opposite, and the reasoning
+   * for the change is in `folderLayout.ts`: the filename convention answers
+   * "is this ours", while the folder gate answers only the narrower "did the
+   * user file this somewhere on purpose", and the journal folder's own root is
+   * not somewhere.
+   */
+  it("moves an entry from a flat journal root into the folder the setting names", async () => {
     const { fake, repo } = setup();
     const file = fake.vault.addFile("Journal/2026-08-12-22-41-52.md", "hello");
 
     await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
 
+    expect(file.path).toBe("Journal/2026/09/2026-09-01-00-00-00.md");
+    expect(fake.vault.contents.get("Journal/2026/09/2026-09-01-00-00-00.md")).toBe("hello");
+  });
+});
+
+describe("entry folder layouts", () => {
+  it("createEntry writes into the year folder alone", async () => {
+    const { repo } = setupWithLayout("year");
+    const file = await repo.createEntry(new Date(2026, 7, 12, 14, 17, 3));
+    expect(file.path).toBe("Journal/2026/2026-08-12-14-17-03.md");
+  });
+
+  it("createEntry writes straight into the journal folder when flat", async () => {
+    const { repo } = setupWithLayout("flat");
+    const file = await repo.createEntry(new Date(2026, 7, 12, 14, 17, 3));
+    expect(file.path).toBe("Journal/2026-08-12-14-17-03.md");
+  });
+
+  it("createEntry still suffixes a same-second collision when flat", async () => {
+    const { repo } = setupWithLayout("flat");
+    const at = new Date(2026, 7, 12, 14, 17, 3);
+    await repo.createEntry(at);
+    const second = await repo.createEntry(at);
+    expect(second.path).toBe("Journal/2026-08-12-14-17-03-2.md");
+  });
+
+  /**
+   * The rule the spec settled on: a corrected timestamp places the entry at
+   * "current setting + corrected date", so correcting a time under a flat
+   * setting brings that one entry out of the nested folders it was written
+   * into. The bulk form of this is the reorganize command.
+   */
+  it("renameEntryToMatch brings a nested entry out to a flat journal", async () => {
+    const { fake, repo } = setupWithLayout("flat");
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
+
     expect(file.path).toBe("Journal/2026-09-01-00-00-00.md");
+    expect(fake.vault.contents.get("Journal/2026-09-01-00-00-00.md")).toBe("hello");
+  });
+
+  it("renameEntryToMatch moves a year-shaped entry into the year and month it now belongs to", async () => {
+    const { fake, repo } = setup();
+    const file = fake.vault.addFile("Journal/2026/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2027, 0, 5, 9, 0, 0));
+
+    expect(file.path).toBe("Journal/2027/01/2027-01-05-09-00-00.md");
+  });
+
+  it("renameEntryToMatch still leaves a user-filed entry where it is, under any layout", async () => {
+    const { fake, repo } = setupWithLayout("flat");
+    const file = fake.vault.addFile("Journal/inbox/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
+
+    expect(file.path).toBe("Journal/inbox/2026-09-01-00-00-00.md");
   });
 });
