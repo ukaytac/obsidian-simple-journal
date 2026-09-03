@@ -26,6 +26,35 @@ import {
 
 const MAX_COLLISION_ATTEMPTS = 100;
 
+/** One entry's pending move, as `planReorganize` computed it. */
+export interface ReorganizeMove {
+  file: TFile;
+  target: string;
+}
+
+/**
+ * What `Reorganize journal folders` would do, computed without writing
+ * anything so a confirmation can state it before the user commits.
+ *
+ * `staying` counts entries this plugin will not or need not move: one the user
+ * filed into a folder of their own, one they named themselves, and one already
+ * exactly where the current layout puts it. They are counted rather than
+ * listed because the dialog only needs the number.
+ */
+export interface ReorganizePlan {
+  moves: ReorganizeMove[];
+  staying: number;
+}
+
+/** What it actually did. */
+export interface ReorganizeReport {
+  moved: number;
+  /** Planned, then no longer applicable — the file was gone or had moved. */
+  skipped: number;
+  failed: number;
+  trashedFolders: number;
+}
+
 /**
  * Joins a folder and a filename stem into an entry path.
  *
@@ -34,6 +63,12 @@ const MAX_COLLISION_ATTEMPTS = 100;
  * `entryFolderPath` nothing to return but "", and interpolating that yields a
  * leading slash — a different path from the one the vault knows.
  */
+/** The folder holding `path`, or "" for something directly in the vault root. */
+function parentFolder(path: string): string {
+  const lastSlash = path.lastIndexOf("/");
+  return lastSlash === -1 ? "" : path.slice(0, lastSlash);
+}
+
 function entryPath(folder: string, stem: string): string {
   return folder === "" ? `${stem}.md` : `${folder}/${stem}.md`;
 }
@@ -461,6 +496,170 @@ export class EntryRepository {
    * reverting it. A caller that genuinely only displays wants
    * `readBodyCached` below.
    */
+  /**
+   * What reorganizing would move, and how much it would leave alone.
+   *
+   * Reads only: no folder is created, no file is touched. The same two gates
+   * `renameEntryToMatch` applies decide what is movable — the filename follows
+   * this plugin's convention, and `isManagedFolder` accepts the folder it sits
+   * in — so this command can never relocate a file the user named or filed
+   * somewhere on purpose.
+   *
+   * The target is `entryFolderPath` with the CURRENT layout, which is the same
+   * call `createEntry` makes. Reorganizing is therefore not a second idea
+   * about where entries belong; it is the existing one, applied to files that
+   * already exist.
+   */
+  planReorganize(): ReorganizePlan {
+    const root = this.resolveFolder().resolved;
+    const layout = this.getLayout();
+
+    const moves: ReorganizeMove[] = [];
+    let staying = 0;
+
+    for (const entry of this.listEntries()) {
+      const target = this.reorganizeTarget(entry.file, root, layout);
+      if (target === null) staying += 1;
+      else moves.push({ file: entry.file, target });
+    }
+
+    return { moves, staying };
+  }
+
+  /**
+   * Where `file` should end up, or null when it should not move at all —
+   * either because this plugin may not move it, or because it is already
+   * there.
+   *
+   * `stem` is deliberately the file's CURRENT stem rather than one recomputed
+   * from its timestamp: reorganizing changes folders and nothing else. An
+   * entry whose name carries a collision suffix keeps it, and a timestamp
+   * correction stays the only thing in this codebase that renames an entry.
+   */
+  private reorganizeTarget(file: TFile, root: string, layout: EntryFolderLayout): string | null {
+    if (!parseEntryFilename(file.basename)) return null;
+
+    const lastSlash = file.path.lastIndexOf("/");
+    const currentFolder = lastSlash === -1 ? "" : file.path.slice(0, lastSlash);
+    if (!isManagedFolder(root, currentFolder)) return null;
+
+    // Through `entryFor`, so the date comes from the one resolver CLAUDE.md
+    // names — `created`, then the filename, then ctime — rather than a second
+    // reading of the same question here.
+    const entry = this.entryFor(file);
+    if (!entry) return null;
+
+    const folder = entryFolderPath(root, entry.created, layout);
+    if (folder === currentFolder) return null;
+
+    return entryPath(folder, file.basename);
+  }
+
+  /**
+   * Applies `plan`, one entry at a time.
+   *
+   * Paths only: this method reads no entry and writes no entry's contents, so
+   * nothing it can get wrong is able to corrupt what the user wrote. The moves
+   * go through `withFreeName`, so a target already taken gets `createEntry`'s
+   * own `-2`, `-3`, ... suffix instead of overwriting — two entries written in
+   * the same second in different month folders genuinely do collide once the
+   * layout stops separating them.
+   *
+   * Every entry is re-checked against the vault as its turn comes, because the
+   * plan was computed for a dialog the user then read: a file that has since
+   * been deleted, moved, or renamed is counted as skipped rather than treated
+   * as a failure.
+   *
+   * A failure does not abandon the rest. It is logged and counted, and the
+   * caller reports the total — CLAUDE.md § Error Handling asks to fail
+   * visibly, and because the operation is idempotent, running it again after a
+   * partial failure simply finishes the job.
+   */
+  async reorganizeEntries(plan: ReorganizePlan): Promise<ReorganizeReport> {
+    const root = this.resolveFolder().resolved;
+    const layout = this.getLayout();
+
+    const report: ReorganizeReport = { moved: 0, skipped: 0, failed: 0, trashedFolders: 0 };
+    const vacated = new Set<string>();
+
+    for (const move of plan.moves) {
+      // Re-derived rather than trusting `move.target`: both the file and the
+      // setting may have changed while the confirmation was on screen.
+      const target = this.reorganizeTarget(move.file, root, layout);
+      if (target === null || this.app.vault.getAbstractFileByPath(move.file.path) !== move.file) {
+        report.skipped += 1;
+        continue;
+      }
+
+      const from = parentFolder(move.file.path);
+      const folder = parentFolder(target);
+
+      try {
+        await this.ensureFolder(folder);
+        await this.withFreeName(
+          folder,
+          move.file.basename,
+          async (path) => {
+            await this.app.fileManager.renameFile(move.file, path);
+            return move.file;
+          },
+          move.file,
+        );
+        report.moved += 1;
+        vacated.add(from);
+      } catch (error) {
+        console.error(`Simple Journal: could not move ${move.file.path}`, error);
+        report.failed += 1;
+      }
+    }
+
+    report.trashedFolders = await this.trashEmptiedFolders(root, vacated);
+
+    return report;
+  }
+
+  /**
+   * Trashes the folders the moves emptied, innermost first, walking up so a
+   * year folder left holding nothing but emptied months goes too.
+   *
+   * Trashed, never deleted: `fileManager.trashFile` respects whatever trash
+   * behaviour the user configured, so this is recoverable. Three guards keep
+   * it narrow — the folder must still be one of the shapes this plugin
+   * produces, it must actually be empty, and it must not be the journal root
+   * itself, which is the flat layout's own target and not the plugin's to
+   * remove.
+   *
+   * A failure here is logged and skipped: an un-trashed empty folder is
+   * untidy, and there is nothing to recover from beyond that.
+   */
+  private async trashEmptiedFolders(root: string, vacated: Set<string>): Promise<number> {
+    let trashed = 0;
+
+    for (const start of vacated) {
+      let path = start;
+
+      while (path !== "" && path !== root && isManagedFolder(root, path)) {
+        // `getFolderByPath`, not `getAbstractFileByPath`: it returns null for a
+        // path that is a file or missing, and hands back the folder with its
+        // real child list — which is the whole question being asked here.
+        const folder = this.app.vault.getFolderByPath(path);
+        if (!folder || folder.children.length > 0) break;
+
+        try {
+          await this.app.fileManager.trashFile(folder);
+          trashed += 1;
+        } catch (error) {
+          console.error(`Simple Journal: could not remove the empty folder ${path}`, error);
+          break;
+        }
+
+        path = parentFolder(path);
+      }
+    }
+
+    return trashed;
+  }
+
   async readBody(file: TFile): Promise<string> {
     return splitBody(await this.app.vault.read(file));
   }

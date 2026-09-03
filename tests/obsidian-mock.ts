@@ -486,12 +486,20 @@ export function getAllTags(cache: FakeFileCache | null): string[] | null {
 }
 
 export class FakeFileManager {
-  trashed: TFile[] = [];
+  trashed: TAbstractFile[] = [];
 
   constructor(private readonly vault: FakeVault) {}
 
-  async trashFile(file: TFile): Promise<void> {
+  /**
+   * Takes a `TAbstractFile` like the real method, so a FOLDER can be trashed
+   * too — what `reorganizeEntries` does with the year/month folders it
+   * empties. A trashed folder stops existing as far as `getFolderByPath` is
+   * concerned; a trashed file is only recorded, matching what the rest of
+   * this mock's callers assert on.
+   */
+  async trashFile(file: TAbstractFile): Promise<void> {
     this.trashed.push(file);
+    if (file instanceof TFolder) this.vault.folders.delete(file.path);
   }
 
   /**
