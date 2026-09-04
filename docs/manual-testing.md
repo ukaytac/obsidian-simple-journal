@@ -322,13 +322,13 @@ What none of them can do is tell you what real Obsidian actually puts in
 `resolvedLinks`, or where it actually puts a note's content in the DOM — and
 those two facts are the whole foundation this feature stands on.
 
-Set up once, and reuse for everything below: a note `People/Ekin Arslan Aytaç.md`,
+Set up once, and reuse for everything below: a note `People/Ellie Fraser.md`,
 plus four journal entries linking to it in four different ways (body link,
 embed, alias, frontmatter), and one note nothing links to.
 
 - [x] **1. A frontmatter link counts.** Give an entry frontmatter containing
-      `people: "[[Ekin Arslan Aytaç]]"` and **nothing in its body** that
-      mentions her. Open Ekin's note with a mentions panel on it. That entry
+      `people: "[[Ellie Fraser]]"` and **nothing in its body** that
+      mentions her. Open Ellie's note with a mentions panel on it. That entry
       must be listed.
 
       This is the single assumption `mentionQuery.ts` makes about Obsidian that
@@ -346,12 +346,12 @@ embed, alias, frontmatter), and one note nothing links to.
       and it must stay source-blind: the three arrays are merged, and nothing
       downstream learns which one a mention came from.
 - [x] **2. Embeds and aliases count.** An entry whose only reference is
-      `![[Ekin Arslan Aytaç]]`, and another whose only reference is
-      `[[Ekin Arslan Aytaç|Ekin]]`, both appear. Same reasoning as above: alias
+      `![[Ellie Fraser]]`, and another whose only reference is
+      `[[Ellie Fraser|Ellie]]`, both appear. Same reasoning as above: alias
       and shortest-path resolution happen inside Obsidian before the plugin
       looks, so a fixture cannot vouch for either.
 - [x] **3. The footer appears in both view modes, once, at the end of the
-      content.** With **Show mentions under notes** on, open Ekin's note and
+      content.** With **Show mentions under notes** on, open Ellie's note and
       switch between live preview and reading view several times, in both
       directions, and with a note long enough to scroll. Each time: exactly one
       panel, sitting after the last paragraph, scrolling with the text rather
@@ -384,8 +384,8 @@ embed, alias, frontmatter), and one note nothing links to.
       not need a tab switch to reappear — and the sidebar leaf is placed again
       without stealing focus and without revealing a collapsed sidebar.
 - [x] **6. A nested block does not recurse.** Write a ` ```simple-journal `
-      block **inside a journal entry**, and have that entry mention Ekin. Open
-      Ekin's note. The entry is listed, and where its own block would be there
+      block **inside a journal entry**, and have that entry mention Ellie. Open
+      Ellie's note. The entry is listed, and where its own block would be there
       is an inert "Journal mentions block (not expanded here)" line — not a
       second panel, and not a hang. The guard is structural (`closest`), so also
       confirm the opposite half: a normal block in an ordinary note, open at the
@@ -402,7 +402,7 @@ embed, alias, frontmatter), and one note nothing links to.
       signal passed down the render rather than read off the DOM.
 - [x] **7. Changing the Journal folder setting repaints an open sidebar panel.**
       This was a real bug, fixed, and it is subtle enough to be worth confirming
-      by hand. With the mentions sidebar open on Ekin's note, change the journal
+      by hand. With the mentions sidebar open on Ellie's note, change the journal
       folder in settings to a folder holding different entries. The panel must
       repaint against the new folder. `refreshJournal` calls
       `JournalService.rebuild()`, which by design emits nothing to `onChange`,

@@ -104,7 +104,7 @@ text, in the journal's own newest-first shape.
   it, keeping the count on screen so you can always see there is something
   there.
 - **A mention is a real link** — in the text, an embed, or a property like
-  `people: "[[Ekin]]"`. Obsidian treats all three as the same thing and so does
+  `people: "[[Ellie]]"`. Obsidian treats all three as the same thing and so does
   this. A note whose name merely appears as text is not a mention, and neither
   is a link to a note that does not exist.
 - **The panel is read-only.** Click an entry's time and the journal opens at

@@ -24,7 +24,7 @@ right there.
 
 Outside the timeline it stops working. Obsidian's own backlinks pane lists a
 backlink by **filename**, and this plugin's filenames are `2026-08-12-14-17-03`.
-So a person note like `Ekin Arslan Aytaç.md` shows a column of identical-looking
+So a person note like `Ellie Fraser.md` shows a column of identical-looking
 timestamps and a truncated snippet each — the one view of the journal where
 titlelessness costs the user something instead of saving them something.
 
@@ -66,7 +66,7 @@ So: iterate the entry index, and for each entry ask
 
 `resolvedLinks` is `@public` and documented in the installed `obsidian.d.ts`. It
 maps source path → destination path → count, so alias resolution
-(`[[Ekin Arslan Aytaç|Ekin]]`), relative paths and shortest-path links are all
+(`[[Ellie Fraser|Ellie]]`), relative paths and shortest-path links are all
 handled by Obsidian before we look.
 
 **`getFileBacklinks` is deliberately not used.** It appears in Obsidian's published
@@ -291,16 +291,16 @@ filtered to this note.
 MONDAY, 24 AUGUST
 
 21:40
-Ekin'le [[Ekin Arslan Aytaç]] akşam yemekte konuştuk…
+Ellie'yle [[Ellie Fraser]] akşam yemekte konuştuk…
 
 09:12
-Sabah [[Ekin Arslan Aytaç]] aradı, haftasonu planı için.
+Sabah [[Ellie Fraser]] aradı, haftasonu planı için.
 
 
 THURSDAY, 20 AUGUST
 
 17:03
-[[Ekin Arslan Aytaç]] ile doğum günü hediyesini konuştuk…
+[[Ellie Fraser]] ile doğum günü hediyesini konuştuk…
 
                                         Show 9 more ▾
 ```
@@ -342,8 +342,8 @@ The footer walks visible `MarkdownView`s only, never every leaf.
 
 1. A body `[[link]]` is a mention
 2. A body `![[embed]]` is a mention
-3. A frontmatter link (`people: "[[Ekin]]"`) is a mention — all three alike
-4. An aliased link (`[[Ekin Arslan Aytaç|Ekin]]`) is a mention
+3. A frontmatter link (`people: "[[Ellie]]"`) is a mention — all three alike
+4. An aliased link (`[[Ellie Fraser|Ellie]]`) is a mention
 5. An unresolved link is not
 6. A plain-text occurrence of the note's name is not
 7. An entry linking twice is listed once

@@ -130,7 +130,7 @@ const AUG_20 = entry("Journal/2026/08/2026-08-20-17-03-00.md", new Date(2026, 7,
 const AUG_12 = entry("Journal/2026/08/2026-08-12-09-34-00.md", new Date(2026, 7, 12, 9, 34));
 const INDEX = [AUG_24, AUG_20, AUG_12];
 
-const TARGET = { path: "People/Ekin Arslan Aytaç.md" } as JournalEntry["file"];
+const TARGET = { path: "People/Ellie Fraser.md" } as JournalEntry["file"];
 
 function links(map: Record<string, Record<string, number>>): ResolvedLinks {
   return map;
@@ -325,7 +325,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-const TARGET_PATH = "People/Ekin Arslan Aytaç.md";
+const TARGET_PATH = "People/Ellie Fraser.md";
 
 interface Setup {
   app: ReturnType<typeof createFakeApp>;
@@ -343,12 +343,12 @@ interface Setup {
  */
 function setup(count: number): Setup {
   const app = createFakeApp();
-  const target = app.vault.addFile(TARGET_PATH, "# Ekin\n");
+  const target = app.vault.addFile(TARGET_PATH, "# Ellie\n");
 
   for (let i = 0; i < count; i++) {
     const day = String(24 - i).padStart(2, "0");
     const path = `Journal/2026/08/2026-08-${day}-21-40-00.md`;
-    app.vault.addFile(path, `---\ncreated: 2026-08-${day}T21:40:00\n---\nEntry ${i} about [[Ekin Arslan Aytaç]]`);
+    app.vault.addFile(path, `---\ncreated: 2026-08-${day}T21:40:00\n---\nEntry ${i} about [[Ellie Fraser]]`);
     app.metadataCache.resolvedLinks[path] = { [TARGET_PATH]: 1 };
   }
 
@@ -386,7 +386,7 @@ describe("createMentionsPanel", () => {
     await panel.render();
 
     const body = container.querySelector(".journal-mentions-body")?.textContent ?? "";
-    expect(body).toContain("Entry 0 about [[Ekin Arslan Aytaç]]");
+    expect(body).toContain("Entry 0 about [[Ellie Fraser]]");
     expect(body).not.toContain("created:");
     panel.destroy();
   });
@@ -855,18 +855,18 @@ describe("parseMentionsBlock", () => {
   });
 
   it("reads a note: directive", () => {
-    expect(parseMentionsBlock("note: [[Ekin Arslan Aytaç]]")).toEqual({
-      noteLink: "Ekin Arslan Aytaç",
+    expect(parseMentionsBlock("note: [[Ellie Fraser]]")).toEqual({
+      noteLink: "Ellie Fraser",
     });
   });
 
   it("tolerates surrounding whitespace and blank lines", () => {
-    expect(parseMentionsBlock("\n   note:   [[Ekin]]   \n")).toEqual({ noteLink: "Ekin" });
+    expect(parseMentionsBlock("\n   note:   [[Ellie]]   \n")).toEqual({ noteLink: "Ellie" });
   });
 
   it("uses the link target, not the alias", () => {
-    expect(parseMentionsBlock("note: [[Ekin Arslan Aytaç|Ekin]]")).toEqual({
-      noteLink: "Ekin Arslan Aytaç",
+    expect(parseMentionsBlock("note: [[Ellie Fraser|Ellie]]")).toEqual({
+      noteLink: "Ellie Fraser",
     });
   });
 
@@ -1964,8 +1964,8 @@ Add this section after the tags section, matching the surrounding heading level:
 ```markdown
 ## Mentions
 
-Link a note from a journal entry — `[[Ekin Arslan Aytaç]]`, an embed, or a
-frontmatter property like `people: "[[Ekin Arslan Aytaç]]"` — and you can read
+Link a note from a journal entry — `[[Ellie Fraser]]`, an embed, or a
+frontmatter property like `people: "[[Ellie Fraser]]"` — and you can read
 those entries, in full, from that note.
 
 Write this block anywhere in the note (the **Insert journal mentions block**
@@ -1998,14 +1998,14 @@ merely appears as text is not one.
 
 These are the checks only a real vault can make.
 
-1. **Frontmatter links count.** Give a note `people: "[[Ekin Arslan Aytaç]]"`
-   in its frontmatter and nothing in its body. It must appear in Ekin's
+1. **Frontmatter links count.** Give a note `people: "[[Ellie Fraser]]"`
+   in its frontmatter and nothing in its body. It must appear in Ellie's
    mentions panel. This pins the one assumption `mentionQuery.ts` makes about
    Obsidian that no unit test can prove: that `resolvedLinks` includes
    frontmatter links. If this fails, the documented remedy is the explicit
    `cache.links` + `cache.embeds` + `cache.frontmatterLinks` scan.
-2. **Embeds and aliases count.** `![[Ekin Arslan Aytaç]]` and
-   `[[Ekin Arslan Aytaç|Ekin]]` both appear.
+2. **Embeds and aliases count.** `![[Ellie Fraser]]` and
+   `[[Ellie Fraser|Ellie]]` both appear.
 3. **The footer survives a view switch.** Turn on "Show mentions under notes",
    open a mentioned note, and switch between live preview and reading view
    several times. The panel appears in both, exactly once, at the end of the
