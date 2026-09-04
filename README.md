@@ -11,10 +11,11 @@ files.
      renders this file on its own page without rewriting relative links, so
      `docs/images/...` resolves against obsidian.md there and the image breaks.
      The <img> fallback is the dark capture because that page is dark and any
-     renderer ignoring <source> lands on it. -->
+     renderer ignoring <source> lands on it. The same applies to every
+     screenshot below. -->
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/simple-journal-screenshot-light.png">
-  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/simple-journal-screenshot-dark.png" alt="The journal timeline: entries grouped under day headings, newest first, each showing only its time, with the calendar in the sidebar marking the days that hold entries.">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/01-hero-light.png">
+  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/01-hero-dark.png" alt="The journal timeline: entries grouped under day headings, newest first, each showing only its time, with the calendar in the sidebar marking the days that hold entries.">
 </picture>
 
 ## What it does
@@ -132,6 +133,11 @@ anchors, because a tag is not a point in time: "this tag and older" would mean
 nothing. It does compose with the calendar, though, so you can read one tag
 from a given day backwards.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/04-filter-light.png">
+  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/04-filter-dark.png" alt="The timeline filtered to one tag: the tag is named with a clear button above the first day heading, and the entries below it span several months, still newest first.">
+</picture>
+
 Matching is exact and case-insensitive: filtering by `#work` does not pull in
 `#work/project`, which is listed separately when you pick a tag.
 
@@ -151,6 +157,11 @@ match. Then either:
   reading is left exactly as it was; or
 - **pick "Show all"** — the timeline narrows to every entry that matched, named
   at the top with a `✕` beside it, the same way the tag filter is.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/03-search-light.png">
+  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/03-search-dark.png" alt="The search modal over the timeline: a query, a row offering to show all matches, and below it each matching entry with its time and the words around the match.">
+</picture>
 
 It searches what you wrote: the text of your entries, not their properties and
 not their filenames. Every term has to appear, in any order, and there is no
@@ -181,6 +192,11 @@ shows them.
 Obsidian's own backlinks pane can't do this, through no fault of its own: it
 lists a backlink by filename, and these filenames are bare timestamps. Twenty
 entries about the same person come out as twenty near-identical rows.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/02-mention-light.png">
+  <img src="https://raw.githubusercontent.com/ukaytac/obsidian-simple-journal/main/docs/images/02-mention-dark.png" alt="A note with a mentions panel under it, showing three journal entries in full with their dates and times rather than a list of timestamp filenames.">
+</picture>
 
 A **mention** is a real link. A link in the body, an embedded `![[note]]`, an
 aliased `[[note|Ekin]]`, and a link in the properties (`people: "[[Ekin
@@ -265,8 +281,8 @@ with larger touch targets, an earlier incremental-loading threshold, and a
 lower cap on simultaneously mounted editors on mobile.
 
 The timeline is built from Obsidian's own CSS variables, so it follows whatever
-theme you use. The screenshot at the top is the same frame captured in light and
-in dark; where this file is rendered with theme support, you are being shown
+theme you use. Every screenshot here is the same frame captured in light and in
+dark; where this file is rendered with theme support, you are being shown
 whichever matches your own.
 
 ## A note on the editor
