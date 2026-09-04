@@ -185,7 +185,7 @@ search.
 
 ## Mentions
 
-Link a note from an entry — `[[Ekin Arslan Aytaç]]` — and that note can show
+Link a note from an entry — `[[Ellie Fraser]]` — and that note can show
 you the entries themselves, with their text, newest first, the way the timeline
 shows them.
 
@@ -199,8 +199,8 @@ entries about the same person come out as twenty near-identical rows.
 </picture>
 
 A **mention** is a real link. A link in the body, an embedded `![[note]]`, an
-aliased `[[note|Ekin]]`, and a link in the properties (`people: "[[Ekin
-Arslan Aytaç]]"`) all count equally, because Obsidian treats them as the same
+aliased `[[note|Ellie]]`, and a link in the properties (`people: "[[Ellie
+Fraser]]"`) all count equally, because Obsidian treats them as the same
 thing. Two things do not count: a link to a note that doesn't exist yet, and
 your typing someone's name as plain text. Only journal entries are ever
 listed — this is not a second backlinks pane for your whole vault.
