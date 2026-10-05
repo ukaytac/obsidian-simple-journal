@@ -2467,6 +2467,9 @@ export class JournalView extends ItemView {
     // `showEditor()`, and Obsidian focuses the editor it builds. Those mount
     // one per loaded entry, fire-and-forget, so how many frames they span is
     // not ours to predict and a fixed attempt count can simply run out.
+    // `showEditorWithoutFocus` in that file now swallows that focus, which on
+    // mobile also raised the keyboard; the loop stays, because leaf
+    // activation is a competitor too and nothing else here can answer it.
     //
     // Each attempt re-checks, so the retries stop the moment focus is
     // genuinely ours; input stops them too, so this can never fight a user who

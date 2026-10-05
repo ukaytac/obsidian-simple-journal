@@ -174,6 +174,100 @@ function neutralise(record: Record<string, unknown>, name: string, asyncReturn =
   record[name] = noop;
 }
 
+/**
+ * `embed.showEditor()`, minus the focus it takes.
+ *
+ * Obsidian's `showEditor()` ends by calling `focus()` on the edit mode it
+ * just built — synchronously whenever the embed's element is already on
+ * screen, which every entry this plugin mounts is. Read from Obsidian
+ * 1.14.4's own source, that inherited `focus()` is:
+ *
+ *     e.focus(); e.scrollTo(…); Platform.isMobileApp && Keyboard.show()
+ *
+ * so on mobile, mounting an entry's editor raises the on-screen keyboard.
+ * Entries mount one after another as they come within `MOUNT_ROOT_MARGIN`,
+ * so opening the journal left the keyboard up and focus in the LAST entry
+ * to mount — the lowest one in the margin, below the fold — and the viewport
+ * resize then scrolled the timeline down to it. Every later mount, which is
+ * what scrolling does, raised the keyboard again and pulled the view to
+ * whichever entry had taken focus. On desktop the same focus was silent
+ * (CodeMirror focuses without scrolling), and showed up only as the caret
+ * leaving a composer — see `openComposer`'s claim loop in `JournalView`.
+ *
+ * Nobody asked for that focus: a mount is the timeline scrolling, never the
+ * user choosing an entry. When they do choose one, the tap focuses it
+ * natively, and the view's own explicit `EntryEditor.focus()` calls go to CM6
+ * directly (see `focus()` below), not through this method.
+ *
+ * `editMode` does not exist until `showEditor()` constructs it, so the hook
+ * is an accessor on the embed instance that shadows the new edit mode's
+ * `focus` with a no-op as it is assigned. Both are removed on the way out,
+ * in the same function, leaving `editMode` a plain property again and its
+ * `focus` back on the prototype for any later caller Obsidian has. Instance
+ * only, never the prototype, for the same reason as `neutralise` above.
+ *
+ * Fails open: if either property refuses to be redefined, `showEditor()`
+ * runs exactly as it did before this existed, and the only cost is the
+ * stray focus again.
+ *
+ * Not covered: an embed mounted while hidden (`display: none`), where
+ * Obsidian defers the focus until the element is next shown — after this
+ * has already restored it. `mountObserver` only mounts entries that are
+ * intersecting a visible scrollport, so that is a mount racing the leaf
+ * being hidden, not a path this view takes on purpose.
+ */
+function showEditorWithoutFocus(embed: MarkdownEmbed): void {
+  const record = embed as unknown as Record<string, unknown>;
+  const hadOwnEditMode = Object.prototype.hasOwnProperty.call(record, "editMode");
+  let editMode: unknown = record.editMode;
+  let shadowed: { target: object; original: PropertyDescriptor | undefined } | null = null;
+
+  const shadowFocus = (target: unknown): void => {
+    if (shadowed || typeof target !== "object" || target === null) return;
+    try {
+      const original = Object.getOwnPropertyDescriptor(target, "focus");
+      Object.defineProperty(target, "focus", { configurable: true, writable: true, value: () => {} });
+      shadowed = { target, original };
+    } catch {
+      // Fails open — see this function's doc.
+    }
+  };
+
+  let trapped = false;
+  try {
+    Object.defineProperty(record, "editMode", {
+      configurable: true,
+      enumerable: true,
+      get: () => editMode,
+      set: (value: unknown) => {
+        editMode = value;
+        shadowFocus(value);
+      },
+    });
+    trapped = true;
+  } catch {
+    // Fails open — see this function's doc.
+  }
+
+  // `showEditor()` reuses an edit mode that already exists rather than
+  // building a new one; cover that shape too.
+  if (trapped) shadowFocus(editMode);
+
+  try {
+    embed.showEditor?.();
+  } finally {
+    if (trapped) {
+      delete record.editMode;
+      if (hadOwnEditMode || editMode !== undefined) record.editMode = editMode;
+    }
+    const done = shadowed as { target: object; original: PropertyDescriptor | undefined } | null;
+    if (done) {
+      if (done.original) Object.defineProperty(done.target, "focus", done.original);
+      else delete (done.target as Record<string, unknown>).focus;
+    }
+  }
+}
+
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
   private containerEl: HTMLElement | null = null;
@@ -273,7 +367,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       // Order matters (docs/editor-embed-api.md): editMode does not exist
       // until showEditor() runs, and showEditor() must run after load().
       embed.load?.();
-      embed.showEditor?.();
+      showEditorWithoutFocus(embed);
 
       if (typeof embed.editMode?.get !== "function" || typeof embed.editMode?.set !== "function") {
         this.teardownEmbed(embed);

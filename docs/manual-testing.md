@@ -284,6 +284,14 @@ mostly cosmetic by comparison.
       must not cover it. Long-press an entry: the actions menu opens. Scroll:
       older entries load.
 
+- [ ] **6. Mobile: mounting never raises the keyboard.** Open the journal and
+      touch nothing. It opens at the top, with no keyboard. Then scroll down
+      a long way and back up without tapping an entry. The keyboard stays
+      closed and the view never jumps. Item 5 passed while this was broken,
+      because it starts by focusing an entry: Obsidian's `showEditor()` raised
+      the keyboard on every mount (see `showEditorWithoutFocus`), and a
+      keyboard that is already open hides that. Reported on a Galaxy Z Fold 7.
+
 ## Calendar — needs a running Obsidian, a device, or a screen reader
 
 None of this is settleable from source, and `CalendarView` has no DOM test

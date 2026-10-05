@@ -71,6 +71,14 @@ function fakeEmbedCreator(
     throwOnLoad?: boolean;
     throwOnShowEditor?: boolean;
     noEditorDom?: boolean;
+    /**
+     * Models what Obsidian 1.14.4's real `showEditor()` does last:
+     * `n = this.editMode || (this.editMode = new EditMode())`, then
+     * `n.focus()`, where `focus` lives on the edit mode's prototype and — in
+     * the mobile app — calls `Keyboard.show()`. `spies.editModeFocus` stands
+     * in for that whole call, keyboard included.
+     */
+    focusesOnShow?: boolean;
   } = {},
 ) {
   let doc = initialDoc;
@@ -102,6 +110,14 @@ function fakeEmbedCreator(
       doc = value;
     }),
     dispatch: vi.fn(),
+    editModeFocus: vi.fn(),
+  };
+
+  const editModeProto = {
+    focus(this: { cm: { focus: () => void } }) {
+      spies.editModeFocus();
+      this.cm.focus();
+    },
   };
 
   const embed: Record<string, unknown> = {
@@ -117,7 +133,7 @@ function fakeEmbedCreator(
       if (opts.throwOnShowEditor) throw new Error("showEditor boom");
       spies.showEditor();
       if (opts.noEditMode) return;
-      embed.editMode = {
+      const built = Object.assign(Object.create(opts.focusesOnShow ? editModeProto : Object.prototype), {
         get: () => {
           if (getShouldThrow) throw new Error("get boom");
           return doc;
@@ -133,7 +149,12 @@ function fakeEmbedCreator(
           },
           dispatch: spies.dispatch,
         },
-      };
+      });
+      // The assignment expression's value, read back into a local the way
+      // Obsidian's own `n || (n = this.editMode = …)` does — not a re-read of
+      // `embed.editMode` afterwards.
+      const editMode = (embed.editMode as typeof built | undefined) ?? (embed.editMode = built);
+      if (opts.focusesOnShow) editMode.focus();
 
       if (!opts.noEditorDom && hostContainerEl) {
         const ownerDoc = hostContainerEl.ownerDocument;
@@ -873,5 +894,64 @@ describe("ObsidianEmbedEditor: hasFocus()", () => {
   it("returns false before any mount()", () => {
     const editor = tracked(new ObsidianEmbedEditor(fakeApp()));
     expect(editor.hasFocus()).toBe(false);
+  });
+});
+
+/**
+ * Obsidian's `showEditor()` focuses the edit mode it builds, and in the mobile
+ * app that focus raises the on-screen keyboard. A mount is the timeline
+ * scrolling, never the user choosing an entry, so it must not take focus —
+ * see `showEditorWithoutFocus`'s doc in the source file. On a phone this was
+ * the keyboard opening by itself on launch and on every scroll, with the view
+ * pulled to whichever entry had mounted last.
+ */
+describe("ObsidianEmbedEditor: mounting does not take focus", () => {
+  it("swallows the focus showEditor() calls on the edit mode it builds", () => {
+    const { creator, embed, spies } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+
+    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+
+    expect(editor.isUsable()).toBe(true);
+    expect(spies.editModeFocus).not.toHaveBeenCalled();
+    const editMode = embed.editMode as { cm: { focus: ReturnType<typeof vi.fn> } };
+    expect(editMode.cm.focus).not.toHaveBeenCalled();
+  });
+
+  it("leaves editMode a plain property, with focus back on its prototype", () => {
+    const { creator, embed, spies } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+
+    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+
+    const descriptor = Object.getOwnPropertyDescriptor(embed, "editMode");
+    expect(descriptor && "value" in descriptor).toBe(true);
+    const editMode = embed.editMode as { focus(): void };
+    expect(Object.prototype.hasOwnProperty.call(editMode, "focus")).toBe(false);
+
+    // Any later caller of Obsidian's own focus reaches the real one again.
+    editMode.focus();
+    expect(spies.editModeFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("still focuses when the view asks it to", () => {
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+
+    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+    editor.focus();
+
+    const editMode = embed.editMode as { cm: { focus: ReturnType<typeof vi.fn> } };
+    expect(editMode.cm.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores editMode even when showEditor() throws", () => {
+    const { creator, embed } = fakeEmbedCreator(SEEDED_DOC, { throwOnShowEditor: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+
+    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+
+    expect(editor.isUsable()).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(embed, "editMode")).toBeUndefined();
   });
 });
