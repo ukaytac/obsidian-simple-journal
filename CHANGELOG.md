@@ -3,6 +3,52 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.5.0
+
+### Filename format
+
+New entries can be named `20260812_172341.md` instead of
+`2026-08-12-17-23-41.md`, for a vault whose other tools already use the first.
+It is a setting with two fixed choices, not a pattern, and it defaults to the
+name every journal already uses.
+
+- **Both are recognised as entries whatever you pick**, so a journal holding
+  both works, and switching renames nothing by itself.
+- **Changing an entry's time** renames it into the format you chose.
+
+### Date property
+
+The property that holds an entry's date and time no longer has to be called
+`created`. If another tool already writes something else there, such as a date
+with no time, name your own, such as `created_time`.
+
+- **The journal then reads and writes only that property** and ignores
+  `created` completely. Before, a date-only `created: 2026-09-09` put the entry
+  at midnight on that day.
+- **Changing it rewrites no files.** An entry without the new property is dated
+  by its filename until you add it.
+
+### Update existing entries
+
+`Reorganize journal folders` is now **Update existing journal entries**, and is
+also a button in the settings, enabled while anything is out of line. Besides
+moving entries into your folder shape, it renames them into your filename format
+and adds the date property where it is missing, set to the date the entry
+already shows.
+
+- **It shows the counts and asks first.**
+- **It never removes or changes any other property**, including the old one,
+  which may belong to another tool. The date property line is the only thing it
+  writes into a file, and only where the property is missing.
+- **It leaves alone anything you filed into a folder of your own or named
+  yourself**, never overwrites a file, and keeps a renamed entry's timestamp.
+- A hotkey bound to the old command keeps working.
+
+### Fixed
+
+- On a phone, opening the journal or scrolling no longer raises the keyboard
+  and jumps the view to whichever entry had just loaded.
+
 ## 1.4.0
 
 ### Entry folders
