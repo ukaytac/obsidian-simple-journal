@@ -78,11 +78,12 @@ not moved — the timeline reads them wherever they are, so a journal holding
 more than one shape works fine.
 
 Picking a new shape then **offers** to bring the rest over, and you can say
-no; the same offer is available any time as the **Reorganize journal folders**
-command. Either way it tells you how many entries will move before it moves
-any, never touches what is inside them, never overwrites a file, and leaves
-alone anything you filed into a folder of your own or named yourself. Emptied
-year and month folders go to your trash rather than being deleted.
+no; the same offer is available any time as the **Update existing journal
+entries** command, or the **Update existing entries** button in the settings.
+Either way it tells you how many entries will change before it changes any,
+never touches what you wrote, never overwrites a file, and leaves alone
+anything you filed into a folder of your own or named yourself. Emptied year
+and month folders go to your trash rather than being deleted.
 
 ## Commands
 
@@ -94,7 +95,7 @@ year and month folders go to your trash rather than being deleted.
 | `Open calendar` | Reveals the calendar in the sidebar |
 | `Filter journal by tag` | Narrows the timeline to one tag |
 | `Search journal` | Finds an entry by the words in it |
-| `Reorganize journal folders` | Moves existing entries into the folder shape you chose |
+| `Update existing journal entries` | Brings existing entries in line with the folder, filename and date property settings |
 | `Open journal mentions` | Reveals the mentions panel in the sidebar |
 | `Insert journal mentions block` | Writes a mentions block at the cursor |
 
@@ -262,15 +263,23 @@ entries you already have, and you can decline; see **Storage** above.
 **Filename format** — how new entries are named: `2026-08-12-17-23-41.md` (the
 default) or `20260812_172341.md`, for a vault whose other tools already use
 the second. Both are recognised as entries whatever you pick, so switching
-renames nothing; an entry is renamed into the chosen format only when you
-change its time.
+renames nothing by itself. Existing entries are renamed when you change their
+time, or all at once with **Update existing entries** below.
 
 **Date property** — the frontmatter property that holds an entry's date and
 time. Defaults to `created`. If another tool already writes something else
 there — a date without a time, say — name your own, such as `created_time`.
 The journal then reads and writes only that property and ignores `created`
 completely. Changing it rewrites no files. An entry that doesn't have the new
-property is dated by its filename instead.
+property is dated by its filename instead, until **Update existing entries**
+adds it.
+
+**Update existing entries** — a button, enabled while any entry is out of line
+with the three settings above. It moves entries into the folder shape, renames
+them into the filename format, and adds the date property where it is missing,
+set to the date the entry already shows. It never removes or changes any other
+property, including the old one, which may belong to another tool. It shows
+what will change and asks first.
 
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your

@@ -127,8 +127,10 @@ export default class JournalEntriesPlugin extends Plugin {
     // it here almost always wants, and an unwanted directive is more work to
     // remove than a wanted one is to add.
     this.addCommand({
+      // The id predates the name: it was "Reorganize journal folders" while
+      // folders were all it did, and a hotkey bound to it must keep working.
       id: "reorganize-journal-folders",
-      name: "Reorganize journal folders",
+      name: "Update existing journal entries",
       callback: () => {
         void this.reorganizeFolders();
       },
@@ -602,19 +604,20 @@ export default class JournalEntriesPlugin extends Plugin {
   }
 
   /**
-   * `Reorganize journal folders`: brings entries the plugin manages into the
-   * folder layout the setting names.
+   * `Update existing journal entries`: brings entries the plugin manages into
+   * line with the folder, filename and date property settings.
    *
    * A command rather than something the dropdown does, and the reason is
    * scale. Changing where NEW entries go should be instant and free, the way
    * the other settings are. Moving several hundred existing files is this
    * plugin's largest operation, so it gets an explicit act, a preview, and a
-   * confirmation — see CLAUDE.md § Reorganizing entry folders.
+   * confirmation — see CLAUDE.md § Updating existing entries.
    *
    * Also reached from the `Entry folders` dropdown, with `offer: true` — see
-   * `JournalSettingsTab.setLayout`. Same path, same confirmation, one
-   * difference: an offer says nothing when there is nothing to move, because
-   * the user asked to change a setting rather than asking this question.
+   * `JournalSettingsTab.setLayout`, and from the settings tab's button. Same
+   * path, same confirmation, one difference: an offer says nothing when there
+   * is nothing to do, because the user asked to change a setting rather than
+   * asking this question.
    *
    * Nothing is written before the user confirms: `planReorganize` only reads.
    * With nothing to move this says so and opens no dialog at all — a
@@ -622,21 +625,26 @@ export default class JournalEntriesPlugin extends Plugin {
    * `filterByTag` and `searchJournal` make for a journal with nothing to
    * offer.
    *
+   * `onSettled` runs once a confirmed run has finished, failed or not, so the
+   * settings tab's button can ask again whether anything is left to do.
+   *
    * `refreshJournal` afterwards rather than waiting for the vault events:
    * hundreds of renames arrive at `JournalService` debounced, and an index
    * rebuild here means the timeline and the calendar are correct the moment
    * the notice appears.
    */
-  async reorganizeFolders(options: { offer?: boolean } = {}): Promise<void> {
+  async reorganizeFolders(
+    options: { offer?: boolean; onSettled?: () => void } = {},
+  ): Promise<void> {
     try {
       const plan = this.repository.planReorganize();
 
-      if (plan.moves.length === 0) {
+      if (plan.moves.length === 0 && plan.missingDate.length === 0) {
         // Silent when this was offered rather than asked for: the user changed
         // a dropdown, and "there was nothing to do" is an answer to a question
         // they did not ask. Invoked from the palette it is the whole answer.
         if (!options.offer) {
-          new Notice("Every journal entry is already where this setting puts it.");
+          new Notice("Every journal entry already matches your settings.");
         }
         return;
       }
@@ -649,12 +657,31 @@ export default class JournalEntriesPlugin extends Plugin {
         this.settings.entryFolders,
       );
 
-      new ReorganizeModal(this.app, plan, example, () => {
-        void this.applyReorganize(plan);
+      new ReorganizeModal(this.app, plan, example, this.settings.dateProperty, () => {
+        void this.applyReorganize(plan).finally(() => options.onSettled?.());
       }).open();
     } catch (error) {
       console.error("Simple Journal: could not work out what to reorganize", error);
-      new Notice("Could not reorganize the journal folders. See the developer console.");
+      new Notice("Could not update the journal entries. See the developer console.");
+    }
+  }
+
+  /**
+   * Whether `Update existing journal entries` has anything to do — what
+   * enables the settings tab's button. Computed from the same plan the
+   * command would show rather than from a "settings changed" flag, so entries
+   * added by hand light it too, and a finished run turns it off.
+   *
+   * Never throws: a button that cannot work out its state stays enabled, and
+   * the command it runs reports the problem properly.
+   */
+  hasPendingEntryUpdates(): boolean {
+    try {
+      const plan = this.repository.planReorganize();
+      return plan.moves.length > 0 || plan.missingDate.length > 0;
+    } catch (error) {
+      console.error("Simple Journal: could not work out what to update", error);
+      return true;
     }
   }
 
@@ -673,8 +700,8 @@ export default class JournalEntriesPlugin extends Plugin {
       // above; reaching here means the run itself came apart. Entries are
       // moved one at a time, so whatever moved before this stays moved — and
       // the command is idempotent, so re-running finishes the job.
-      console.error("Simple Journal: reorganizing the journal folders failed", error);
-      new Notice("Reorganizing stopped early. See the developer console.");
+      console.error("Simple Journal: updating the journal entries failed", error);
+      new Notice("Updating stopped early. See the developer console.");
     }
   }
 

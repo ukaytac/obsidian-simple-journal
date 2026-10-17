@@ -36,27 +36,37 @@ export interface ReorganizeMove {
 }
 
 /**
- * What `Reorganize journal folders` would do, computed without writing
+ * What `Update existing journal entries` would do, computed without writing
  * anything so a confirmation can state it before the user commits.
  *
- * `staying` counts entries this plugin will not or need not move: one the user
- * filed into a folder of their own, one they named themselves, and one already
- * exactly where the current layout puts it. They are counted rather than
- * listed because the dialog only needs the number.
+ * `moves` are path changes — a folder, a filename shape, or both.
+ * `missingDate` are entries that will gain the configured date property.
+ * One entry can be in both.
+ *
+ * `staying` counts entries this plugin will not or need not touch: one the
+ * user named themselves, one filed into a folder of their own that already has
+ * its date property, and one already exactly in line with the settings. They
+ * are counted rather than listed because the dialog only needs the number.
  */
 export interface ReorganizePlan {
   moves: ReorganizeMove[];
+  missingDate: TFile[];
   staying: number;
 }
 
 /** What it actually did. */
 export interface ReorganizeReport {
   moved: number;
-  /** Planned, then no longer applicable — the file was gone or had moved. */
+  /** Entries that gained the date property. */
+  dated: number;
+  /** Planned, then no longer applicable — the file was gone, had moved, or already had the line. */
   skipped: number;
   failed: number;
   trashedFolders: number;
 }
+
+/** Thrown inside `vault.process` to leave an entry byte-identical and count it as skipped. */
+class AlreadyDated extends Error {}
 
 /**
  * Joins a folder and a filename stem into an entry path.
@@ -522,17 +532,37 @@ export class EntryRepository {
   planReorganize(): ReorganizePlan {
     const root = this.resolveFolder().resolved;
     const layout = this.getLayout();
+    const format = this.getFilenameFormat();
 
     const moves: ReorganizeMove[] = [];
+    const missingDate: TFile[] = [];
     let staying = 0;
 
     for (const entry of this.listEntries()) {
-      const target = this.reorganizeTarget(entry.file, root, layout);
-      if (target === null) staying += 1;
-      else moves.push({ file: entry.file, target });
+      const target = this.reorganizeTarget(entry.file, root, layout, format);
+      const undated = this.lacksDateProperty(entry.file);
+
+      if (target !== null) moves.push({ file: entry.file, target });
+      if (undated) missingDate.push(entry.file);
+      if (target === null && !undated) staying += 1;
     }
 
-    return { moves, staying };
+    return { moves, missingDate, staying };
+  }
+
+  /**
+   * Whether `file` is an entry this plugin named and its metadata cache shows
+   * no configured date property. The filename gate is the same "is this ours"
+   * question every other writer asks; the folder gate is not, because adding
+   * a line moves nothing (CLAUDE.md § Updating existing entries, property 2).
+   *
+   * Asked of the cache, which is what a plan can afford to read. The write
+   * re-checks the raw text before trusting it — see `addDateProperty`.
+   */
+  private lacksDateProperty(file: TFile): boolean {
+    if (!parseEntryFilename(file.basename)) return false;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    return !(frontmatter && this.getDateProperty() in frontmatter);
   }
 
   /**
@@ -540,13 +570,25 @@ export class EntryRepository {
    * either because this plugin may not move it, or because it is already
    * there.
    *
-   * `stem` is deliberately the file's CURRENT stem rather than one recomputed
-   * from its timestamp: reorganizing changes folders and nothing else. An
-   * entry whose name carries a collision suffix keeps it, and a timestamp
-   * correction stays the only thing in this codebase that renames an entry.
+   * The stem changes shape only: it is converted from the timestamp already IN
+   * the name, never recomputed from the date property, so this can change how
+   * a time is written but never which time it is. A collision suffix is kept,
+   * so two same-second entries keep their order (CLAUDE.md § Filename
+   * formats).
+   *
+   * An entry in a folder the user chose keeps both its folder and its name.
+   * Renaming it in place would be safe enough, but the folder gate has always
+   * meant "the user put this here on purpose", and a file filed by hand is the
+   * one most likely to be referred to by its name.
    */
-  private reorganizeTarget(file: TFile, root: string, layout: EntryFolderLayout): string | null {
-    if (!parseEntryFilename(file.basename)) return null;
+  private reorganizeTarget(
+    file: TFile,
+    root: string,
+    layout: EntryFolderLayout,
+    format: EntryFilenameFormat,
+  ): string | null {
+    const parsed = parseEntryFilename(file.basename);
+    if (!parsed) return null;
 
     const lastSlash = file.path.lastIndexOf("/");
     const currentFolder = lastSlash === -1 ? "" : file.path.slice(0, lastSlash);
@@ -559,9 +601,14 @@ export class EntryRepository {
     if (!entry) return null;
 
     const folder = entryFolderPath(root, entry.created, layout);
-    if (folder === currentFolder) return null;
+    const stem =
+      parsed.format === format
+        ? file.basename
+        : formatEntryFilename(parsed.date, format) +
+          (parsed.collision > 1 ? `-${parsed.collision}` : "");
+    if (folder === currentFolder && stem === file.basename) return null;
 
-    return entryPath(folder, file.basename);
+    return entryPath(folder, stem);
   }
 
   /**
@@ -587,14 +634,43 @@ export class EntryRepository {
   async reorganizeEntries(plan: ReorganizePlan): Promise<ReorganizeReport> {
     const root = this.resolveFolder().resolved;
     const layout = this.getLayout();
+    const format = this.getFilenameFormat();
 
-    const report: ReorganizeReport = { moved: 0, skipped: 0, failed: 0, trashedFolders: 0 };
+    const report: ReorganizeReport = {
+      moved: 0,
+      dated: 0,
+      skipped: 0,
+      failed: 0,
+      trashedFolders: 0,
+    };
     const vacated = new Set<string>();
+
+    // Before the moves, while every planned file is still where the plan saw
+    // it. The `TFile` survives a rename either way; this just keeps the two
+    // halves from having to reason about each other.
+    for (const file of plan.missingDate) {
+      if (this.app.vault.getAbstractFileByPath(file.path) !== file || !this.lacksDateProperty(file)) {
+        report.skipped += 1;
+        continue;
+      }
+
+      try {
+        await this.addDateProperty(file);
+        report.dated += 1;
+      } catch (error) {
+        if (error instanceof AlreadyDated) {
+          report.skipped += 1;
+          continue;
+        }
+        console.error(`Simple Journal: could not add the date property to ${file.path}`, error);
+        report.failed += 1;
+      }
+    }
 
     for (const move of plan.moves) {
       // Re-derived rather than trusting `move.target`: both the file and the
       // setting may have changed while the confirmation was on screen.
-      const target = this.reorganizeTarget(move.file, root, layout);
+      const target = this.reorganizeTarget(move.file, root, layout, format);
       if (target === null || this.app.vault.getAbstractFileByPath(move.file.path) !== move.file) {
         report.skipped += 1;
         continue;
@@ -603,11 +679,13 @@ export class EntryRepository {
       const from = parentFolder(move.file.path);
       const folder = parentFolder(target);
 
+      const stem = target.slice(folder === "" ? 0 : folder.length + 1, -".md".length);
+
       try {
         await this.ensureFolder(folder);
         await this.withFreeName(
           folder,
-          move.file.basename,
+          stem,
           async (path) => {
             await this.app.fileManager.renameFile(move.file, path);
             return move.file;
@@ -667,6 +745,38 @@ export class EntryRepository {
     }
 
     return trashed;
+  }
+
+  /**
+   * Inserts the configured date property into an entry that lacks it, with
+   * the date the timeline shows for it now — the timestamp in its filename,
+   * since the property is missing — so nothing moves.
+   *
+   * Inserts and never replaces. The plan read the metadata cache; this reads
+   * the raw text inside `vault.process` and re-checks it against the cache
+   * the way `setEntryCreated` does, refusing a block Obsidian could not parse
+   * and leaving the file byte-identical (`AlreadyDated`) when a line is
+   * already there. Every other property, the old date property included,
+   * stays exactly as it was: it may belong to another tool.
+   */
+  private async addDateProperty(file: TFile): Promise<void> {
+    const parsed = parseEntryFilename(file.basename);
+    if (!parsed) throw new AlreadyDated();
+    const key = this.getDateProperty();
+
+    await this.app.vault.process(file, (data) => {
+      const { frontmatter } = splitFrontmatter(data);
+      const cached = this.app.metadataCache.getFileCache(file)?.frontmatter;
+
+      if (hasCreatedLine(frontmatter, key) || (cached && key in cached)) throw new AlreadyDated();
+      if (frontmatter && !cached) {
+        throw new UnsafeFrontmatterError(
+          "This entry's frontmatter could not be parsed by Obsidian; refusing to guess at it.",
+        );
+      }
+
+      return setCreatedProperty(data, formatCreatedProperty(parsed.date), key);
+    });
   }
 
   async readBody(file: TFile): Promise<string> {

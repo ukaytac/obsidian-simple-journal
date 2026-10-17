@@ -11,22 +11,30 @@ import type { ReorganizePlan } from "../src/journal/entryRepository";
 
 installDomHelpers(globalThis as unknown as Window & typeof globalThis);
 
-function plan(moves: number, staying: number): ReorganizePlan {
+/**
+ * `moves` entries change path. `dated` entries gain the date property; the
+ * first `overlap` of them are the same files as the first moves, because one
+ * entry can need both.
+ */
+function plan(moves: number, staying: number, dated = 0, overlap = 0): ReorganizePlan {
+  const files = Array.from(
+    { length: moves + dated - overlap },
+    (_, i) => ({ path: `Journal/2026/08/entry-${i}.md` }) as unknown as TFile,
+  );
   return {
-    moves: Array.from({ length: moves }, (_, i) => ({
-      file: { path: `Journal/2026/08/entry-${i}.md` } as unknown as TFile,
-      target: `Journal/entry-${i}.md`,
-    })),
+    moves: files.slice(0, moves).map((file, i) => ({ file, target: `Journal/entry-${i}.md` })),
+    missingDate: files.slice(moves - overlap, moves - overlap + dated),
     staying,
   };
 }
 
-function open(moves: number, staying: number) {
+function open(moves: number, staying: number, dated = 0, overlap = 0) {
   const confirmed = vi.fn();
   const modal = new ReorganizeModal(
     {} as App,
-    plan(moves, staying),
+    plan(moves, staying, dated, overlap),
     "Journal/2026/09",
+    "created_time",
     confirmed,
   );
   modal.open();
@@ -94,17 +102,43 @@ describe("ReorganizeModal", () => {
 
     expect(all[all.length - 1].textContent).toContain("12");
   });
+
+  it("says which property it adds, how many get it, and that nothing else changes", () => {
+    const { text } = open(0, 0, 5);
+    expect(text).toContain("5");
+    expect(text).toContain("created_time");
+    expect(text.toLowerCase()).toContain("no other property");
+    expect(text.toLowerCase()).not.toContain("contents are not read");
+  });
+
+  it("says nothing about the property when no entry needs it", () => {
+    const { text } = open(12, 0);
+    expect(text).not.toContain("created_time");
+  });
+
+  it("says nothing about moving when only the property is due", () => {
+    const { text } = open(0, 0, 5);
+    expect(text.toLowerCase()).not.toContain("internal links");
+  });
+
+  // An entry that is both renamed and dated is one entry, not two.
+  it("counts each entry once on the confirm button", () => {
+    const { modal } = open(3, 0, 4, 2);
+    const all = buttons(modal);
+
+    expect(all[all.length - 1].textContent).toContain("5");
+  });
 });
 
 describe("reorganizeSummary", () => {
   it("reports a clean run", () => {
-    expect(reorganizeSummary({ moved: 12, skipped: 0, failed: 0, trashedFolders: 3 })).toBe(
-      "Moved 12 entries.",
-    );
+    expect(
+      reorganizeSummary({ moved: 12, dated: 0, skipped: 0, failed: 0, trashedFolders: 3 }),
+    ).toBe("Moved 12 entries.");
   });
 
   it("says one entry in the singular", () => {
-    expect(reorganizeSummary({ moved: 1, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
+    expect(reorganizeSummary({ moved: 1, dated: 0, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
       "Moved 1 entry.",
     );
   });
@@ -115,19 +149,28 @@ describe("reorganizeSummary", () => {
    * journal that quietly half-finished is the worst version of that.
    */
   it("names failures and points at the console", () => {
-    const text = reorganizeSummary({ moved: 10, skipped: 0, failed: 2, trashedFolders: 0 });
-    expect(text).toContain("2 could not be moved");
+    const text = reorganizeSummary({ moved: 10, dated: 0, skipped: 0, failed: 2, trashedFolders: 0 });
+    expect(text).toContain("2 could not be updated");
     expect(text).toContain("console");
   });
 
   it("mentions entries that had moved or vanished before their turn", () => {
-    const text = reorganizeSummary({ moved: 10, skipped: 1, failed: 0, trashedFolders: 0 });
+    const text = reorganizeSummary({ moved: 10, dated: 0, skipped: 1, failed: 0, trashedFolders: 0 });
     expect(text).toContain("1 was skipped");
   });
 
   it("says plainly when there was nothing left to do", () => {
-    expect(reorganizeSummary({ moved: 0, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
-      "Nothing moved.",
+    expect(reorganizeSummary({ moved: 0, dated: 0, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
+      "Nothing changed.",
+    );
+  });
+
+  it("reports the property additions beside the moves", () => {
+    expect(reorganizeSummary({ moved: 3, dated: 5, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
+      "Moved 3 entries. Added the date property to 5.",
+    );
+    expect(reorganizeSummary({ moved: 0, dated: 1, skipped: 0, failed: 0, trashedFolders: 0 })).toBe(
+      "Added the date property to 1 entry.",
     );
   });
 });

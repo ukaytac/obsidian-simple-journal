@@ -16,9 +16,9 @@ export const ENTRY_FILENAME_FORMATS: readonly EntryFilenameFormat[] = ["dashed",
 // One expression per shape, each capturing year, month, day, hour, minute,
 // second and the optional collision suffix in that order. The shapes cannot
 // match each other's names, so at most one of these ever applies.
-const ENTRY_FILENAME_RES: readonly RegExp[] = [
-  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-([1-9]\d*))?$/,
-  /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:-([1-9]\d*))?$/,
+const ENTRY_FILENAME_RES: readonly (readonly [EntryFilenameFormat, RegExp])[] = [
+  ["dashed", /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-([1-9]\d*))?$/],
+  ["compact", /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:-([1-9]\d*))?$/],
 ];
 
 function pad(value: number, length = 2): string {
@@ -50,6 +50,8 @@ export interface ParsedEntryFilename {
   date: Date;
   /** 1 for a plain filename, 2+ for a same-second collision suffix. */
   collision: number;
+  /** Which admitted shape the name is in. */
+  format: EntryFilenameFormat;
 }
 
 /**
@@ -66,9 +68,13 @@ export interface ParsedEntryFilename {
  */
 export function parseEntryFilename(basename: string): ParsedEntryFilename | null {
   let match: RegExpExecArray | null = null;
-  for (const re of ENTRY_FILENAME_RES) {
+  let format: EntryFilenameFormat = DEFAULT_ENTRY_FILENAME_FORMAT;
+  for (const [candidate, re] of ENTRY_FILENAME_RES) {
     match = re.exec(basename);
-    if (match) break;
+    if (match) {
+      format = candidate;
+      break;
+    }
   }
   if (!match) return null;
 
@@ -92,7 +98,7 @@ export function parseEntryFilename(basename: string): ParsedEntryFilename | null
 
   const date = new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum, secondNum);
 
-  return { date, collision: collision ? Number(collision) : 1 };
+  return { date, collision: collision ? Number(collision) : 1, format };
 }
 
 /** ISO 8601 with an explicit local offset, e.g. 2026-08-12T22:41:52+03:00. */

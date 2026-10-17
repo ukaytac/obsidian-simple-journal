@@ -282,13 +282,16 @@ both is not a broken state, and switching the setting orphans nothing. For the
 same reason **a shape is never removed** once admitted: entries named with it
 would stop being recognised.
 
-**The setting names new files and nothing else.** `createEntry` uses it, and so
-does `renameEntryToMatch` after a corrected timestamp — current setting plus
+**Changing the setting renames nothing.** `createEntry` uses it, and so does
+`renameEntryToMatch` after a corrected timestamp — current setting plus
 corrected date, the rule `## Entry folders` already uses for the folder. Under
 `compact`, correcting an entry named `2026-08-12-…` renames it to
-`20260812_…`. `Reorganize journal folders` does **not** rename: it moves
-folders and keeps each file's stem, so a timestamp correction stays the only
-thing in this plugin that changes an entry's name.
+`20260812_…`. Everything else is converted only by
+`Update existing journal entries`, after its preview and confirmation (see
+`## Updating existing entries`). That conversion changes the shape and nothing
+else: the timestamp is the one already in the name, never re-derived from the
+date property, and a collision suffix is kept so same-second entries keep their
+order.
 
 Because `compact` is recognised whatever the setting says, a
 `YYYYMMDD_HHmmss[-N].md` file that a user's other tooling put in the journal
@@ -297,10 +300,13 @@ reorganizing may move its folder, with the same preview, confirmation and
 link-following as any other entry. That is the point of the shape, not a side
 effect of it.
 
-## Reorganizing entry folders
+## Updating existing entries
 
-`Reorganize journal folders` brings entries the plugin manages into the
-configured shape.
+`Update existing journal entries` brings entries the plugin manages into line
+with the three storage settings: the folder `Entry folders` puts them in, the
+name `Filename format` gives them, and the property `Date property` names, where
+it is missing. It was `Reorganize journal folders` while folders were all it
+did; the command id is unchanged, so a hotkey bound to it still works.
 
 **Changing the setting offers it, and offering is not doing it.** What the
 dropdown opens is this command's own confirmation, with its counts and its
@@ -316,6 +322,15 @@ asking this question.
 It stays a command as well, because a command is how you reach a thing later —
 after adding entries by hand, or after changing the journal folder.
 
+**And it is a button in the settings tab**, below the three settings it
+applies, enabled only while there is something to do. Changing `Filename
+format` or `Date property` does not open the confirmation the way the folder
+dropdown does — a property name is typed, and a dialog arriving mid-word would
+be an interruption — so the button is how those two reach existing entries.
+Its state is computed from the same plan the command would show, not from a
+"settings changed" flag: entries added by hand after the change light it just
+the same, and a run that finished turns it off.
+
 It is the bulk form of the placement rule above rather than a second idea:
 same target function, same setting, no timestamp touched. What it adds is a
 preview and a confirmation, and those are about scale.
@@ -323,10 +338,17 @@ preview and a confirmation, and those are about scale.
 Seven properties make it safe, each written against a specific failure, and
 each pinned by a test in `tests/reorganizeEntries.test.ts`:
 
-1. **Paths only, never bytes.** No entry is read and no entry's contents are
-   written. Nothing this operation can get wrong reaches what the user wrote.
+1. **Paths, and one line.** Moves and renames read and write no entry's
+   contents. The only bytes written are the missing date property's line,
+   through `setCreatedProperty`'s insert path, and only after re-checking —
+   against Obsidian's own parse of the frontmatter — that the entry really has
+   no such line: an existing line is never replaced, and a frontmatter block
+   Obsidian could not parse is refused. Nothing this operation can get wrong
+   reaches the text the user wrote.
 2. **Only files the plugin itself would have placed** — the filename
-   convention, and `isManagedFolder`.
+   convention, and `isManagedFolder` for a move. Adding the property needs only
+   the filename convention: it moves nothing, so a user's own subfolder is no
+   reason to skip it.
 3. **Never overwrites.** Targets go through `withFreeName`, so two entries
    written in the same second in different month folders — which `flat` stops
    separating — suffix rather than one clobbering the other.
@@ -358,7 +380,7 @@ That move uses `fileManager.renameFile`, so Obsidian updates links to the entry 
 
 A file whose name does not already follow the convention is left alone — only `created` is written. A name the user chose deliberately is not the plugin's to overwrite.
 
-Nothing else may rename an entry. Editing an entry's body never does.
+Nothing else may rename an entry, except `Update existing journal entries` converting a name into the configured `Filename format` after its preview and confirmation. Editing an entry's body never does.
 
 ---
 
@@ -431,10 +453,19 @@ today. For an entry this plugin wrote under the old name the filename carries
 the same timestamp, so switching the setting moves nothing in the timeline
 beyond an hour of DST ambiguity the offset used to settle.
 
-**Nothing is migrated.** Changing the setting rewrites no file, renames no
+**Changing the setting migrates nothing.** It rewrites no file, renames no
 property, and copies no value. It changes which property is read and written
 from then on, and the timeline is rebuilt so every entry is re-resolved at
 once.
+
+`Update existing journal entries` can then **add** the property to entries the
+plugin manages that lack it, after its preview and confirmation. It writes the
+date the timeline already shows for that entry — which, with the property
+missing, is the timestamp in its filename — so the timeline does not move. It
+inserts one line and touches nothing else: **it never removes, renames or
+rewrites another property, the old one included.** That old property may belong
+to another tool, which is the very reason this setting exists. An entry that
+already has the property is left alone, whatever its value says.
 
 **The name is restricted to letters, digits, `_` and `-`.** That covers every
 property name in practical use, keeps the name a plain YAML key that never
@@ -1176,7 +1207,7 @@ Filter journal by tag
 Open journal mentions
 Insert journal mentions block
 Search journal
-Reorganize journal folders
+Update existing journal entries
 ```
 
 Nothing is queued behind these. A new command needs a section of its own in

@@ -982,14 +982,14 @@ describe("filename format and date property settings", () => {
     expect(file.path).toBe("Journal/2026/09/2026-09-10-08-00-00.md");
   });
 
-  // Reorganizing moves folders and never renames: a timestamp correction
-  // stays the only thing that changes an entry's name.
-  it("reorganizes a compact entry's folder and keeps its name, whatever the setting", () => {
+  // Reading recognises the compact shape whatever the setting says, so the
+  // update command treats such a file as its own and converts its name.
+  it("plans a compact entry into the configured dashed shape and folder", () => {
     const { fake, repo } = setupWith({ format: "dashed", layout: "year-month" });
     fake.vault.addFile("Journal/20260909_182957.md", "hello");
 
     expect(repo.planReorganize().moves.map((move) => move.target)).toEqual([
-      "Journal/2026/09/20260909_182957.md",
+      "Journal/2026/09/2026-09-09-18-29-57.md",
     ]);
   });
 });

@@ -1,4 +1,10 @@
-import { debounce, PluginSettingTab, Setting, type SettingDefinitionItem } from "obsidian";
+import {
+  type ButtonComponent,
+  debounce,
+  PluginSettingTab,
+  Setting,
+  type SettingDefinitionItem,
+} from "obsidian";
 import type JournalEntriesPlugin from "../main";
 import { DEFAULT_SETTINGS, sanitizeDateProperty } from "./settings";
 import { ENTRY_FOLDER_LAYOUTS, type EntryFolderLayout } from "../journal/folderLayout";
@@ -56,6 +62,12 @@ const PROPERTY_DESC =
   "Frontmatter property that holds each entry's date and time. Changing it " +
   "rewrites no files: entries without it are dated by their filename.";
 
+const UPDATE_NAME = "Update existing entries";
+const UPDATE_DESC =
+  "Move, rename and add the date property to entries you already have, to " +
+  "match the settings above. Shows what will change before anything does.";
+const UPDATE_BUTTON = "Update…";
+
 const UNDER_NOTES_NAME = "Show mentions under notes";
 const UNDER_NOTES_DESC =
   "Add a panel at the bottom of a note listing the journal entries that link to it.";
@@ -93,6 +105,12 @@ export class JournalSettingsTab extends PluginSettingTab {
     true,
   );
 
+  /**
+   * The `Update existing entries` button, held so a settings change can
+   * enable or disable it in place. Null until a render has made one.
+   */
+  private updateButton: ButtonComponent | null = null;
+
   /** The date property field's settled value; see `pendingFolder`. */
   private pendingProperty = "";
 
@@ -107,7 +125,10 @@ export class JournalSettingsTab extends PluginSettingTab {
       const property = sanitizeDateProperty(this.pendingProperty);
       if (property === null || property === this.plugin.settings.dateProperty) return;
       this.plugin.settings.dateProperty = property;
-      void this.plugin.saveSettings().then(() => this.plugin.refreshJournal());
+      void this.plugin.saveSettings().then(() => {
+        this.plugin.refreshJournal();
+        this.refreshUpdateButton();
+      });
     },
     500,
     true,
@@ -138,7 +159,15 @@ export class JournalSettingsTab extends PluginSettingTab {
     // the plan is computed from the live setting, and a reorganize that
     // succeeded against a setting that failed to save would leave the journal
     // in a shape `data.json` does not remember.
-    void this.plugin.saveSettings().then(() => this.plugin.reorganizeFolders({ offer: true }));
+    void this.plugin.saveSettings().then(() => {
+      // Before the offer is answered, too: declining it leaves work to do,
+      // and the button is how the user comes back to it.
+      this.refreshUpdateButton();
+      return this.plugin.reorganizeFolders({
+        offer: true,
+        onSettled: () => this.refreshUpdateButton(),
+      });
+    });
   }
 
   /**
@@ -148,7 +177,28 @@ export class JournalSettingsTab extends PluginSettingTab {
    */
   private setFilenameFormat(value: EntryFilenameFormat): void {
     this.plugin.settings.entryFilenames = value;
-    void this.plugin.saveSettings();
+    void this.plugin.saveSettings().then(() => this.refreshUpdateButton());
+  }
+
+  /**
+   * Enabled only while `Update existing entries` has something to do, asked
+   * of the same plan the command would show (CLAUDE.md § Updating existing
+   * entries). Called after every setting that can change the answer, and
+   * after a run the button started has finished.
+   */
+  private refreshUpdateButton(): void {
+    this.updateButton?.setDisabled(!this.plugin.hasPendingEntryUpdates());
+  }
+
+  /** Builds the button into a row, on whichever rendering path is in use. */
+  private renderUpdateButton(setting: Setting): void {
+    setting.addButton((button) => {
+      this.updateButton = button;
+      button.setButtonText(UPDATE_BUTTON).onClick(() => {
+        void this.plugin.reorganizeFolders({ onSettled: () => this.refreshUpdateButton() });
+      });
+    });
+    this.refreshUpdateButton();
   }
 
   /**
@@ -207,6 +257,11 @@ export class JournalSettingsTab extends PluginSettingTab {
         name: PROPERTY_NAME,
         desc: PROPERTY_DESC,
         control: { type: "text", key: PROPERTY_KEY, placeholder: DEFAULT_SETTINGS.dateProperty },
+      },
+      {
+        name: UPDATE_NAME,
+        desc: UPDATE_DESC,
+        render: (setting) => this.renderUpdateButton(setting),
       },
       {
         name: UNDER_NOTES_NAME,
@@ -326,6 +381,8 @@ export class JournalSettingsTab extends PluginSettingTab {
             this.commitProperty();
           }),
       );
+
+    this.renderUpdateButton(new Setting(containerEl).setName(UPDATE_NAME).setDesc(UPDATE_DESC));
 
     new Setting(containerEl)
       .setName(UNDER_NOTES_NAME)

@@ -2,25 +2,30 @@ import { type App, ButtonComponent, Modal } from "obsidian";
 import type { ReorganizePlan, ReorganizeReport } from "../journal/entryRepository";
 
 /**
- * The confirmation in front of `Reorganize journal folders`.
+ * The confirmation in front of `Update existing journal entries`.
  *
  * It exists because of scale, not semantics: moving one entry is what a
- * corrected timestamp already does silently, while moving several hundred at
- * once is the plugin's largest single operation and its only irreversible-ish
- * one. So the counts are computed first (`planReorganize` writes nothing) and
- * stated here, before anything is renamed.
+ * corrected timestamp already does silently, while moving or renaming several
+ * hundred at once is the plugin's largest single operation and its only
+ * irreversible-ish one. So the counts are computed first (`planReorganize`
+ * writes nothing) and stated here, before anything is touched.
  *
  * Everything it says is something the user cannot otherwise find out:
  *
- * - how many entries move, and how many the plugin will not touch
+ * - how many entries move or are renamed, how many gain the date property,
+ *   and how many the plugin will not touch
  * - where one of them would land, because "Year" and "No subfolders" are
  *   guesses until you see a path
  * - that links follow only if Obsidian is set to update them, which
  *   `renameFile`'s contract makes conditional and which this plugin cannot
  *   read without reaching into `vault.getConfig` — not public API, and not an
  *   internals exception this feature could justify
- * - that entry contents are never read or rewritten, which is the reason this
- *   operation cannot lose what anyone wrote
+ * - what is written into a file, which is either nothing at all or one
+ *   property line, and never anything the user wrote
+ *
+ * Each part appears only when its count is non-zero, so a run that only adds
+ * the property does not talk about links, and one that only moves does not
+ * mention a property.
  */
 export class ReorganizeModal extends Modal {
   constructor(
@@ -28,6 +33,8 @@ export class ReorganizeModal extends Modal {
     private readonly plan: ReorganizePlan,
     /** Where an entry written right now would go, e.g. `Journal/2026/09`. */
     private readonly example: string,
+    /** The configured date property, named in the dialog rather than described. */
+    private readonly dateProperty: string,
     private readonly onConfirm: () => void,
   ) {
     super(app);
@@ -36,22 +43,37 @@ export class ReorganizeModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    this.setTitle("Reorganize journal folders");
+    this.setTitle("Update existing journal entries");
 
-    const count = this.plan.moves.length;
+    const moving = this.plan.moves.length;
+    const dating = this.plan.missingDate.length;
+    // One entry can need both; the button counts entries, not operations.
+    const total = new Set([...this.plan.moves.map((move) => move.file), ...this.plan.missingDate])
+      .size;
 
-    contentEl.createEl("p", {
-      text:
-        `${count} ${count === 1 ? "entry" : "entries"} will move into the folder layout ` +
-        `you chose. An entry written now would go to ${this.example}/.`,
-    });
+    if (moving > 0) {
+      contentEl.createEl("p", {
+        text:
+          `${moving} ${entries(moving)} will be moved or renamed to match your folder and ` +
+          `filename settings. An entry written now would go to ${this.example}/.`,
+      });
+    }
+
+    if (dating > 0) {
+      contentEl.createEl("p", {
+        text:
+          `${dating} ${entries(dating)} will get a "${this.dateProperty}" property, set to the ` +
+          `date ${dating === 1 ? "it shows" : "they show"} now. No other property is changed ` +
+          `or removed.`,
+      });
+    }
 
     // Only when there are any: "0 entries stay where they are" is noise, and
     // the sentence explaining why would be explaining nothing.
     if (this.plan.staying > 0) {
       contentEl.createEl("p", {
         text:
-          `${this.plan.staying} will stay where they are — already in place, or in a folder ` +
+          `${this.plan.staying} will stay as they are — already in line, or in a folder ` +
           `or under a filename you chose yourself.`,
       });
     }
@@ -59,18 +81,23 @@ export class ReorganizeModal extends Modal {
     const notes = contentEl.createEl("ul");
     notes.createEl("li", {
       text:
-        "Your entries' contents are not read or rewritten. Only their locations change.",
+        dating > 0
+          ? `Your text is not changed. The "${this.dateProperty}" line is the only thing written ` +
+            `into any entry.`
+          : "Your entries' contents are not read or rewritten. Only their locations change.",
     });
+    if (moving > 0) {
+      notes.createEl("li", {
+        text:
+          "Links to moved entries are updated only if Obsidian is set to automatically update " +
+          "internal links.",
+      });
+      notes.createEl("li", {
+        text: "Year and month folders left empty go to your trash.",
+      });
+    }
     notes.createEl("li", {
-      text:
-        "Links to moved entries are updated only if Obsidian is set to automatically update " +
-        "internal links.",
-    });
-    notes.createEl("li", {
-      text: "Year and month folders left empty go to your trash.",
-    });
-    notes.createEl("li", {
-      text: "On a large journal this takes a while. Running it again finishes an interrupted move.",
+      text: "On a large journal this takes a while. Running it again finishes an interrupted run.",
     });
 
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
@@ -78,9 +105,9 @@ export class ReorganizeModal extends Modal {
     new ButtonComponent(buttons).setButtonText("Cancel").onClick(() => this.close());
 
     // Named with the count rather than "Confirm": the last thing read before
-    // a bulk move should say what the move is.
+    // a bulk change should say what the change is.
     new ButtonComponent(buttons)
-      .setButtonText(`Move ${count} ${count === 1 ? "entry" : "entries"}`)
+      .setButtonText(`Update ${total} ${entries(total)}`)
       .setCta()
       .onClick(() => {
         this.close();
@@ -91,6 +118,10 @@ export class ReorganizeModal extends Modal {
   onClose(): void {
     this.contentEl.empty();
   }
+}
+
+function entries(count: number): string {
+  return count === 1 ? "entry" : "entries";
 }
 
 /**
@@ -108,19 +139,26 @@ export class ReorganizeModal extends Modal {
 export function reorganizeSummary(report: ReorganizeReport): string {
   const parts: string[] = [];
 
-  if (report.moved === 0) parts.push("Nothing moved.");
-  else parts.push(`Moved ${report.moved} ${report.moved === 1 ? "entry" : "entries"}.`);
+  if (report.moved > 0) parts.push(`Moved ${report.moved} ${entries(report.moved)}.`);
+  if (report.dated > 0) {
+    parts.push(
+      report.moved > 0
+        ? `Added the date property to ${report.dated}.`
+        : `Added the date property to ${report.dated} ${entries(report.dated)}.`,
+    );
+  }
+  if (parts.length === 0) parts.push("Nothing changed.");
 
   if (report.skipped > 0) {
     parts.push(
-      `${report.skipped} ${report.skipped === 1 ? "was" : "were"} skipped — moved or deleted ` +
+      `${report.skipped} ${report.skipped === 1 ? "was" : "were"} skipped — changed or deleted ` +
         `before their turn.`,
     );
   }
 
   if (report.failed > 0) {
     parts.push(
-      `${report.failed} could not be moved — see the developer console. Running the command ` +
+      `${report.failed} could not be updated — see the developer console. Running the command ` +
         `again retries them.`,
     );
   }

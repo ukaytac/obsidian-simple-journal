@@ -29,14 +29,18 @@ interface FakePlugin {
   saveSettings: () => Promise<void>;
   refreshJournal: () => void;
   applyMentionSettings: (sidebarTurnedOff?: boolean) => void;
-  reorganizeFolders: (options?: { offer?: boolean }) => Promise<void>;
+  reorganizeFolders: (options?: { offer?: boolean; onSettled?: () => void }) => Promise<void>;
+  hasPendingEntryUpdates: () => boolean;
 }
 
 function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
   const saveSettings = vi.fn(() => Promise.resolve());
   const refreshJournal = vi.fn();
   const applyMentionSettings = vi.fn();
-  const reorganizeFolders = vi.fn(() => Promise.resolve());
+  const reorganizeFolders = vi.fn(
+    (_options?: { offer?: boolean; onSettled?: () => void }) => Promise.resolve(),
+  );
+  const hasPendingEntryUpdates = vi.fn(() => false);
   const plugin: FakePlugin = {
     app: {},
     settings: {
@@ -51,11 +55,20 @@ function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
     refreshJournal,
     applyMentionSettings,
     reorganizeFolders,
+    hasPendingEntryUpdates,
   };
   // The tab only ever touches app/settings/saveSettings/refreshJournal/
   // applyMentionSettings.
   const tab = new JournalSettingsTab(plugin as never);
-  return { tab, plugin, saveSettings, refreshJournal, applyMentionSettings, reorganizeFolders };
+  return {
+    tab,
+    plugin,
+    saveSettings,
+    refreshJournal,
+    applyMentionSettings,
+    reorganizeFolders,
+    hasPendingEntryUpdates,
+  };
 }
 
 describe("JournalSettingsTab, declarative path", () => {
@@ -204,6 +217,7 @@ describe("mentions toggles", () => {
       "Entry folders",
       "Filename format",
       "Date property",
+      "Update existing entries",
       "Show mentions under notes",
       "Mentions sidebar",
     ]);
@@ -304,7 +318,7 @@ describe("entry folders", () => {
     await vi.runAllTimersAsync();
 
     expect(reorganizeFolders).toHaveBeenCalledTimes(1);
-    expect(reorganizeFolders).toHaveBeenCalledWith({ offer: true });
+    expect(reorganizeFolders).toHaveBeenCalledWith(expect.objectContaining({ offer: true }));
   });
 
   it("ignores a layout it does not recognise, rather than storing it", async () => {
@@ -397,5 +411,117 @@ describe("JournalSettingsTab, filename format and date property", () => {
     tab.hide();
 
     expect(plugin.settings.dateProperty).toBe("created_time");
+  });
+});
+
+/**
+ * The button that brings existing entries in line with the settings. It is
+ * enabled by the plan the command would show, never by a "changed" flag, and
+ * re-asks after anything that can change that answer.
+ */
+describe("JournalSettingsTab, update existing entries", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  interface FakeButton {
+    disabled: boolean;
+    text: string;
+    click: () => void;
+  }
+
+  /** Renders the declared row into a stand-in `Setting` and hands back its button. */
+  function renderButton(tab: JournalSettingsTab): FakeButton {
+    const item = tab
+      .getSettingDefinitions()
+      .find((d) => (d as { name: string }).name === "Update existing entries") as unknown as {
+      render: (setting: unknown) => void;
+    };
+    const button: FakeButton = { disabled: false, text: "", click: () => {} };
+    const component = {
+      setDisabled(value: boolean) {
+        button.disabled = value;
+        return component;
+      },
+      setButtonText(value: string) {
+        button.text = value;
+        return component;
+      },
+      onClick(callback: () => void) {
+        button.click = callback;
+        return component;
+      },
+    };
+    const setting = {
+      addButton(build: (b: typeof component) => void) {
+        build(component);
+        return setting;
+      },
+    };
+    item.render(setting);
+    return button;
+  }
+
+  it("is disabled while there is nothing to do", () => {
+    const { tab } = setup();
+    expect(renderButton(tab).disabled).toBe(true);
+  });
+
+  it("is enabled when there is", () => {
+    const { tab, hasPendingEntryUpdates } = setup();
+    hasPendingEntryUpdates.mockReturnValue(true);
+    expect(renderButton(tab).disabled).toBe(false);
+  });
+
+  it("re-asks after the filename format changes", async () => {
+    const { tab, hasPendingEntryUpdates } = setup();
+    const button = renderButton(tab);
+    hasPendingEntryUpdates.mockReturnValue(true);
+
+    tab.setControlValue("entryFilenames", "compact");
+    await vi.runAllTimersAsync();
+
+    expect(button.disabled).toBe(false);
+  });
+
+  it("re-asks after the date property changes", async () => {
+    const { tab, hasPendingEntryUpdates } = setup();
+    const button = renderButton(tab);
+    hasPendingEntryUpdates.mockReturnValue(true);
+
+    tab.setControlValue("dateProperty", "created_time");
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(button.disabled).toBe(false);
+  });
+
+  // Declining the folder offer leaves work to do; the button is the way back.
+  it("re-asks after the folder layout changes, before the offer is answered", async () => {
+    const { tab, hasPendingEntryUpdates } = setup();
+    const button = renderButton(tab);
+    hasPendingEntryUpdates.mockReturnValue(true);
+
+    tab.setControlValue("entryFolders", "flat");
+    await vi.runAllTimersAsync();
+
+    expect(button.disabled).toBe(false);
+  });
+
+  it("runs the command, not an offer, and re-asks once the run has settled", () => {
+    const { tab, reorganizeFolders, hasPendingEntryUpdates } = setup();
+    hasPendingEntryUpdates.mockReturnValue(true);
+    const button = renderButton(tab);
+
+    button.click();
+    const options = reorganizeFolders.mock.calls[0][0];
+    expect(options?.offer).toBeUndefined();
+
+    hasPendingEntryUpdates.mockReturnValue(false);
+    options?.onSettled?.();
+    expect(button.disabled).toBe(true);
   });
 });

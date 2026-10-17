@@ -186,8 +186,8 @@ describe("filename formats", () => {
   });
 
   it("parses the compact shape, with and without a collision suffix", () => {
-    expect(parseEntryFilename("20260909_182957")).toEqual({ date: at, collision: 1 });
-    expect(parseEntryFilename("20260909_182957-3")).toEqual({ date: at, collision: 3 });
+    expect(parseEntryFilename("20260909_182957")).toEqual({ date: at, collision: 1, format: "compact" });
+    expect(parseEntryFilename("20260909_182957-3")).toEqual({ date: at, collision: 3, format: "compact" });
   });
 
   // Reading is format-blind: both shapes are recognised whatever the setting
