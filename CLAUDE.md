@@ -192,9 +192,9 @@ Example:
 Journal/2026/08/2026-08-12-17-23-41.md
 ```
 
-The filename format is not configurable. The nesting is: see
-`## Entry folders` below, which is the "must be configurable later" this
-section promised.
+The filename is one of two fixed shapes, see `## Filename formats` below. The
+nesting is: see `## Entry folders` below, which is the "must be configurable
+later" this section promised.
 
 Avoid filenames based on journal text.
 
@@ -250,6 +250,52 @@ journal root is movable now. The filename convention is what answers "is this
 ours" — nobody hand-types `YYYY-MM-DD-HH-mm-ss[-N].md` — while the folder gate
 answers only the narrower "did the user file this somewhere on purpose", and
 the journal folder's own root is not somewhere.
+
+## Filename formats
+
+Two shapes, one setting (`entryFilenames`), defaulting to the original so an
+upgraded journal changes nothing:
+
+```text
+dashed    2026-08-12-17-23-41.md
+compact   20260812_172341.md
+```
+
+`compact` exists because a user's other tools already name notes that way, and
+a journal whose new entries are named differently from the rest of the vault
+is a cost the user pays every time they look at a folder.
+
+**Fixed shapes, for the reason `## Entry folders` gives, and with an entry
+rule.** A shape is admitted only if it carries the full date and time to the
+second, puts the year first, uses only characters every platform accepts in a
+filename, cannot be mistaken for another admitted shape, leaves the `-N`
+collision suffix unambiguous, and is not something a person types by hand.
+Those are exactly the properties the `dashed` shape already had and the rest
+of the plugin leans on: the filename is the second source of an entry's date,
+the collision suffix orders same-second entries, and the name is what answers
+"is this ours". A third shape is added only when someone asks for it, and
+only if it passes all six.
+
+**Reading is format-blind; writing follows the setting.** `parseEntryFilename`
+recognises every admitted shape regardless of the setting, so a journal holding
+both is not a broken state, and switching the setting orphans nothing. For the
+same reason **a shape is never removed** once admitted: entries named with it
+would stop being recognised.
+
+**The setting names new files and nothing else.** `createEntry` uses it, and so
+does `renameEntryToMatch` after a corrected timestamp — current setting plus
+corrected date, the rule `## Entry folders` already uses for the folder. Under
+`compact`, correcting an entry named `2026-08-12-…` renames it to
+`20260812_…`. `Reorganize journal folders` does **not** rename: it moves
+folders and keeps each file's stem, so a timestamp correction stays the only
+thing in this plugin that changes an entry's name.
+
+Because `compact` is recognised whatever the setting says, a
+`YYYYMMDD_HHmmss[-N].md` file that a user's other tooling put in the journal
+folder is an entry the plugin manages: a time correction renames it and
+reorganizing may move its folder, with the same preview, confirmation and
+link-following as any other entry. That is the point of the shape, not a side
+effect of it.
 
 ## Reorganizing entry folders
 
@@ -362,13 +408,47 @@ The architecture should allow users to add arbitrary Obsidian properties later w
 
 Never rewrite or normalize unrelated frontmatter properties.
 
+## The date property
+
+`created` is the default name, not a fixed one. One setting, `dateProperty`,
+names the property that holds an entry's date and time, and everything this
+section says about `created` applies to whatever it names: the plugin reads it,
+writes it into a new entry, and rewrites only its line on a time correction.
+It remains the only property the plugin writes.
+
+It exists because `created` is a common name, and a user whose other tooling
+already writes something else there — a date-only `created: 2026-09-09`, say —
+otherwise has no way to keep the precise time anywhere the journal reads. A
+date-only value is still a valid one, so the journal would place every such
+entry at midnight.
+
+**One property, no fallback chain.** With `created_time` configured, a
+`created` property is ignored completely, which is what removes the midnight
+trap above. Reading `created_time` and then `created` would put it straight
+back. An entry with no configured property falls through to the filename and
+then the file's creation time, exactly as an entry with no `created` does
+today. For an entry this plugin wrote under the old name the filename carries
+the same timestamp, so switching the setting moves nothing in the timeline
+beyond an hour of DST ambiguity the offset used to settle.
+
+**Nothing is migrated.** Changing the setting rewrites no file, renames no
+property, and copies no value. It changes which property is read and written
+from then on, and the timeline is rebuilt so every entry is re-resolved at
+once.
+
+**The name is restricted to letters, digits, `_` and `-`.** That covers every
+property name in practical use, keeps the name a plain YAML key that never
+needs quoting, and keeps the line match in `setCreatedProperty` a literal one.
+Anything else is rejected by `sanitizeSettings` and the default stands.
+
 ---
 
 # Source of Truth for Entry Date
 
 Prefer:
 
-1. valid `created` property
+1. valid date property (`created`, unless `## The date property` configures
+   another name)
 2. timestamp parsed from the plugin's filename convention
 3. file creation time as a fallback
 
@@ -1292,12 +1372,15 @@ Initial settings:
 Journal folder
 ```
 
-Since added, and the only one of the three that configures the journal itself
-rather than gating an optional surface — see `# Storage Model`'s
-`## Entry folders`:
+Since added, and with the folder the only ones that configure the journal
+itself rather than gating an optional surface — see `# Storage Model`'s
+`## Entry folders` and `## Filename formats`, and `# Entry Metadata`'s
+`## The date property`:
 
 ```text
 Entry folders
+Filename format
+Date property
 ```
 
 And these two, both off by default and both covered by `# Mentions` Rule 5:
@@ -1319,13 +1402,14 @@ pure, unit-tested, and the only thing that decides what a hand-edited
 `data.json` may hand to the rest of the plugin. A new setting is validated
 there or it is not validated at all.
 
-Potential future settings. `Folder pattern` is struck through rather than
-removed: it was answered by `Entry folders`, three fixed shapes instead of a
-format string, and the reasoning for that narrowing is in `# Storage Model`:
+Potential future settings. `Folder pattern` and `Filename pattern` are struck
+through rather than removed: they were answered by `Entry folders` and
+`Filename format`, fixed shapes instead of a format string, and the reasoning
+for that narrowing is in `# Storage Model`:
 
 ```text
 ~~Folder pattern~~ → Entry folders, done
-Filename pattern
+~~Filename pattern~~ → Filename format, done
 Timestamp format
 Date header format
 Autosave delay
@@ -1802,9 +1886,10 @@ Still NOT to implement:
   as a plain dot; density shading is a different feature and remains out
 * multiple journals
 * a folder or filename pattern language. `Entry folders` answers the folder
-  question with three fixed shapes; a format string with tokens is a parser, a
-  validator, and a way for a user to break their own journal. Filenames are
-  not configurable at all
+  question with three fixed shapes and `Filename format` the filename question
+  with two; a format string with tokens is a parser, a validator, and a way
+  for a user to break their own journal. A new filename shape must pass the
+  admission rule in `## Filename formats`
 * encryption
 * sync
 * templates

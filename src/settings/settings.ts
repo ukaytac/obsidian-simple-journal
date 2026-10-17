@@ -3,6 +3,12 @@ import {
   ENTRY_FOLDER_LAYOUTS,
   type EntryFolderLayout,
 } from "../journal/folderLayout";
+import { DEFAULT_DATE_PROPERTY } from "../journal/markdownDoc";
+import {
+  DEFAULT_ENTRY_FILENAME_FORMAT,
+  ENTRY_FILENAME_FORMATS,
+  type EntryFilenameFormat,
+} from "../utils/dates";
 
 export interface JournalSettings {
   /** Vault-relative folder that holds journal entries. */
@@ -17,6 +23,25 @@ export interface JournalSettings {
    * `Reorganize journal folders` command, which previews and confirms first.
    */
   entryFolders: EntryFolderLayout;
+  /**
+   * How a new entry's file is named: `2026-08-12-17-23-41` or
+   * `20260812_172341`. See CLAUDE.md § Filename formats.
+   *
+   * Names new files, and a file whose timestamp is corrected. Reading
+   * recognises every shape whatever this says, so changing it orphans nothing
+   * and renames nothing on its own.
+   */
+  entryFilenames: EntryFilenameFormat;
+  /**
+   * The frontmatter property holding an entry's date and time — `created`
+   * unless the user's other tooling already uses that name for something
+   * else. See CLAUDE.md § The date property.
+   *
+   * Read, written into new entries, and rewritten by a time correction. One
+   * property and no fallback chain: a `created` beside a configured
+   * `created_time` is ignored.
+   */
+  dateProperty: string;
   /**
    * Show a mentions panel at the bottom of notes that journal entries link
    * to. Off by default: this is the surface that relies on Obsidian's
@@ -51,6 +76,8 @@ export interface JournalSettings {
 export const DEFAULT_SETTINGS: JournalSettings = {
   journalFolder: "Journal",
   entryFolders: DEFAULT_ENTRY_FOLDER_LAYOUT,
+  entryFilenames: DEFAULT_ENTRY_FILENAME_FORMAT,
+  dateProperty: DEFAULT_DATE_PROPERTY,
   showMentionsUnderNotes: false,
   mentionsSidebar: false,
   mentionsFooterCollapsed: false,
@@ -58,6 +85,25 @@ export const DEFAULT_SETTINGS: JournalSettings = {
 
 function isLayout(value: unknown): value is EntryFolderLayout {
   return ENTRY_FOLDER_LAYOUTS.includes(value as EntryFolderLayout);
+}
+
+function isFilenameFormat(value: unknown): value is EntryFilenameFormat {
+  return ENTRY_FILENAME_FORMATS.includes(value as EntryFilenameFormat);
+}
+
+// Letters (any script), digits, `_` and `-`, not starting with `-`: a plain
+// YAML key that never needs quoting, which is what lets `setCreatedProperty`
+// match and write its line literally. See CLAUDE.md § The date property.
+const PROPERTY_NAME = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*$/u;
+
+/**
+ * The trimmed property name, or null when it cannot be used as one. Exported
+ * so the settings field can refuse a value the same way loading does.
+ */
+export function sanitizeDateProperty(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return PROPERTY_NAME.test(trimmed) ? trimmed : null;
 }
 
 /**
@@ -90,6 +136,12 @@ export function sanitizeSettings(stored: unknown): JournalSettings {
   if (!isLayout(settings.entryFolders)) {
     settings.entryFolders = DEFAULT_SETTINGS.entryFolders;
   }
+
+  if (!isFilenameFormat(settings.entryFilenames)) {
+    settings.entryFilenames = DEFAULT_SETTINGS.entryFilenames;
+  }
+
+  settings.dateProperty = sanitizeDateProperty(settings.dateProperty) ?? DEFAULT_SETTINGS.dateProperty;
 
   if (typeof settings.showMentionsUnderNotes !== "boolean") {
     settings.showMentionsUnderNotes = DEFAULT_SETTINGS.showMentionsUnderNotes;

@@ -1,11 +1,14 @@
 import { debounce, PluginSettingTab, Setting, type SettingDefinitionItem } from "obsidian";
 import type JournalEntriesPlugin from "../main";
-import { DEFAULT_SETTINGS } from "./settings";
+import { DEFAULT_SETTINGS, sanitizeDateProperty } from "./settings";
 import { ENTRY_FOLDER_LAYOUTS, type EntryFolderLayout } from "../journal/folderLayout";
+import { ENTRY_FILENAME_FORMATS, type EntryFilenameFormat } from "../utils/dates";
 
 /** The control keys this tab declares. */
 const FOLDER_KEY = "journalFolder";
 const LAYOUT_KEY = "entryFolders";
+const FILENAME_KEY = "entryFilenames";
+const PROPERTY_KEY = "dateProperty";
 const UNDER_NOTES_KEY = "showMentionsUnderNotes";
 const SIDEBAR_KEY = "mentionsSidebar";
 
@@ -32,6 +35,26 @@ const LAYOUT_OPTIONS: Record<EntryFolderLayout, string> = {
 function isLayoutKey(value: unknown): value is EntryFolderLayout {
   return ENTRY_FOLDER_LAYOUTS.includes(value as EntryFolderLayout);
 }
+
+const FILENAME_NAME = "Filename format";
+const FILENAME_DESC =
+  "How new entries are named. Existing entries keep their names; correcting " +
+  "an entry's time renames it in this format.";
+
+/** Each option is its own example, for the same reason the layouts are. */
+const FILENAME_OPTIONS: Record<EntryFilenameFormat, string> = {
+  dashed: "2026-08-12-17-23-41",
+  compact: "20260812_172341",
+};
+
+function isFilenameKey(value: unknown): value is EntryFilenameFormat {
+  return ENTRY_FILENAME_FORMATS.includes(value as EntryFilenameFormat);
+}
+
+const PROPERTY_NAME = "Date property";
+const PROPERTY_DESC =
+  "Frontmatter property that holds each entry's date and time. Changing it " +
+  "rewrites no files: entries without it are dated by their filename.";
 
 const UNDER_NOTES_NAME = "Show mentions under notes";
 const UNDER_NOTES_DESC =
@@ -70,6 +93,26 @@ export class JournalSettingsTab extends PluginSettingTab {
     true,
   );
 
+  /** The date property field's settled value; see `pendingFolder`. */
+  private pendingProperty = "";
+
+  /**
+   * Debounced like the folder field, for the same reason: every commit
+   * rebuilds the timeline, because which property is read decides every
+   * entry's date. A value `sanitizeDateProperty` refuses — a half-typed
+   * `created time`, say — is never committed; the last usable one stands.
+   */
+  private readonly commitProperty = debounce(
+    () => {
+      const property = sanitizeDateProperty(this.pendingProperty);
+      if (property === null || property === this.plugin.settings.dateProperty) return;
+      this.plugin.settings.dateProperty = property;
+      void this.plugin.saveSettings().then(() => this.plugin.refreshJournal());
+    },
+    500,
+    true,
+  );
+
   constructor(private readonly plugin: JournalEntriesPlugin) {
     super(plugin.app, plugin);
   }
@@ -96,6 +139,16 @@ export class JournalSettingsTab extends PluginSettingTab {
     // succeeded against a setting that failed to save would leave the journal
     // in a shape `data.json` does not remember.
     void this.plugin.saveSettings().then(() => this.plugin.reorganizeFolders({ offer: true }));
+  }
+
+  /**
+   * Commits immediately: a dropdown has no half-typed state. Nothing to
+   * refresh and nothing to offer — reading recognises every shape, and
+   * reorganizing never renames (CLAUDE.md § Filename formats).
+   */
+  private setFilenameFormat(value: EntryFilenameFormat): void {
+    this.plugin.settings.entryFilenames = value;
+    void this.plugin.saveSettings();
   }
 
   /**
@@ -128,6 +181,7 @@ export class JournalSettingsTab extends PluginSettingTab {
     // Seeded here as well as in display(), because on 1.13+ this is the only
     // one of the two that runs.
     this.pendingFolder = this.plugin.settings.journalFolder;
+    this.pendingProperty = this.plugin.settings.dateProperty;
 
     return [
       {
@@ -143,6 +197,16 @@ export class JournalSettingsTab extends PluginSettingTab {
         name: LAYOUT_NAME,
         desc: LAYOUT_DESC,
         control: { type: "dropdown", key: LAYOUT_KEY, options: LAYOUT_OPTIONS },
+      },
+      {
+        name: FILENAME_NAME,
+        desc: FILENAME_DESC,
+        control: { type: "dropdown", key: FILENAME_KEY, options: FILENAME_OPTIONS },
+      },
+      {
+        name: PROPERTY_NAME,
+        desc: PROPERTY_DESC,
+        control: { type: "text", key: PROPERTY_KEY, placeholder: DEFAULT_SETTINGS.dateProperty },
       },
       {
         name: UNDER_NOTES_NAME,
@@ -166,6 +230,8 @@ export class JournalSettingsTab extends PluginSettingTab {
   getControlValue(key: string): unknown {
     if (key === FOLDER_KEY) return this.plugin.settings.journalFolder;
     if (key === LAYOUT_KEY) return this.plugin.settings.entryFolders;
+    if (key === FILENAME_KEY) return this.plugin.settings.entryFilenames;
+    if (key === PROPERTY_KEY) return this.plugin.settings.dateProperty;
     if (key === UNDER_NOTES_KEY) return this.plugin.settings.showMentionsUnderNotes;
     if (key === SIDEBAR_KEY) return this.plugin.settings.mentionsSidebar;
     return undefined;
@@ -184,6 +250,15 @@ export class JournalSettingsTab extends PluginSettingTab {
       if (isLayoutKey(value)) this.setLayout(value);
       return;
     }
+    if (key === FILENAME_KEY) {
+      if (isFilenameKey(value)) this.setFilenameFormat(value);
+      return;
+    }
+    if (key === PROPERTY_KEY) {
+      this.pendingProperty = typeof value === "string" ? value : "";
+      this.commitProperty();
+      return;
+    }
     if (key === UNDER_NOTES_KEY || key === SIDEBAR_KEY) {
       this.setToggle(key, value === true);
     }
@@ -200,6 +275,7 @@ export class JournalSettingsTab extends PluginSettingTab {
     containerEl.empty();
 
     this.pendingFolder = this.plugin.settings.journalFolder;
+    this.pendingProperty = this.plugin.settings.dateProperty;
 
     new Setting(containerEl)
       .setName(FOLDER_NAME)
@@ -223,6 +299,31 @@ export class JournalSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.entryFolders)
           .onChange((value) => {
             if (isLayoutKey(value)) this.setLayout(value);
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(FILENAME_NAME)
+      .setDesc(FILENAME_DESC)
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions(FILENAME_OPTIONS)
+          .setValue(this.plugin.settings.entryFilenames)
+          .onChange((value) => {
+            if (isFilenameKey(value)) this.setFilenameFormat(value);
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(PROPERTY_NAME)
+      .setDesc(PROPERTY_DESC)
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.dateProperty)
+          .setValue(this.plugin.settings.dateProperty)
+          .onChange((value) => {
+            this.pendingProperty = value;
+            this.commitProperty();
           }),
       );
 
@@ -253,6 +354,7 @@ export class JournalSettingsTab extends PluginSettingTab {
    */
   hide(): void {
     this.saveAndRefresh.run();
+    this.commitProperty.run();
   }
 }
 

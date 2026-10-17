@@ -52,6 +52,8 @@ function setup(): Setup {
   plugin.settings = {
     journalFolder: "Journal",
     entryFolders: "year-month",
+    entryFilenames: "dashed",
+    dateProperty: "created",
     showMentionsUnderNotes: false,
     mentionsSidebar: false,
     mentionsFooterCollapsed: false,

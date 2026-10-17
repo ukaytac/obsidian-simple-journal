@@ -31,6 +31,8 @@ export default class JournalEntriesPlugin extends Plugin {
       this.app,
       () => this.settings.journalFolder,
       () => this.settings.entryFolders,
+      () => this.settings.entryFilenames,
+      () => this.settings.dateProperty,
     );
     this.editorFactory = createEntryEditorFactory(this.app);
 

@@ -23,6 +23,8 @@ describe("sanitizeSettings", () => {
         mentionsSidebar: true,
         mentionsFooterCollapsed: true,
         entryFolders: "flat",
+        entryFilenames: "compact",
+        dateProperty: "created_time",
       }),
     ).toEqual({
       journalFolder: "Diary/Entries",
@@ -30,6 +32,8 @@ describe("sanitizeSettings", () => {
       mentionsSidebar: true,
       mentionsFooterCollapsed: true,
       entryFolders: "flat",
+      entryFilenames: "compact",
+      dateProperty: "created_time",
     });
   });
 
@@ -62,5 +66,32 @@ describe("sanitizeSettings", () => {
     expect(sanitizeSettings({ entryFolders: "" }).entryFolders).toBe("year-month");
     expect(sanitizeSettings({ entryFolders: true }).entryFolders).toBe("year-month");
     expect(sanitizeSettings({}).entryFolders).toBe("year-month");
+  });
+
+  it("accepts each filename format by name, and falls back to dashed otherwise", () => {
+    expect(sanitizeSettings({ entryFilenames: "dashed" }).entryFilenames).toBe("dashed");
+    expect(sanitizeSettings({ entryFilenames: "compact" }).entryFilenames).toBe("compact");
+    expect(sanitizeSettings({ entryFilenames: "YYYYMMDD" }).entryFilenames).toBe("dashed");
+    expect(sanitizeSettings({ entryFilenames: 1 }).entryFilenames).toBe("dashed");
+    expect(sanitizeSettings({}).entryFilenames).toBe("dashed");
+  });
+
+  it("accepts a plain property name, including non-ASCII letters, and trims it", () => {
+    expect(sanitizeSettings({ dateProperty: "created_time" }).dateProperty).toBe("created_time");
+    expect(sanitizeSettings({ dateProperty: "date-created" }).dateProperty).toBe("date-created");
+    expect(sanitizeSettings({ dateProperty: "oluşturulma" }).dateProperty).toBe("oluşturulma");
+    expect(sanitizeSettings({ dateProperty: "  created_time " }).dateProperty).toBe("created_time");
+  });
+
+  /**
+   * The name is spliced into a line match and into the YAML the plugin
+   * writes, so anything that would need quoting — or that is not a name at
+   * all — must never get that far.
+   */
+  it("falls back to created for a property name it cannot use as a plain key", () => {
+    for (const bad of ["", "   ", "two words", "a:b", "#tag", "-lead", "x\ny", 5, null]) {
+      expect(sanitizeSettings({ dateProperty: bad }).dateProperty).toBe("created");
+    }
+    expect(sanitizeSettings({}).dateProperty).toBe("created");
   });
 });

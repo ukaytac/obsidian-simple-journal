@@ -1,5 +1,25 @@
-const ENTRY_FILENAME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-([1-9]\d*))?$/;
+/**
+ * The filename shapes an entry may be written in. See CLAUDE.md § Filename
+ * formats: fixed shapes rather than a pattern language, each admitted only if
+ * it carries the full date and time to the second with the year first, and
+ * never removed once admitted — `parseEntryFilename` must keep recognising
+ * entries already named with it.
+ */
+export type EntryFilenameFormat = "dashed" | "compact";
+
+/** What every existing journal already uses, so an upgrade changes nothing. */
+export const DEFAULT_ENTRY_FILENAME_FORMAT: EntryFilenameFormat = "dashed";
+
+/** Every format, in the order the settings dropdown offers them. */
+export const ENTRY_FILENAME_FORMATS: readonly EntryFilenameFormat[] = ["dashed", "compact"];
+
+// One expression per shape, each capturing year, month, day, hour, minute,
+// second and the optional collision suffix in that order. The shapes cannot
+// match each other's names, so at most one of these ever applies.
+const ENTRY_FILENAME_RES: readonly RegExp[] = [
+  /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-([1-9]\d*))?$/,
+  /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:-([1-9]\d*))?$/,
+];
 
 function pad(value: number, length = 2): string {
   return String(value).padStart(length, "0");
@@ -11,15 +31,19 @@ function daysInMonth(year: number, month: number): number {
 }
 
 /** Filename stem for an entry created at `date`, without extension or collision suffix. */
-export function formatEntryFilename(date: Date): string {
-  return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
-    pad(date.getHours()),
-    pad(date.getMinutes()),
-    pad(date.getSeconds()),
-  ].join("-");
+export function formatEntryFilename(
+  date: Date,
+  format: EntryFilenameFormat = DEFAULT_ENTRY_FILENAME_FORMAT,
+): string {
+  const day = [date.getFullYear(), pad(date.getMonth() + 1), pad(date.getDate())];
+  const time = [pad(date.getHours()), pad(date.getMinutes()), pad(date.getSeconds())];
+
+  switch (format) {
+    case "dashed":
+      return [...day, ...time].join("-");
+    case "compact":
+      return `${day.join("")}_${time.join("")}`;
+  }
 }
 
 export interface ParsedEntryFilename {
@@ -29,8 +53,10 @@ export interface ParsedEntryFilename {
 }
 
 /**
- * Parses the plugin's filename convention. Returns null for anything else,
- * including genuinely impossible dates (month 13, 31 April, etc).
+ * Parses the plugin's filename convention, in every admitted shape whatever
+ * the current setting — reading is format-blind, so a journal holding both
+ * shapes is not a broken state. Returns null for anything else, including
+ * genuinely impossible dates (month 13, 31 April, etc).
  *
  * Note: during the DST fall-back hour, two distinct instants (e.g. 01:30 EST
  * and 01:30 EDT) format to the same filename, so parsing recovers only one
@@ -39,7 +65,11 @@ export interface ParsedEntryFilename {
  * which carries an explicit offset and round-trips exactly.
  */
 export function parseEntryFilename(basename: string): ParsedEntryFilename | null {
-  const match = ENTRY_FILENAME_RE.exec(basename);
+  let match: RegExpExecArray | null = null;
+  for (const re of ENTRY_FILENAME_RES) {
+    match = re.exec(basename);
+    if (match) break;
+  }
   if (!match) return null;
 
   const [, year, month, day, hour, minute, second, collision] = match;

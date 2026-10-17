@@ -5,6 +5,7 @@ import { EntryRepository } from "../src/journal/entryRepository";
 import { UnsafeFrontmatterError } from "../src/journal/markdownDoc";
 import { formatCreatedProperty } from "../src/utils/dates";
 import type { EntryFolderLayout } from "../src/journal/folderLayout";
+import type { EntryFilenameFormat } from "../src/utils/dates";
 
 function setup() {
   const fake = createFakeApp();
@@ -871,5 +872,124 @@ describe("entry folder layouts", () => {
     await repo.renameEntryToMatch(file, new Date(2026, 8, 1, 0, 0, 0));
 
     expect(file.path).toBe("Journal/inbox/2026-09-01-00-00-00.md");
+  });
+});
+
+/**
+ * The two settings that adapt a journal to names a user's other tooling
+ * already uses: the filename shape, and the property that holds the date.
+ * See CLAUDE.md § Filename formats and § The date property.
+ */
+describe("filename format and date property settings", () => {
+  function setupWith(options: { format?: EntryFilenameFormat; property?: string; layout?: EntryFolderLayout }) {
+    const fake = createFakeApp();
+    const repo = new EntryRepository(
+      fake as unknown as App,
+      () => "Journal",
+      () => options.layout ?? "year-month",
+      () => options.format ?? "dashed",
+      () => options.property ?? "created",
+    );
+    return { fake, repo };
+  }
+
+  const at = new Date(2026, 8, 9, 18, 29, 57);
+
+  it("names a new entry in the compact shape", async () => {
+    const { repo } = setupWith({ format: "compact" });
+    const file = await repo.createEntry(at);
+    expect(file.path).toBe("Journal/2026/09/20260909_182957.md");
+  });
+
+  it("suffixes a same-second compact collision rather than overwriting", async () => {
+    const { repo } = setupWith({ format: "compact" });
+    await repo.createEntry(at);
+    const second = await repo.createEntry(at);
+    expect(second.path).toBe("Journal/2026/09/20260909_182957-2.md");
+  });
+
+  it("writes the configured property into a new entry, and no `created`", async () => {
+    const { fake, repo } = setupWith({ property: "created_time" });
+    const file = await repo.createEntry(at, "Hello");
+    const data = fake.vault.contents.get(file.path) ?? "";
+
+    expect(data).toBe(`---\ncreated_time: "${formatCreatedProperty(at)}"\n---\nHello`);
+  });
+
+  it("reads the configured property, and ignores a date-only `created` beside it", () => {
+    const { fake, repo } = setupWith({ property: "created_time" });
+    const file = fake.vault.addFile("Journal/20260909_182957.md", "x");
+    fake.metadataCache.frontmatter.set(file.path, {
+      created: "2026-09-09",
+      created_time: "2026-09-09T18:29:57.934-05:00",
+    });
+
+    expect(repo.entryFor(file)?.created.getTime()).toBe(Date.parse("2026-09-09T18:29:57.934-05:00"));
+  });
+
+  it("falls back to the filename, not to `created`, when the configured property is missing", () => {
+    const { fake, repo } = setupWith({ property: "created_time" });
+    const file = fake.vault.addFile("Journal/20260909_182957.md", "x");
+    fake.metadataCache.frontmatter.set(file.path, { created: "2026-09-09" });
+
+    expect(repo.entryFor(file)?.created).toEqual(at);
+  });
+
+  it("corrects the configured property's line and nothing else", async () => {
+    const { fake, repo } = setupWith({ property: "created_time" });
+    const data = `---\ncreated: 2026-09-09\ncreated_time: 2026-09-09T18:29:57-05:00\n---\nText`;
+    const file = fake.vault.addFile("Journal/2026/09/20260909_182957.md", data);
+    fake.metadataCache.frontmatter.set(file.path, {
+      created: "2026-09-09",
+      created_time: "2026-09-09T18:29:57-05:00",
+    });
+    const newAt = new Date(2026, 8, 10, 8, 0, 0);
+
+    await repo.setEntryCreated(file, newAt);
+
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: 2026-09-09\ncreated_time: "${formatCreatedProperty(newAt)}"\n---\nText`,
+    );
+  });
+
+  it("refuses a correction when its line disagrees with Obsidian's reading of the configured property", async () => {
+    const { fake, repo } = setupWith({ property: "created_time" });
+    const data = `---\ncreated_time: 2026-09-09T18:29:57-05:00\n---\nText`;
+    const file = fake.vault.addFile("Journal/2026/09/20260909_182957.md", data);
+    fake.metadataCache.frontmatter.set(file.path, { created: "2026-09-09" });
+
+    await expect(repo.setEntryCreated(file, new Date(2026, 8, 10))).rejects.toBeInstanceOf(
+      UnsafeFrontmatterError,
+    );
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+
+  it("renames a corrected entry into the configured shape, whichever shape it had", async () => {
+    const { fake, repo } = setupWith({ format: "compact" });
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "hello");
+
+    await repo.renameEntryToMatch(file, at);
+
+    expect(file.path).toBe("Journal/2026/09/20260909_182957.md");
+  });
+
+  it("treats a compact-named file as an entry it manages even under the dashed setting", async () => {
+    const { fake, repo } = setupWith({ format: "dashed" });
+    const file = fake.vault.addFile("Journal/2026/09/20260909_182957.md", "hello");
+
+    await repo.renameEntryToMatch(file, new Date(2026, 8, 10, 8, 0, 0));
+
+    expect(file.path).toBe("Journal/2026/09/2026-09-10-08-00-00.md");
+  });
+
+  // Reorganizing moves folders and never renames: a timestamp correction
+  // stays the only thing that changes an entry's name.
+  it("reorganizes a compact entry's folder and keeps its name, whatever the setting", () => {
+    const { fake, repo } = setupWith({ format: "dashed", layout: "year-month" });
+    fake.vault.addFile("Journal/20260909_182957.md", "hello");
+
+    expect(repo.planReorganize().moves.map((move) => move.target)).toEqual([
+      "Journal/2026/09/20260909_182957.md",
+    ]);
   });
 });

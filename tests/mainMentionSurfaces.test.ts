@@ -84,6 +84,8 @@ function setup(entryCount = 2): Setup {
   plugin.settings = {
     journalFolder: "Diary",
     entryFolders: "year-month",
+    entryFilenames: "dashed",
+    dateProperty: "created",
     showMentionsUnderNotes: true,
     mentionsSidebar: false,
     mentionsFooterCollapsed: false,

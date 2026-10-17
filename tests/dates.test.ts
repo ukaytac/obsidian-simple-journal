@@ -172,3 +172,41 @@ describe("parseDateTimeLocalValue", () => {
     expect(parseDateTimeLocalValue("2026-08-12T22:41:52+03:00")).toBeNull();
   });
 });
+
+describe("filename formats", () => {
+  const at = new Date(2026, 8, 9, 18, 29, 57);
+
+  it("formats the dashed shape by default, so an upgraded journal changes nothing", () => {
+    expect(formatEntryFilename(at)).toBe("2026-09-09-18-29-57");
+    expect(formatEntryFilename(at, "dashed")).toBe("2026-09-09-18-29-57");
+  });
+
+  it("formats the compact shape", () => {
+    expect(formatEntryFilename(at, "compact")).toBe("20260909_182957");
+  });
+
+  it("parses the compact shape, with and without a collision suffix", () => {
+    expect(parseEntryFilename("20260909_182957")).toEqual({ date: at, collision: 1 });
+    expect(parseEntryFilename("20260909_182957-3")).toEqual({ date: at, collision: 3 });
+  });
+
+  // Reading is format-blind: both shapes are recognised whatever the setting
+  // says, so a journal holding both is not a broken state.
+  it("round-trips every shape through the one parser", () => {
+    for (const format of ["dashed", "compact"] as const) {
+      expect(parseEntryFilename(formatEntryFilename(at, format))?.date).toEqual(at);
+    }
+  });
+
+  it("rejects an impossible compact date rather than normalizing it", () => {
+    expect(parseEntryFilename("20260230_120000")).toBeNull();
+    expect(parseEntryFilename("20260909_246000")).toBeNull();
+  });
+
+  it("rejects near misses that are not an admitted shape", () => {
+    expect(parseEntryFilename("20260909182957")).toBeNull();
+    expect(parseEntryFilename("20260909_1829")).toBeNull();
+    expect(parseEntryFilename("2026-09-09_18-29-57")).toBeNull();
+    expect(parseEntryFilename("20260909_182957-0")).toBeNull();
+  });
+});

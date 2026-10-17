@@ -157,8 +157,19 @@ export function normalizeBodyForRender(body: string): string {
 // require their continuation lines to be indented). `assertSafeCreatedLine`
 // exists specifically to catch that and every other shape this regex alone
 // cannot tell apart from a genuine single-line `created: value`.
-const CREATED_LINE = /^created:[ \t]*[^\r\n]*/m;
-const CREATED_LINE_GLOBAL = /^created:[ \t]*[^\r\n]*/gm;
+//
+// The key is the configured date property (CLAUDE.md § The date property),
+// `created` unless the user named another. `sanitizeSettings` admits only
+// letters, digits, `_` and `-`, so it is escaped below out of caution rather
+// than need, and the `:` right after it keeps `created` from matching a
+// `created_time:` line.
+function createdLine(key: string, flags: "m" | "gm"): RegExp {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  return new RegExp(`^${escaped}:[ \\t]*[^\\r\\n]*`, flags);
+}
+
+/** The property an entry's date lives in when the user has not named another. */
+export const DEFAULT_DATE_PROPERTY = "created";
 
 // Matches just the frontmatter's opening delimiter line (optional BOM,
 // `---`, optional trailing spaces/tabs, its newline), so a missing `created`
@@ -191,7 +202,7 @@ export class UnsafeFrontmatterError extends Error {
  * all — `setCreatedProperty` inserts one fresh in that case, with nothing
  * existing to misjudge. Four distinct shapes are rejected:
  *
- * - More than one line matches `CREATED_LINE`. Most often a genuine
+ * - More than one line matches `createdLine`. Most often a genuine
  *   duplicate key (which `created:` value Obsidian's own YAML reader
  *   resolves to isn't something this function should guess at either), but
  *   also how the multi-line-scalar collision above gets caught: a line deep
@@ -213,29 +224,29 @@ export class UnsafeFrontmatterError extends Error {
  *   comment apart from a value that merely contains `#` needs a full YAML
  *   parser this function deliberately doesn't have.
  */
-function assertSafeCreatedLine(frontmatter: string): void {
-  const matches = frontmatter.match(CREATED_LINE_GLOBAL) ?? [];
+function assertSafeCreatedLine(frontmatter: string, key: string): void {
+  const matches = frontmatter.match(createdLine(key, "gm")) ?? [];
   if (matches.length > 1) {
     throw new UnsafeFrontmatterError(
-      "This entry's frontmatter has more than one line that looks like a top-level \"created\" key.",
+      `This entry's frontmatter has more than one line that looks like a top-level "${key}" key.`,
     );
   }
   if (matches.length === 0) return;
 
-  const match = CREATED_LINE.exec(frontmatter)!;
+  const match = createdLine(key, "m").exec(frontmatter)!;
   const value = match[0].slice(match[0].indexOf(":") + 1).trim();
 
   if (value.startsWith("|") || value.startsWith(">")) {
-    throw new UnsafeFrontmatterError("This entry's \"created\" property is a multi-line YAML block scalar.");
+    throw new UnsafeFrontmatterError(`This entry's "${key}" property is a multi-line YAML block scalar.`);
   }
 
   if (/(^|[ \t])#/.test(value)) {
-    throw new UnsafeFrontmatterError("This entry's \"created\" line has a trailing comment.");
+    throw new UnsafeFrontmatterError(`This entry's "${key}" line has a trailing comment.`);
   }
 
   const rest = frontmatter.slice(match.index + match[0].length);
   if (/^\r?\n(?:[ \t]+\S|-[ \t])/.test(rest)) {
-    throw new UnsafeFrontmatterError("This entry's \"created\" property continues onto an indented line.");
+    throw new UnsafeFrontmatterError(`This entry's "${key}" property continues onto an indented line.`);
   }
 }
 
@@ -250,12 +261,13 @@ function assertSafeCreatedLine(frontmatter: string): void {
  * multi-line value), with no genuine second `created` line to raise the
  * alarm. See `setEntryCreated`'s doc for that cross-check.
  */
-export function hasCreatedLine(frontmatter: string): boolean {
-  return CREATED_LINE.test(frontmatter);
+export function hasCreatedLine(frontmatter: string, key = DEFAULT_DATE_PROPERTY): boolean {
+  return createdLine(key, "m").test(frontmatter);
 }
 
 /**
- * Replaces the value of the top-level `created` property, and nothing else.
+ * Replaces the value of the top-level `created` property — or `key`, the
+ * configured date property, when the user named another — and nothing else.
  * Every other byte of the document — other properties, their order and
  * formatting, the body, a horizontal rule or a `created:`-looking line
  * inside the body — is left untouched.
@@ -276,18 +288,21 @@ export function hasCreatedLine(frontmatter: string): boolean {
  * `created` line it cannot safely treat as a single-line scalar. See
  * `assertSafeCreatedLine`.
  */
-export function setCreatedProperty(data: string, value: string): string {
+export function setCreatedProperty(data: string, value: string, key = DEFAULT_DATE_PROPERTY): string {
   const { frontmatter, body } = splitFrontmatter(data);
   const quoted = JSON.stringify(value);
 
   if (!frontmatter) {
-    return `---\ncreated: ${quoted}\n---\n${data}`;
+    return `---\n${key}: ${quoted}\n---\n${data}`;
   }
 
-  assertSafeCreatedLine(frontmatter);
+  assertSafeCreatedLine(frontmatter, key);
 
-  if (CREATED_LINE.test(frontmatter)) {
-    return frontmatter.replace(CREATED_LINE, `created: ${quoted}`) + body;
+  const line = createdLine(key, "m");
+  if (line.test(frontmatter)) {
+    // A function rather than a replacement string, so a `$` in the key or
+    // value can never be read as a substitution pattern.
+    return frontmatter.replace(line, () => `${key}: ${quoted}`) + body;
   }
 
   // No existing `created` key: insert one right after the opening
@@ -295,6 +310,6 @@ export function setCreatedProperty(data: string, value: string): string {
   // `frontmatter` when it matched the same opening-delimiter shape, so this
   // is guaranteed to match too.
   const opening = OPENING_DELIMITER.exec(frontmatter)![0];
-  const newLine = `created: ${quoted}${frontmatter.includes("\r\n") ? "\r\n" : "\n"}`;
+  const newLine = `${key}: ${quoted}${frontmatter.includes("\r\n") ? "\r\n" : "\n"}`;
   return opening + newLine + frontmatter.slice(opening.length) + body;
 }

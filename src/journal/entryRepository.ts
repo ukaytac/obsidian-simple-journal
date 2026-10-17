@@ -7,15 +7,18 @@ import {
   preserveSeparator,
   replaceBody,
   setCreatedProperty,
+  DEFAULT_DATE_PROPERTY,
   splitFrontmatter,
   stripSeparator,
   UnsafeFrontmatterError,
 } from "./markdownDoc";
 import { sortEntries, sliceBefore } from "../services/entryIndex";
 import {
+  DEFAULT_ENTRY_FILENAME_FORMAT,
   formatCreatedProperty,
   formatEntryFilename,
   parseEntryFilename,
+  type EntryFilenameFormat,
 } from "../utils/dates";
 import {
   DEFAULT_ENTRY_FOLDER_LAYOUT,
@@ -115,15 +118,18 @@ export class EntryRepository {
   private rawRootCache: { raw: string; normalized: string } | null = null;
 
   /**
-   * `getLayout` is optional and defaults to the product default, so a caller
-   * that has nothing to say about folder layouts — every test that predates
-   * the setting, and any future one that is not about placement — behaves
-   * exactly like an upgraded journal. `main.ts` passes the real setting.
+   * `getLayout`, `getFilenameFormat` and `getDateProperty` are optional and
+   * default to the product defaults, so a caller that has nothing to say about
+   * them — every test that predates those settings, and any future one that is
+   * not about them — behaves exactly like an upgraded journal. `main.ts` passes
+   * the real settings.
    */
   constructor(
     private readonly app: App,
     private readonly getFolder: () => string,
     private readonly getLayout: () => EntryFolderLayout = () => DEFAULT_ENTRY_FOLDER_LAYOUT,
+    private readonly getFilenameFormat: () => EntryFilenameFormat = () => DEFAULT_ENTRY_FILENAME_FORMAT,
+    private readonly getDateProperty: () => string = () => DEFAULT_DATE_PROPERTY,
   ) {}
 
   /** The configured journal root: trimmed, defaulted, NFC-normalized. */
@@ -233,12 +239,14 @@ export class EntryRepository {
     if (!this.isEntryFile(file)) return null;
 
     // Read once: `resolveTags` needs the whole cache (inline tags live
-    // outside `frontmatter`), and `resolveEntryDate` needs only `created`.
+    // outside `frontmatter`), and `resolveEntryDate` needs only the date
+    // property — the configured one alone, with no fallback to `created`
+    // (CLAUDE.md § The date property).
     const cache = this.app.metadataCache.getFileCache(file);
     const created = resolveEntryDate({
       basename: file.basename,
       ctime: file.stat.ctime,
-      created: cache?.frontmatter?.created,
+      created: cache?.frontmatter?.[this.getDateProperty()],
     });
 
     return { file, created, tags: resolveTags(cache) };
@@ -302,8 +310,8 @@ export class EntryRepository {
     const folder = entryFolderPath(this.resolveFolder().resolved, at, this.getLayout());
     await this.ensureFolder(folder);
 
-    const stem = formatEntryFilename(at);
-    const frontmatter = `---\ncreated: "${formatCreatedProperty(at)}"\n---\n`;
+    const stem = formatEntryFilename(at, this.getFilenameFormat());
+    const frontmatter = `---\n${this.getDateProperty()}: "${formatCreatedProperty(at)}"\n---\n`;
     const contents = frontmatter + body;
 
     return this.withFreeName(folder, stem, (path) => this.app.vault.create(path, contents));
@@ -376,9 +384,10 @@ export class EntryRepository {
    * the filename convention (this plugin's filename IS the timestamp) stops
    * contradicting the entry's own frontmatter.
    *
-   * Only touches a file whose current name already follows the plugin's
-   * `YYYY-MM-DD-HH-mm-ss[-N].md` convention (`parseEntryFilename` returns
-   * non-null). A file the user deliberately named something else and placed
+   * Only touches a file whose current name already follows one of the
+   * plugin's filename shapes (`parseEntryFilename` returns non-null), and
+   * names it in the CURRENT shape — current setting plus corrected date, the
+   * same rule the folder follows (CLAUDE.md § Filename formats). A file the user deliberately named something else and placed
    * in the journal folder keeps that name untouched — CLAUDE.md treats the
    * filename as an internal identifier precisely so nothing (including this)
    * ever re-derives it from content a user didn't choose it from.
@@ -425,7 +434,7 @@ export class EntryRepository {
       ? entryFolderPath(root, at, this.getLayout())
       : currentFolder;
 
-    const stem = formatEntryFilename(at);
+    const stem = formatEntryFilename(at, this.getFilenameFormat());
     const targetPath = entryPath(folder, stem);
 
     if (targetPath === file.path) return file;
@@ -697,8 +706,8 @@ export class EntryRepository {
   }
 
   /**
-   * Corrects an entry's timestamp by rewriting its `created` property in
-   * place, via `setCreatedProperty` — surgically, not through
+   * Corrects an entry's timestamp by rewriting its `created` property — the
+   * configured date property, see CLAUDE.md § The date property — in place, via `setCreatedProperty` — surgically, not through
    * `fileManager.processFrontMatter`, whose YAML re-serialization can
    * reformat, reorder, or requote a user's other properties (see CLAUDE.md's
    * "never rewrite or normalize unrelated frontmatter" and
@@ -744,24 +753,25 @@ export class EntryRepository {
     await this.app.vault.process(file, (data) => {
       const { frontmatter } = splitFrontmatter(data);
       const cached = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const key = this.getDateProperty();
 
       // Only a block that *also* looks like it holds a `created` line is
       // dangerous when Obsidian reports nothing: that is the disagreement worth
       // refusing over. An empty `---\n---` block, or one whose cache entry has
       // simply not been populated yet, has nothing for an insert to orphan —
       // refusing those would be a permanent dead end on a safe document.
-      if (frontmatter && hasCreatedLine(frontmatter) && !cached) {
+      if (frontmatter && hasCreatedLine(frontmatter, key) && !cached) {
         throw new UnsafeFrontmatterError(
           "This entry's frontmatter could not be parsed by Obsidian; refusing to guess at it.",
         );
       }
-      if (hasCreatedLine(frontmatter) && !(cached && "created" in cached)) {
+      if (hasCreatedLine(frontmatter, key) && !(cached && key in cached)) {
         throw new UnsafeFrontmatterError(
-          "This entry's \"created\" line does not match Obsidian's own reading of its frontmatter.",
+          `This entry's "${key}" line does not match Obsidian's own reading of its frontmatter.`,
         );
       }
 
-      return setCreatedProperty(data, formatCreatedProperty(at));
+      return setCreatedProperty(data, formatCreatedProperty(at), key);
     });
   }
 }

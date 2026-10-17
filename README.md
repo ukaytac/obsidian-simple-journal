@@ -59,7 +59,8 @@ Journal/
         └── 2026-08-12-22-41-52.md
 ```
 
-Each file carries a single `created` property and your text. No heading is
+Each file carries a single `created` property (the name is configurable, see
+**Settings**) and your text. No heading is
 added. Two entries created in the same second get a numeric suffix
 (`-2`, `-3`, ...) rather than overwriting each other.
 
@@ -257,6 +258,19 @@ follows the plugin's own naming convention.
 **Entry folders** — where new entries are filed inside it: by year and month
 (the default), by year, or not at all. Picking a shape offers to move the
 entries you already have, and you can decline; see **Storage** above.
+
+**Filename format** — how new entries are named: `2026-08-12-17-23-41.md` (the
+default) or `20260812_172341.md`, for a vault whose other tools already use
+the second. Both are recognised as entries whatever you pick, so switching
+renames nothing; an entry is renamed into the chosen format only when you
+change its time.
+
+**Date property** — the frontmatter property that holds an entry's date and
+time. Defaults to `created`. If another tool already writes something else
+there — a date without a time, say — name your own, such as `created_time`.
+The journal then reads and writes only that property and ignores `created`
+completely. Changing it rewrites no files. An entry that doesn't have the new
+property is dated by its filename instead.
 
 **Show mentions under notes** — off by default. Adds the mentions panel to the
 bottom of a note automatically, after its text, scrolling with it, without your

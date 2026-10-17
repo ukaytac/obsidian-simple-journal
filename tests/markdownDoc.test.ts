@@ -368,3 +368,43 @@ describe("setCreatedProperty: refuses rather than mangles unsafe frontmatter", (
     expect(() => setCreatedProperty(data, NEW_VALUE)).toThrow(UnsafeFrontmatterError);
   });
 });
+
+describe("setCreatedProperty with a configured property name", () => {
+  it("rewrites only the configured property's line, leaving `created` alone", () => {
+    const data = `---\ncreated: 2026-09-09\ncreated_time: 2026-09-09T18:29:57.934-05:00\n---\nText`;
+
+    expect(setCreatedProperty(data, "2026-09-10T08:00:00+03:00", "created_time")).toBe(
+      `---\ncreated: 2026-09-09\ncreated_time: "2026-09-10T08:00:00+03:00"\n---\nText`,
+    );
+  });
+
+  it("inserts the configured property when it is missing, even if `created` exists", () => {
+    const data = `---\ncreated: 2026-09-09\n---\nText`;
+
+    expect(setCreatedProperty(data, "2026-09-10T08:00:00+03:00", "created_time")).toBe(
+      `---\ncreated_time: "2026-09-10T08:00:00+03:00"\ncreated: 2026-09-09\n---\nText`,
+    );
+  });
+
+  it("does not mistake a longer key sharing the prefix for the configured one", () => {
+    const data = `---\ncreated_time: 2026-09-09T18:29:57-05:00\n---\nText`;
+
+    expect(setCreatedProperty(data, "2026-09-10T08:00:00+03:00", "created")).toBe(
+      `---\ncreated: "2026-09-10T08:00:00+03:00"\ncreated_time: 2026-09-09T18:29:57-05:00\n---\nText`,
+    );
+  });
+
+  it("applies the same safety refusals to the configured property", () => {
+    const data = `---\ncreated_time: |\n  2026-09-09\n---\nText`;
+
+    expect(() => setCreatedProperty(data, "2026-09-10T08:00:00+03:00", "created_time")).toThrow(
+      UnsafeFrontmatterError,
+    );
+  });
+
+  it("creates a frontmatter block with the configured property when there is none", () => {
+    expect(setCreatedProperty("Text", "2026-09-10T08:00:00+03:00", "created_time")).toBe(
+      `---\ncreated_time: "2026-09-10T08:00:00+03:00"\n---\nText`,
+    );
+  });
+});

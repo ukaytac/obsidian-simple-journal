@@ -21,6 +21,8 @@ interface FakePlugin {
   settings: {
     journalFolder: string;
     entryFolders: string;
+    entryFilenames: string;
+    dateProperty: string;
     showMentionsUnderNotes: boolean;
     mentionsSidebar: boolean;
   };
@@ -40,6 +42,8 @@ function setup(initialFolder = DEFAULT_SETTINGS.journalFolder) {
     settings: {
       journalFolder: initialFolder,
       entryFolders: "year-month",
+      entryFilenames: "dashed",
+      dateProperty: "created",
       showMentionsUnderNotes: false,
       mentionsSidebar: false,
     },
@@ -198,6 +202,8 @@ describe("mentions toggles", () => {
     expect(tab.getSettingDefinitions().map((d) => (d as { name: string }).name)).toEqual([
       "Journal folder",
       "Entry folders",
+      "Filename format",
+      "Date property",
       "Show mentions under notes",
       "Mentions sidebar",
     ]);
@@ -319,5 +325,77 @@ describe("entry folders", () => {
     await vi.runAllTimersAsync();
 
     expect(reorganizeFolders).not.toHaveBeenCalled();
+  });
+});
+
+describe("JournalSettingsTab, filename format and date property", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Reading recognises every shape, and reorganizing never renames, so there
+  // is nothing on screen to refresh and nothing to offer.
+  it("commits a filename format at once, without a refresh or a reorganize offer", () => {
+    const { tab, plugin, saveSettings, refreshJournal, reorganizeFolders } = setup();
+    tab.getSettingDefinitions();
+
+    tab.setControlValue("entryFilenames", "compact");
+
+    expect(plugin.settings.entryFilenames).toBe("compact");
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    expect(refreshJournal).not.toHaveBeenCalled();
+    expect(reorganizeFolders).not.toHaveBeenCalled();
+  });
+
+  it("ignores a filename format it does not recognise", () => {
+    const { tab, plugin, saveSettings } = setup();
+    tab.getSettingDefinitions();
+
+    tab.setControlValue("entryFilenames", "YYYYMMDD");
+
+    expect(plugin.settings.entryFilenames).toBe("dashed");
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("commits a date property only after typing settles, then rebuilds the timeline", async () => {
+    const { tab, plugin, refreshJournal } = setup();
+    tab.getSettingDefinitions();
+
+    tab.setControlValue("dateProperty", "created_t");
+    tab.setControlValue("dateProperty", "created_time");
+    expect(plugin.settings.dateProperty).toBe("created");
+
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(plugin.settings.dateProperty).toBe("created_time");
+    expect(refreshJournal).toHaveBeenCalledTimes(1);
+  });
+
+  // A name the loader would refuse must not reach the live setting either:
+  // the repository splices it into the YAML it writes.
+  it("never commits a property name it cannot use as a plain key", async () => {
+    const { tab, plugin, saveSettings, refreshJournal } = setup();
+    tab.getSettingDefinitions();
+
+    tab.setControlValue("dateProperty", "created time");
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(plugin.settings.dateProperty).toBe("created");
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(refreshJournal).not.toHaveBeenCalled();
+  });
+
+  it("flushes a pending date property when the tab closes", () => {
+    const { tab, plugin } = setup();
+    tab.getSettingDefinitions();
+
+    tab.setControlValue("dateProperty", "created_time");
+    tab.hide();
+
+    expect(plugin.settings.dateProperty).toBe("created_time");
   });
 });
