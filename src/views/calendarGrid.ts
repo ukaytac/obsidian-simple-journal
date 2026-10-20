@@ -84,3 +84,18 @@ export function entryDaysInMonth(
   }
   return days;
 }
+
+/**
+ * Everything a rendered month grid depends on, as one comparable string: the
+ * month, which day is today, and which days carry a dot. Two equal signatures
+ * render identical grids, which is what lets `CalendarView` skip a rebuild
+ * for a change batch that touched none of them.
+ */
+export function calendarSignature(
+  year: number,
+  month: number,
+  entryDays: ReadonlySet<string>,
+  todayKey: string,
+): string {
+  return `${year}-${month}|${todayKey}|${[...entryDays].sort().join(",")}`;
+}

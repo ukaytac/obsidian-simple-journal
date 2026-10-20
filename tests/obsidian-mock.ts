@@ -881,6 +881,32 @@ export class Scope {
  * (used by `JournalView.onOpen`) work exactly as they do for every other
  * `Component` in these tests.
  */
+/**
+ * Minimal stand-in for Obsidian's `ExtraButtonComponent`: a clickable element
+ * in the container, with the chainable setters `CalendarView` calls. Icons
+ * and tooltips are accepted and not modelled.
+ */
+export class ExtraButtonComponent {
+  extraSettingsEl: HTMLElement;
+
+  constructor(containerEl: HTMLElement) {
+    this.extraSettingsEl = containerEl.createEl("button", { cls: "clickable-icon extra-setting-button" });
+  }
+
+  setIcon(_icon: string): this {
+    return this;
+  }
+
+  setTooltip(_tooltip: string): this {
+    return this;
+  }
+
+  onClick(callback: () => unknown): this {
+    this.extraSettingsEl.addEventListener("click", () => void callback());
+    return this;
+  }
+}
+
 export class ItemView extends Component {
   app: unknown;
   /** `@since 1.5.7`. Real Obsidian defaults this to null; a view assigns it. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "../src/journal/entry";
-import { buildMonthGrid, entryDaysInMonth, WEEKDAY_HEADER } from "../src/views/calendarGrid";
+import { buildMonthGrid, calendarSignature, entryDaysInMonth, WEEKDAY_HEADER } from "../src/views/calendarGrid";
 import { sortEntries } from "../src/services/entryIndex";
 
 function entry(basename: string, created: Date): JournalEntry {
@@ -139,5 +139,20 @@ describe("entryDaysInMonth", () => {
     ]);
 
     expect(entryDaysInMonth(index, 2026, 7)).toEqual(new Set(["2026-08-12"]));
+  });
+});
+
+describe("calendarSignature", () => {
+  it("is equal for the same month, today and dotted days, whatever their order", () => {
+    expect(calendarSignature(2026, 7, new Set(["2026-08-12", "2026-08-01"]), "2026-08-20")).toBe(
+      calendarSignature(2026, 7, new Set(["2026-08-01", "2026-08-12"]), "2026-08-20"),
+    );
+  });
+
+  it("differs when the month, today, or the dotted days differ", () => {
+    const base = calendarSignature(2026, 7, new Set(["2026-08-12"]), "2026-08-20");
+    expect(calendarSignature(2026, 6, new Set(["2026-08-12"]), "2026-08-20")).not.toBe(base);
+    expect(calendarSignature(2026, 7, new Set(["2026-08-12"]), "2026-08-21")).not.toBe(base);
+    expect(calendarSignature(2026, 7, new Set(["2026-08-13"]), "2026-08-20")).not.toBe(base);
   });
 });

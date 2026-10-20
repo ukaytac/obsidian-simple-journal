@@ -1,6 +1,6 @@
 import { ExtraButtonComponent, ItemView, type WorkspaceLeaf } from "obsidian";
 import type JournalEntriesPlugin from "../main";
-import { buildMonthGrid, entryDaysInMonth, WEEKDAY_HEADER } from "./calendarGrid";
+import { buildMonthGrid, calendarSignature, entryDaysInMonth, WEEKDAY_HEADER } from "./calendarGrid";
 import { dayKey } from "../utils/dates";
 
 export const VIEW_TYPE_CALENDAR = "simple-journal-calendar";
@@ -20,6 +20,8 @@ export class CalendarView extends ItemView {
   private gridEl!: HTMLElement;
   /** The month currently displayed. Always normalized to the 1st of the month. */
   private displayedMonth: Date;
+  /** What the grid on screen was rendered from. See `renderIfChanged`. */
+  private renderedSignature: string | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -49,7 +51,8 @@ export class CalendarView extends ItemView {
     this.headerEl = this.contentEl.createDiv({ cls: "journal-calendar-header" });
     this.gridEl = this.contentEl.createDiv({ cls: "journal-calendar-grid" });
 
-    // Re-render on every vault change batch. `entryDaysInMonth`'s two binary
+    // Re-render for a vault change batch only when it changed something this
+    // grid shows; see `renderIfChanged`. `entryDaysInMonth`'s two binary
     // searches keep this cheap regardless of index size or which month is
     // currently displayed — no need to inspect `changes` to decide whether
     // the displayed month is actually affected. `this.register` (same
@@ -57,7 +60,7 @@ export class CalendarView extends ItemView {
     // own Component lifecycle, so it fires on close even along a teardown
     // path that skips `onClose` for some reason, and a change arriving after
     // that can never reach a detached DOM.
-    this.register(this.plugin.journal.onChange(() => this.render()));
+    this.register(this.plugin.journal.onChange(() => this.renderIfChanged()));
 
     this.render();
   }
@@ -77,8 +80,28 @@ export class CalendarView extends ItemView {
     this.render();
   }
 
+  /**
+   * The `onChange` path. Every timeline autosave arrives as a batch, almost
+   * always for an entry whose day already had a dot, so rebuilding the header
+   * and ~45 cells for it changed nothing on screen. Today's date is part of
+   * the signature, so the midnight move of the "today" emphasis still lands
+   * on the next batch, as it always has.
+   */
+  private renderIfChanged(): void {
+    if (this.currentSignature() === this.renderedSignature) return;
+    this.render();
+  }
+
+  private currentSignature(): string {
+    const year = this.displayedMonth.getFullYear();
+    const month = this.displayedMonth.getMonth();
+    const entryDays = entryDaysInMonth(this.plugin.journal.getEntries(), year, month);
+    return calendarSignature(year, month, entryDays, dayKey(new Date()));
+  }
+
   /** Rebuilds the header and grid for `this.displayedMonth`. */
   private render(): void {
+    this.renderedSignature = this.currentSignature();
     this.renderHeader();
     this.renderGrid();
   }
