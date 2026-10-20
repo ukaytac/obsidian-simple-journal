@@ -1117,8 +1117,11 @@ export class JournalView extends ItemView {
       {
         root: this.contentEl,
         // Start loading before the sentinel is actually on screen. Mobile
-        // scrolls more slowly and repaints later, so start earlier there.
-        rootMargin: Platform.isMobile ? "1200px 0px" : "600px 0px",
+        // starts a little earlier, but only by about one phone screen: at
+        // 1200px a freshly appended page of short rows still sat inside the
+        // margin, which is half of how the iOS timeline came to load — and
+        // scroll — by itself.
+        rootMargin: Platform.isMobile ? "800px 0px" : "600px 0px",
       },
     );
 
