@@ -136,6 +136,25 @@ startup order or an iPhone's battery does with it.
       with the mentions footer on: the footer updates. Create an entry on a day
       that had none: the calendar shows its dot.
 
+## Timeline smoothness on iOS — needs the phone
+
+Open, because the timeline-smoothness pass (spec
+`docs/superpowers/specs/2026-10-20-timeline-smoothness-design.md`) exists for a
+bug only a device showed: the journal scrolling, and loading, by itself. The
+unit tests prove the pager asks the right questions; only the phone can say
+the answers come out right.
+
+- [ ] **1. Hands off.** Open the journal and leave the screen alone for ten
+      seconds: nothing scrolls, and older entries do not keep loading.
+- [ ] **2. Slow scroll.** Scroll down slowly and continuously: pages keep
+      arriving, and loading never stalls.
+- [ ] **3. Flick and stop.** Flick hard, then stop: the text does not jump
+      after it stops.
+- [ ] **4. Tap to edit.** Tap an entry: the text does not move while its editor
+      opens.
+- [ ] **5. New entry.** Run **New journal entry**: the composer opens with the
+      caret in it, exactly as before.
+
 ## Fixed: the composer opened without the caret in it
 
 With the Journal tab **closed**, from any other note, the `New journal entry`

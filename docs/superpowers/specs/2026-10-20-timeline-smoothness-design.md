@@ -1,7 +1,7 @@
 # Timeline smoothness: the pager waits for real heights and a real scroll
 
 **Date:** 2026-10-20
-**Status:** approved design, not yet implemented
+**Status:** approved, implemented — awaiting the device check
 **Scope:** group A of the 2026-10-20 performance audit. Builds on
 `2026-10-20-index-and-background-perf-design.md` (group B+C), on the branch
 stacked on top of it.
