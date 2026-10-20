@@ -784,9 +784,10 @@ export class EntryRepository {
   }
 
   /**
-   * `readBody` for a caller that will never write the file back — currently
-   * only the mentions panel, which is read-only by design and re-reads every
-   * visible entry on each refresh. Obsidian's guidance is `cachedRead`
+   * `readBody` for a caller that will never write the file back — journal
+   * search, the mentions panel (read-only by design, re-reading every visible
+   * entry on each refresh), and the timeline's static render, which only
+   * displays. Obsidian's guidance is `cachedRead`
    * whenever the file is not about to be modified: it avoids a disk round
    * trip per entry, and a momentarily stale body in a read-only surface
    * costs nothing, since the metadata/vault event that made it stale also

@@ -85,6 +85,19 @@ const MOUNT_ROOT_MARGIN = Platform.isMobile ? "900px 0px" : "400px 0px";
 const MAX_BURST_PAGES = 10;
 
 /**
+ * The longest `onSentinelVisible` waits for a page's static renders before
+ * re-asking the sentinel. This is a LIVENESS bound, not a correctness one:
+ * nothing is right or wrong because of its value. The wait exists so the
+ * re-ask sees real row heights, but `MarkdownRenderer.render` can be held
+ * open indefinitely by a third-party post-processor, and without a bound one
+ * slow render would keep `sentinelLoadInFlight` true and stop paging for the
+ * rest of the session. When the bound fires, the re-ask may see shorter rows
+ * than it should — the behaviour before the wait existed, now limited to the
+ * one page whose render was slow.
+ */
+const PAGE_RENDER_WAIT_MS = 1000;
+
+/**
  * How long `confirmDelete` waits for the vault's own "delete" event (routed
  * through `JournalService`/`applyChangesNow`) to reach `removeRenderedEntry`
  * before tearing a deleted entry's rendering down directly. See
@@ -1101,12 +1114,28 @@ export class JournalView extends ItemView {
         this.sentinelIntersecting = entries.some((e) => e.isIntersecting);
         if (!this.sentinelIntersecting) {
           this.loadWaitingForScroll = false;
+          // "Right after a reload" (`scrollTopAtLastLoad === null`) only holds
+          // until the sentinel has been seen out of range once. After that,
+          // coming back into range with the scroll position unchanged is
+          // heights moving it, not the user, and must not count as a first
+          // callback — otherwise a reload that never loads a page would
+          // leave this door open for good.
+          if (this.scrollTopAtLastLoad === null) {
+            this.scrollTopAtLastLoad = this.contentEl.scrollTop;
+          }
           return;
         }
         if (!isBurstContinuation) {
-          // A load already running ends with its own forced re-observe, which
-          // asks this question again with settled heights.
-          if (this.sentinelLoadInFlight) return;
+          // A load already running usually ends with its own forced
+          // re-observe, which asks this question again with settled heights.
+          // But not always: it does not when the burst cap is hit, when
+          // paging is exhausted, or when a bounded render wait ran out. So
+          // the dropped callback is recorded, and the next real scroll
+          // (`onTimelineScroll`) runs it.
+          if (this.sentinelLoadInFlight) {
+            this.loadWaitingForScroll = true;
+            return;
+          }
           if (!this.mayStartBurst()) {
             this.loadWaitingForScroll = true;
             return;
@@ -1174,14 +1203,30 @@ export class JournalView extends ItemView {
       // Re-asking straight after the append measured forty empty rows and
       // loaded another page, and another — the iOS "scrolls by itself" bug.
       // The renders settle (allSettled), so a failed read only ends the wait.
-      await this.lastPageRendered;
+      // Bounded by PAGE_RENDER_WAIT_MS (see its doc): a render a third-party
+      // post-processor never finishes must not hold paging hostage. The timer
+      // is cleared as soon as the renders settle, so it never outlives them.
+      let waitTimer: number | undefined;
+      try {
+        await Promise.race([
+          this.lastPageRendered,
+          new Promise<void>((resolve) => {
+            waitTimer = window.setTimeout(resolve, PAGE_RENDER_WAIT_MS);
+          }),
+        ]);
+      } finally {
+        window.clearTimeout(waitTimer);
+      }
       if (generation !== this.generation) return;
       this.scrollTopAtLastLoad = this.contentEl.scrollTop;
 
       if (this.burstCount >= MAX_BURST_PAGES) {
         // Bound hit: stop forcing further checks. The sentinel is still
         // observed, so a genuine scroll (a real transition, not one we forced)
-        // resumes the cascade.
+        // resumes the cascade. If the sentinel is still in range right now no
+        // transition is coming at all, so record that a load is owed: the
+        // next scroll event (`onTimelineScroll`) is then what resumes it.
+        this.loadWaitingForScroll = this.sentinelIntersecting;
         return;
       }
 
@@ -2007,8 +2052,8 @@ export class JournalView extends ItemView {
    * Read-only rendering of an entry, used when no editor is mounted for it.
    * `knownBody`, when given, is rendered as is and nothing is read.
    *
-   * Bumps and re-checks `rendered.opToken` around its one await, same
-   * reasoning as `mountEditor`: `appendEntry` calls this and hands the entry
+   * Bumps and re-checks `rendered.opToken` around its two awaits (the read,
+   * then the render), same reasoning as `mountEditor`: `appendEntry` calls this and hands the entry
    * to `mountObserver` in the same breath, and the observer's immediate
    * callback can fire — and call `mountEditor` — before this has finished
    * reading the file. Without the token check, this could then render stale
@@ -2020,12 +2065,15 @@ export class JournalView extends ItemView {
     if (generation !== this.generation) return;
     const token = ++rendered.opToken;
     const bodyEl = rendered.bodyEl;
+    // Captured before the read: whether this is the row's first render
+    // decides below whether a height needs freezing at all.
+    const isFirstRender = rendered.renderComponent === null;
 
     // A body that has never shown anything gets a placeholder height until it
     // does (see `.journal-entry-body.is-pending` in styles.css). Without it a
     // fresh page is forty bare headers tall, and the pager's sentinel sits far
     // higher than it will once the bodies arrive.
-    if (rendered.renderComponent === null && bodyEl.childElementCount === 0) {
+    if (isFirstRender && bodyEl.childElementCount === 0) {
       bodyEl.addClass("is-pending");
     }
 
@@ -2043,8 +2091,14 @@ export class JournalView extends ItemView {
     // the body collapses it to nothing until the render lands, and on iOS —
     // no scroll anchoring — every collapse above the viewport moves the text
     // the user is reading.
-    const height = bodyEl.offsetHeight;
-    if (height > 0) bodyEl.style.minHeight = `${height}px`;
+    //
+    // Not on a first render: `is-pending` already holds the placeholder
+    // height there, and measuring would force a layout per row — up to forty
+    // in a page — to freeze a height that is not going anywhere.
+    if (!isFirstRender) {
+      const height = bodyEl.offsetHeight;
+      if (height > 0) bodyEl.style.minHeight = `${height}px`;
+    }
 
     rendered.renderComponent?.unload();
     bodyEl.empty();
@@ -3230,8 +3284,8 @@ export class JournalView extends ItemView {
    *
    * That rejection is real, not theoretical: `reload()` awaits
    * `clearTimeline()`, which flushes every pending debounced save (an actual
-   * vault write that can fail), and `renderStatic` awaits `readBody`
-   * unguarded. `enqueueTimelineMutation`'s doc is explicit that the chain
+   * vault write that can fail), and `renderStatic` awaits
+   * `readBodyCached` unguarded. `enqueueTimelineMutation`'s doc is explicit that the chain
    * swallows a failure only so it doesn't wedge the *next* enqueued
    * mutation — the promise handed back to THIS call's own caller still
    * carries the real outcome. Left unguarded, that outcome would be an

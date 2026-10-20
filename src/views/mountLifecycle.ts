@@ -302,7 +302,19 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
       // The static body is untouched and still showing; only a row whose
       // first static render this mount pre-empted (bumping opToken above)
       // has nothing on screen, and gets the text just read.
-      if (target.renderComponent === null) void deps.renderStatic(target, body);
+      if (target.renderComponent === null) {
+        void deps.renderStatic(target, body);
+      } else {
+        // Bumping opToken above made an in-flight first render's `finally`
+        // skip its cleanup (it no longer owns the body), and the check
+        // above just returned without taking ownership. Whatever that
+        // render swapped in (`renderComponent` is set the moment it swaps)
+        // is on screen, but `is-pending` and its frozen height would stay
+        // on it for good, pinning a minimum height to a body that has
+        // long since finished. Nothing else will clear them, so do it here.
+        target.bodyEl.style.removeProperty("min-height");
+        target.bodyEl.removeClass("is-pending");
+      }
       return;
     }
 
@@ -461,12 +473,20 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     const index = order.indexOf(target.entry.file.path);
     if (index >= 0) order.splice(index, 1);
 
-    // `isDirty` just returned false, so the editor's text equals `savedBody`,
-    // which is what disk holds. Rendering it directly skips a read and its
-    // wait — the gap in which the frozen height above was all that kept the
-    // row from collapsing.
-    await deps.renderStatic(target, target.savedBody);
-    target.bodyEl.style.removeProperty("min-height");
+    // Deliberately NOT `target.savedBody`. It is "what this editor last
+    // knew", which is only what disk holds while nothing else touched the
+    // file: `applyChange` returns `noop` for a content change that arrives
+    // while the editor is focused (or dirty), so neither the editor nor
+    // `savedBody` ever hears of it, and rendering `savedBody` here would put
+    // text on screen that another pane already replaced. `renderStatic`
+    // reads through `readBodyCached` instead — display only, nothing it
+    // reads is written back — and the height frozen above is what keeps the
+    // row from collapsing across that read. Its own token-guarded `finally`
+    // releases the freeze, so nothing is cleared here: an unconditional
+    // clear after the await could wipe a newer owner's freeze. (The
+    // known-body path remains for `refreshEntryContent`, which has just read
+    // the text itself, and for the mount bail below.)
+    await deps.renderStatic(target);
   }
 
   return { mountEditor, unmountEditor, mountUsableEditor, enforceMountLimit };

@@ -81,11 +81,15 @@ on screen; afterwards unload, empty and mount happen in one synchronous step. A
 guard that bails therefore leaves the static rendering untouched, and the
 "left the margin while reading" branch no longer needs to re-render.
 
-**2b. Unmount: no disk read.** `unmountEditor` reaches its static render only
-after the dirty check passed, i.e. `editor.getValue() === savedBody`. It calls
-`renderStatic(target, target.savedBody)`: `renderStatic` gains an optional
-`knownBody`, and uses it instead of reading. The existing `min-height` freeze
-around the swap stays.
+**2b. Unmount: a cached read, not an uncached one.** `unmountEditor` calls
+`renderStatic(target)` with no known body, so `renderStatic` reads through
+`readBodyCached`. It must not render `target.savedBody`: that is only what disk
+holds while nothing else touched the file, and `applyChange` skips a content
+change that arrives while the editor is focused or dirty, so neither the editor
+nor `savedBody` hears of it. The existing `min-height` freeze around the swap
+stays, and covers the read. The known-body path of `renderStatic` remains for
+`refreshEntryContent` and for the mount bail, both of which have just read the
+text themselves.
 
 **2c. Static render: hold the height across the swap.** `renderStatic` reads
 first (or takes `knownBody`), passes its `generation`/`opToken` guards, then

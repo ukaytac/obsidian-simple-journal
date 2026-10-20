@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addEntry, createHarness, internals, settle } from "./journalViewHarness";
+import { MarkdownRenderer } from "obsidian";
 import type { FakeIntersectionObserver } from "./obsidian-mock";
 
 beforeEach(() => {
@@ -557,7 +558,7 @@ describe("JournalView mount window", () => {
       expect(cached).not.toHaveBeenCalled();
     });
 
-    it("renders the saved text on unmount without reading the file", async () => {
+    it("reads through the cache, never uncached, when it renders on unmount", async () => {
       const h = createHarness();
       const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
       h.service.load();
@@ -574,9 +575,77 @@ describe("JournalView mount window", () => {
       await settle();
 
       expect(rendered.editor).toBeNull();
-      expect(cached).not.toHaveBeenCalled();
+      expect(cached).toHaveBeenCalledTimes(1);
       expect(uncached).not.toHaveBeenCalled();
       expect(rendered.bodyEl.textContent).toContain("alpha body");
+    });
+
+    it("renders what is on disk, not the saved text, when an external change was skipped while focused", async () => {
+      const h = createHarness();
+      const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const rendered = internals(h.view).rendered.get(a.path);
+      const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+      await settle();
+      const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+      textarea.focus();
+      expect(rendered.editor.hasFocus()).toBe(true);
+
+      // Another pane rewrites the file. The editor is focused, so applyChange
+      // skips it: neither the editor nor savedBody ever hears of this.
+      const current = h.app.vault.contents.get(a.path) as string;
+      h.app.vault.contents.set(a.path, current.replace("alpha body", "externally edited"));
+      h.app.vault.trigger("modify", a);
+      vi.advanceTimersByTime(300);
+      await settle();
+      expect(rendered.editor.getValue()).toBe("alpha body");
+
+      textarea.blur();
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      await settle();
+
+      expect(rendered.editor).toBeNull();
+      expect(rendered.bodyEl.textContent).toContain("externally edited");
+      expect(rendered.bodyEl.textContent).not.toContain("alpha body");
+    });
+
+    it("leaves no pending marks when the entry leaves the margin while its first render is still in flight", async () => {
+      const h = createHarness();
+      const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+      h.service.load();
+      const renderGate = deferred();
+      const realRender = MarkdownRenderer.render.bind(MarkdownRenderer);
+      vi.spyOn(MarkdownRenderer, "render").mockImplementation(async (...args) => {
+        await renderGate.promise;
+        return realRender(...args);
+      });
+      await h.view.onOpen();
+      await settle();
+      const rendered = internals(h.view).rendered.get(a.path);
+      // First render has swapped in (renderComponent set) and is held open.
+      expect(rendered.renderComponent).not.toBeNull();
+      expect(rendered.bodyEl.classList.contains("is-pending")).toBe(true);
+
+      const readGate = deferred();
+      const real = h.repository.readBody.bind(h.repository);
+      vi.spyOn(h.repository, "readBody").mockImplementation(async (file) => {
+        await readGate.promise;
+        return real(file);
+      });
+      const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+      await settle();
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      renderGate.release();
+      readGate.release();
+      await settle();
+
+      expect(rendered.editor).toBeNull();
+      expect(rendered.bodyEl.classList.contains("is-pending")).toBe(false);
+      expect(rendered.bodyEl.style.minHeight).toBe("");
     });
   });
 });

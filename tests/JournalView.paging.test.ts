@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addEntry, createHarness, internals, settle, timelineEl } from "./journalViewHarness";
+import { MarkdownRenderer } from "obsidian";
 import type { FakeIntersectionObserver } from "./obsidian-mock";
 
 beforeEach(() => {
@@ -196,6 +197,8 @@ describe("JournalView paging", () => {
       const { h, contentEl, observer, sentinelEl } = await openWithTwoPages();
       observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
       await settle();
+      // Held back, not loaded: nothing has scrolled yet.
+      expect(internals(h.view).rendered.size).toBe(80);
 
       contentEl.scrollTop = 400;
       contentEl.dispatchEvent(new Event("scroll"));
@@ -228,6 +231,25 @@ describe("JournalView paging", () => {
       expect(internals(h.view).rendered.size).toBe(120);
     });
 
+    it("right after a reload only holds until the sentinel has been seen leaving", async () => {
+      const h = createHarness();
+      seedHourly(h, new Date(2026, 7, 12, 0, 0, 0), 200);
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      overflowing(h.view);
+      const observer = internals(h.view).observer as FakeIntersectionObserver;
+      const sentinelEl = internals(h.view).sentinelEl as HTMLElement;
+
+      // The sentinel was out of range at some point, then heights moved it back.
+      observer.trigger([{ target: sentinelEl, isIntersecting: false }]);
+      await settle();
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(40);
+    });
+
     it("a reload allows the first callback again", async () => {
       const { h } = await openWithTwoPages();
       await h.view.reload();
@@ -239,6 +261,73 @@ describe("JournalView paging", () => {
       await settle();
 
       expect(internals(h.view).rendered.size).toBe(80);
+    });
+  });
+
+  describe("a render that never settles", () => {
+    it("cannot stall paging: the wait is bounded and a later scroll loads again", async () => {
+      const h = createHarness();
+      seedHourly(h, new Date(2026, 7, 12, 0, 0, 0), 200);
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const el = internals(h.view).contentEl as HTMLElement;
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+      Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
+      const observer = internals(h.view).observer as FakeIntersectionObserver;
+      const sentinelEl = internals(h.view).sentinelEl as HTMLElement;
+
+      // A third-party post-processor holding the second page's renders open.
+      const realRender = MarkdownRenderer.render.bind(MarkdownRenderer);
+      const hang = vi
+        .spyOn(MarkdownRenderer, "render")
+        .mockImplementation(() => new Promise<void>(() => {}));
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+      expect(internals(h.view).rendered.size).toBe(80);
+      expect(internals(h.view).sentinelLoadInFlight).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+      expect(internals(h.view).sentinelLoadInFlight).toBe(false);
+
+      // Renders work again. A callback that arrived while the load was in
+      // flight must not be lost, and a real scroll must recover it.
+      hang.mockImplementation(realRender);
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+      el.scrollTop = 400;
+      el.dispatchEvent(new Event("scroll"));
+      await settle();
+      expect(internals(h.view).rendered.size).toBe(120);
+    });
+
+    it("remembers a callback dropped while a load was running, so a scroll recovers it", async () => {
+      const h = createHarness();
+      seedHourly(h, new Date(2026, 7, 12, 0, 0, 0), 200);
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const el = internals(h.view).contentEl as HTMLElement;
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+      Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
+      const observer = internals(h.view).observer as FakeIntersectionObserver;
+      const sentinelEl = internals(h.view).sentinelEl as HTMLElement;
+
+      const gate = deferred();
+      const real = h.repository.readBodyCached.bind(h.repository);
+      vi.spyOn(h.repository, "readBodyCached").mockImplementation(async (file) => {
+        await gate.promise;
+        return real(file);
+      });
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      expect(internals(h.view).loadWaitingForScroll).toBe(true);
     });
   });
 });
