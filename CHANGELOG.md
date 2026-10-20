@@ -3,6 +3,19 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.5.1
+
+### Opening the journal on a phone no longer raises the keyboard
+
+On a phone, the journal could open with the keyboard up and keep scrolling
+down by itself, without anything being touched. Every entry that came into
+view took focus as its editor loaded, which raised the keyboard and pulled
+the timeline down to that entry. 1.5.0 was meant to fix this, but its fix
+never took effect.
+
+Entries now load without taking focus. Tapping an entry focuses it exactly
+as before.
+
 ## 1.5.0
 
 ### Filename format
