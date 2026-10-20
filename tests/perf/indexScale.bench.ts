@@ -50,6 +50,14 @@ function flushNow(service: JournalService): void {
 }
 
 describe("JournalService at 50k entries + 50k other notes", () => {
+  // Every case below seeds its own vault inside the timed body, so this is
+  // the floor each of them stands on. Subtract it to read a case's own cost;
+  // it does not depend on JournalService, so one measurement serves both the
+  // before and the after run.
+  bench("reference: seeding the vault only", () => {
+    seed();
+  }, ONCE);
+
   bench(
     "startup: load, create storm for every file, layout ready, flush",
     () => {
