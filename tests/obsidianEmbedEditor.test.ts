@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { App, TFile } from "obsidian";
-import { ObsidianEmbedEditor } from "../src/views/ObsidianEmbedEditor";
+import { COLD_POLL_MS, HOT_LINGER_MS, HOT_POLL_MS, ObsidianEmbedEditor } from "../src/views/ObsidianEmbedEditor";
 import { preserveSeparator, replaceBody, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
 
 /**
@@ -482,7 +482,7 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     // frontmatter at all, and the whole document becomes "the body".
     const broken = 'created: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\nORIGINAL BODY.\n';
     setDoc(broken);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     expect(changes).toEqual([]);
     expect(editor.getValue()).toBe(SEEDED_BODY); // falls back to the last known-good body
@@ -490,7 +490,7 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     // Restoring the delimiter self-heals. The body itself never changed
     // from SEEDED_BODY throughout, so there is still nothing new to report.
     setDoc(SEEDED_DOC);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
     expect(changes).toEqual([]);
   });
 
@@ -510,14 +510,14 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     const withNewProperty =
       '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\ntag: "life"\n---\n\nORIGINAL BODY.\n';
     setDoc(withNewProperty);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
     // The body itself hasn't changed, so nothing is reported yet — but the
     // frontmatter snapshot must have refreshed rather than latching onto the
     // old one and rejecting everything from here on.
     expect(changes).toEqual([]);
 
     setDoc(replaceBody(withNewProperty, "A NEW BODY EDIT.\n"));
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     expect(changes).toEqual(["A NEW BODY EDIT.\n"]);
   });
@@ -553,7 +553,7 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     const closingDelimiterDeleted =
       '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\nBefore the rule.\n\n---\n\nAfter the rule.\n';
     setDoc(closingDelimiterDeleted);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     expect(changes).toEqual([]);
     expect(editor.getValue()).toBe(ruleBody);
@@ -587,7 +587,7 @@ describe("ObsidianEmbedEditor: the frontmatter guard", () => {
     const closingDelimiterDeleted =
       '---\ncreated: "2026-01-01T00:00:00+03:00"\nmood: "probe"\n\n' + newBodyWithRule;
     setDoc(closingDelimiterDeleted);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     // Must bail to the last known-good body, not report the truncated tail
     // after the thematic break — which would have the view delete "Before
@@ -661,7 +661,7 @@ describe("ObsidianEmbedEditor: change polling", () => {
     expect(changes).toEqual([]); // mount() itself must not fire onChange
 
     setDoc(replaceBody(SEEDED_DOC, "TYPED BY THE EMBED.\n"));
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     expect(changes).toEqual(["TYPED BY THE EMBED.\n"]);
   });
@@ -677,7 +677,7 @@ describe("ObsidianEmbedEditor: change polling", () => {
     editor.destroy();
 
     setDoc("this change happens after destroy and must be ignored\n");
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(2 * COLD_POLL_MS);
 
     expect(changes).toEqual([]);
   });
@@ -697,7 +697,7 @@ describe("ObsidianEmbedEditor: change polling", () => {
     // Simulates a shape change or a runtime failure discovered only after a
     // successful mount (e.g. the file was deleted out from under it).
     breakGet();
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(COLD_POLL_MS);
 
     expect(editor.isUsable()).toBe(false);
     expect(unusableFired).toBe(true);
@@ -707,7 +707,7 @@ describe("ObsidianEmbedEditor: change polling", () => {
     // practice once get() itself is broken, but proves the interval is
     // really gone) must not resurrect it.
     setDoc(replaceBody(SEEDED_DOC, "SHOULD NEVER BE SEEN.\n"));
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(2 * COLD_POLL_MS);
     expect(changes).toEqual([]);
   });
 });
@@ -1037,5 +1037,92 @@ describe("ObsidianEmbedEditor: mounting does not take focus", () => {
 
     expect(editor.isUsable()).toBe(false);
     expect(Object.getOwnPropertyDescriptor(embed, "editMode")).toBeUndefined();
+  });
+});
+
+describe("ObsidianEmbedEditor: polling speed", () => {
+  function embedEl(container: HTMLElement): HTMLElement {
+    return container.querySelector(".journal-entry-embed") as HTMLElement;
+  }
+
+  function mounted() {
+    vi.useFakeTimers();
+    const { creator, setDoc } = fakeEmbedCreator(SEEDED_DOC);
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const changes: string[] = [];
+    editor.onChange((value) => changes.push(value));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    editor.mount(container, fakeFile(), SEEDED_BODY);
+    return { editor, setDoc, changes, container };
+  }
+
+  it("an editor nobody is using picks a change up on the slow poll", () => {
+    const { setDoc, changes } = mounted();
+
+    setDoc(replaceBody(SEEDED_DOC, "DROPPED IN.\n"));
+    vi.advanceTimersByTime(HOT_POLL_MS);
+    expect(changes).toEqual([]);
+
+    vi.advanceTimersByTime(COLD_POLL_MS - HOT_POLL_MS);
+    expect(changes).toEqual(["DROPPED IN.\n"]);
+  });
+
+  it("focusing it switches to the fast poll at once", () => {
+    const { setDoc, changes, container } = mounted();
+    vi.advanceTimersByTime(100);
+
+    embedEl(container).dispatchEvent(new FocusEvent("focusin"));
+    setDoc(replaceBody(SEEDED_DOC, "TYPED.\n"));
+    vi.advanceTimersByTime(HOT_POLL_MS);
+
+    expect(changes).toEqual(["TYPED.\n"]);
+  });
+
+  it("stays fast for a while after losing focus, then slows down", () => {
+    const { setDoc, changes, container } = mounted();
+    const el = embedEl(container);
+
+    el.dispatchEvent(new FocusEvent("focusin"));
+    el.dispatchEvent(new FocusEvent("focusout", { relatedTarget: null }));
+    setDoc(replaceBody(SEEDED_DOC, "A.\n"));
+    vi.advanceTimersByTime(HOT_POLL_MS);
+    expect(changes).toEqual(["A.\n"]);
+
+    vi.advanceTimersByTime(HOT_LINGER_MS);
+    setDoc(replaceBody(SEEDED_DOC, "B.\n"));
+    vi.advanceTimersByTime(HOT_POLL_MS);
+    expect(changes).toEqual(["A.\n"]);
+
+    vi.advanceTimersByTime(COLD_POLL_MS);
+    expect(changes).toEqual(["A.\n", "B.\n"]);
+  });
+
+  it("a focus move inside the editor does not slow it down", () => {
+    const { setDoc, changes, container } = mounted();
+    const el = embedEl(container);
+    const inner = document.createElement("div");
+    el.appendChild(inner);
+
+    el.dispatchEvent(new FocusEvent("focusin"));
+    el.dispatchEvent(new FocusEvent("focusout", { relatedTarget: inner }));
+    vi.advanceTimersByTime(HOT_LINGER_MS + HOT_POLL_MS);
+    setDoc(replaceBody(SEEDED_DOC, "STILL HOT.\n"));
+    vi.advanceTimersByTime(HOT_POLL_MS);
+
+    expect(changes).toEqual(["STILL HOT.\n"]);
+  });
+
+  it("flush() reports text the slow poll has not seen yet", () => {
+    // What makes eviction safe at any polling speed: `flushSave` calls
+    // `flush()` first, and `isDirty` reads `getValue()`, neither of which
+    // waits for a poll.
+    const { editor, setDoc, changes } = mounted();
+
+    setDoc(replaceBody(SEEDED_DOC, "NOT POLLED YET.\n"));
+    editor.flush();
+
+    expect(changes).toEqual(["NOT POLLED YET.\n"]);
+    expect(editor.getValue()).toBe("NOT POLLED YET.\n");
   });
 });

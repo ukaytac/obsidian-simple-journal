@@ -283,6 +283,13 @@ function showEditorWithoutFocus(embed: MarkdownEmbed, containerEl: HTMLElement):
   }
 }
 
+/** Poll interval while the editor is in use: focused, or left under `HOT_LINGER_MS` ago. */
+export const HOT_POLL_MS = 250;
+/** Poll interval for every other mounted editor — a safety net, not the typing path. */
+export const COLD_POLL_MS = 2000;
+/** How long an editor keeps the fast poll after focus leaves it. */
+export const HOT_LINGER_MS = 2000;
+
 export class ObsidianEmbedEditor implements EntryEditor {
   private embed: MarkdownEmbed | null = null;
   private containerEl: HTMLElement | null = null;
@@ -290,6 +297,13 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private blurCallback: (() => void) | null = null;
   private unusableCallback: (() => void) | null = null;
   private pollHandle: number | null = null;
+  /** The raw document as of the last poll. */
+  private lastRaw = "";
+  /**
+   * Until when this editor counts as in use. `Infinity` while it holds focus;
+   * a timestamp once focus leaves; 0 for one never focused.
+   */
+  private hotUntil = 0;
   private usable = false;
 
   /**
@@ -441,9 +455,18 @@ export class ObsidianEmbedEditor implements EntryEditor {
       this.tagEditorPane();
 
       this.startPolling();
-      // No removeEventListener on destroy: this listener is reachable only
-      // from this now-detached, dereferenced containerEl, so it's collected
+      // No removeEventListener on destroy: these listeners are reachable only
+      // from this now-detached, dereferenced containerEl, so they're collected
       // with it (same reasoning as TextareaEditor's input/focus listeners).
+      this.containerEl.addEventListener("focusin", () => {
+        this.hotUntil = Infinity;
+        // A cold editor may be up to COLD_POLL_MS from its next look; the
+        // first keystroke after focusing must not wait for that.
+        if (this.pollHandle !== null) {
+          window.clearTimeout(this.pollHandle);
+          this.schedulePoll(HOT_POLL_MS);
+        }
+      });
       this.containerEl.addEventListener("focusout", (event) => {
         // focusout bubbles for ANY focus change inside the container, not
         // just one that leaves it — CM6's own in-editor search panel,
@@ -454,6 +477,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
         // counts as a real blur.
         const related = event.relatedTarget as Node | null;
         if (related && this.containerEl?.contains(related)) return;
+        this.hotUntil = Date.now() + HOT_LINGER_MS;
         this.blurCallback?.();
       });
     } catch (error) {
@@ -616,39 +640,60 @@ export class ObsidianEmbedEditor implements EntryEditor {
    * construction time — there's no way to verify, without a live Obsidian
    * window, whether replacing it post-construction is ever actually invoked,
    * or whether it silently breaks live preview's own use of the same hook.
-   * Given that risk, this polls instead, exactly as the plan describes: a
-   * string read on an interval, with an early-out once the raw document is
-   * unchanged, so most ticks cost one string comparison.
+   * Given that risk, this polls instead: a string read on a timer, with an
+   * early-out once the raw document is unchanged.
+   *
+   * At two speeds. Every mounted editor used to poll every 250 ms, so 25 idle
+   * editors on a phone woke the CPU 100 times a second for nothing. An editor
+   * in use — focused, or left within `HOT_LINGER_MS` — still polls at
+   * `HOT_POLL_MS`; the rest at `COLD_POLL_MS`, which only has to catch a change
+   * made without focus (a drop, a command) and never loses one: `getValue()`
+   * and `flush()` read the editor directly, so no save path waits on a poll.
    */
   private startPolling(): void {
-    let lastRaw = this.readRaw() ?? "";
+    this.lastRaw = this.readRaw() ?? "";
     // The initial read above may itself have found the embed already
-    // broken and called markUnusable() — without this check, setInterval
-    // below would still be installed regardless, leaving a 250ms loop
-    // running against an editor already flagged unusable, clearable only by
+    // broken and called markUnusable() — without this check, the timer
+    // below would still be installed regardless, leaving a loop running
+    // against an editor already flagged unusable, clearable only by
     // destroy() rather than the markUnusable() path that's supposed to own
     // stopping it.
     if (!this.usable) return;
+    this.schedulePoll(this.nextPollDelay());
+  }
 
-    this.pollHandle = window.setInterval(() => {
-      const raw = this.readRaw();
-      // A null read either means nothing changed relevantly or that
-      // readRaw() just flipped this editor unusable and stopped polling —
-      // either way, nothing to process this tick.
-      if (raw === null || raw === lastRaw) return;
-      lastRaw = raw;
+  private nextPollDelay(): number {
+    return Date.now() < this.hotUntil ? HOT_POLL_MS : COLD_POLL_MS;
+  }
 
+  private schedulePoll(delay: number): void {
+    this.pollHandle = window.setTimeout(() => this.poll(), delay);
+  }
+
+  private poll(): void {
+    this.pollHandle = null;
+
+    const raw = this.readRaw();
+    // A null read either means nothing changed relevantly or that readRaw()
+    // just flipped this editor unusable — in which case it must not be
+    // rescheduled.
+    if (raw !== null && raw !== this.lastRaw) {
+      this.lastRaw = raw;
       const body = this.readBody();
-      if (body === this.lastBody) return;
+      if (body !== this.lastBody) {
+        this.lastBody = body;
+        this.changeCallback?.(body);
+      }
+    }
 
-      this.lastBody = body;
-      this.changeCallback?.(body);
-    }, 250);
+    // The callback above can destroy or remount this editor; only a still
+    // usable editor with no timer of its own carries on.
+    if (this.usable && this.pollHandle === null) this.schedulePoll(this.nextPollDelay());
   }
 
   private stopPolling(): void {
     if (this.pollHandle !== null) {
-      window.clearInterval(this.pollHandle);
+      window.clearTimeout(this.pollHandle);
       this.pollHandle = null;
     }
   }
