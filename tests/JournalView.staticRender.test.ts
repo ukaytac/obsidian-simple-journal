@@ -89,3 +89,51 @@ describe("JournalView static rendering", () => {
     expect((rendered.bodyEl as HTMLElement).textContent).toContain("known text");
   });
 });
+
+describe("JournalView off-screen skipping", () => {
+  it("marks a rendered static body as skippable, and an editor's body as not", async () => {
+    const h = createHarness();
+    const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+    h.service.load();
+    await h.view.onOpen();
+    await settle();
+    const rendered = internals(h.view).rendered.get(a.path);
+    expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(true);
+
+    const mountObserver = internals(h.view).mountObserver as {
+      trigger(states: Array<{ target: Element; isIntersecting: boolean }>): void;
+    };
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+    expect(rendered.editor).not.toBeNull();
+    expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(false);
+
+    mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+    await settle();
+    expect(rendered.editor).toBeNull();
+    expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(true);
+  });
+
+  it("does not mark a body whose render was superseded by a mount", async () => {
+    const h = createHarness();
+    const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+    h.service.load();
+    const gate = deferred();
+    const real = h.repository.readBodyCached.bind(h.repository);
+    vi.spyOn(h.repository, "readBodyCached").mockImplementation(async (file) => {
+      await gate.promise;
+      return real(file);
+    });
+    await h.view.onOpen();
+    const rendered = internals(h.view).rendered.get(a.path);
+    (internals(h.view).mountObserver as {
+      trigger(states: Array<{ target: Element; isIntersecting: boolean }>): void;
+    }).trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+    gate.release();
+    await settle();
+
+    expect(rendered.editor).not.toBeNull();
+    expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(false);
+  });
+});

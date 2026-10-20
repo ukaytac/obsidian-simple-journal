@@ -215,6 +215,11 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
    * either way.
    */
   function mountUsableEditor(target: MountEntry, body: string): EntryEditor {
+    // Never let the browser skip an editor's layout: CodeMirror measures its
+    // own DOM, and a skipped subtree measures as nothing. Every editor —
+    // scrolled into view, remounted on tap, or a committed composer — comes
+    // in through here, so this is the one place that has to say it.
+    target.bodyEl.removeClass("is-static");
     const editor = deps.editorFactory.create();
     wireEditor(target, editor);
 

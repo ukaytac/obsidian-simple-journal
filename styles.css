@@ -226,6 +226,29 @@
   min-height: 4.5em;
 }
 
+/* A statically rendered body may be skipped by the browser while it is off
+   screen: no layout, no paint, until it comes near the viewport again. Every
+   row you have scrolled past used to stay in the layout of every frame, so a
+   long session made scrolling steadily heavier.
+
+   On the body, not the whole row: `content-visibility` brings paint
+   containment, which clips anything overflowing the element it is on, and the
+   row header has a tap target that deliberately overflows (see
+   `.is-mobile .journal-entry-header .journal-entry-time`).
+
+   `auto` in `contain-intrinsic-size` makes the browser remember each body's
+   real height once it has laid it out, so rows above the viewport keep their
+   size and nothing the user is reading moves. The 4.5em is only for a body
+   never laid out yet, and matches `.is-pending`.
+
+   Never on a body holding an editor: `mountUsableEditor` removes the class,
+   because CodeMirror measures its own DOM. Ignored by WebKit before iOS 18,
+   which simply renders as before. */
+.journal-entry-body.is-static {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 4.5em;
+}
+
 .journal-entry-body > :first-child {
   margin-top: 0;
 }

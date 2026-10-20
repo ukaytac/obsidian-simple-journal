@@ -155,6 +155,24 @@ the answers come out right.
 - [ ] **5. New entry.** Run **New journal entry**: the composer opens with the
       caret in it, exactly as before.
 
+## Off-screen rows — needs a running Obsidian
+
+Open, because static entry bodies now carry `content-visibility: auto` (see
+`.journal-entry-body.is-static` in `styles.css`). jsdom has no layout, so none
+of this is visible to the unit tests.
+
+- [ ] **Long session.** Scroll a few hundred entries down and back up, on the
+      desktop and on an iPhone on iOS 18 or later: scrolling stays as smooth
+      at the end as at the start, and nothing above the viewport jumps when
+      scrolling back up.
+- [ ] **Nothing is clipped.** An entry with a table wider than the column, a
+      long code block and an image: each looks the same as before, scrolled
+      far away and back.
+- [ ] **Find still finds.** Obsidian's in-page find (and a screen reader)
+      still reaches text in entries far off screen.
+- [ ] **Editors measure right.** Tap an entry far down the timeline: its
+      editor opens at the right height with the caret where tapped.
+
 ## Fixed: the composer opened without the caret in it
 
 With the Journal tab **closed**, from any other note, the `New journal entry`

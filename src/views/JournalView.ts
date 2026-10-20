@@ -2122,6 +2122,11 @@ export class JournalView extends ItemView {
       if (token === rendered.opToken) {
         bodyEl.style.removeProperty("min-height");
         bodyEl.removeClass("is-pending");
+        // Static, and so safe for the browser to skip while it is off screen
+        // (see `.journal-entry-body.is-static` in styles.css). Set only by the
+        // operation that owns the body, and taken off again by
+        // `mountUsableEditor` before an editor goes in.
+        bodyEl.addClass("is-static");
       }
     }
   }
