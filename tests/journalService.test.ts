@@ -403,7 +403,7 @@ describe("JournalService: rename", () => {
     // The "content" change's `entry` must be the EXACT object `this.index`
     // holds, by reference — not merely an equal-looking one freshly parsed
     // from disk. `applyUpsert`'s "content" branch is the one branch that
-    // never calls `insertSorted`/`removeByPath`, so nothing else re-derives
+    // never calls `EntryIndex.insert`/`remove`, so nothing else re-derives
     // this invariant for it; a caller that locates its target via
     // `index.indexOf(change.entry)` (JournalView.insertEntryInPlace, after a
     // same-timestamp external rename) depends on this exact identity, or the
@@ -924,7 +924,14 @@ describe("JournalService: before and at layout-ready", () => {
     await fake.fileManager.renameFile(file, renamed);
     fake.workspace.fireLayoutReady();
 
-    expect(changes[0]).toEqual({ kind: "removed", path: AUG12 });
+    // The WHOLE sequence, not just its head: a view tears the old row down on
+    // `removed` and only re-renders on the change for the new path, so a
+    // reconcile that stopped after `removed` would make the entry vanish from
+    // an open timeline while the index still held it.
+    expect(changes).toEqual([
+      { kind: "removed", path: AUG12 },
+      { kind: "content", entry: expect.objectContaining({ file }) },
+    ]);
     expect(service.getEntries()).toHaveLength(1);
     expect(service.getEntries()[0].file.path).toBe(renamed);
   });
@@ -959,18 +966,24 @@ describe("JournalService: before and at layout-ready", () => {
 
   it("registers listeners once across a load, unload, load before the layout is ready", () => {
     const { fake, service } = setup();
+    // Counted at registration: duplicate listeners queue the same path and the
+    // pending map dedupes it, so observing behaviour could not tell them apart.
+    const on = vi.spyOn(fake.vault, "on");
     fake.workspace.layoutReady = false;
     service.load();
     service.unload();
     service.load();
     fake.workspace.fireLayoutReady();
-    const changes = collectChanges(service);
 
-    const file = fake.vault.addFile(AUG12, "");
-    fake.vault.trigger("create", file);
-    vi.advanceTimersByTime(300);
+    expect(on.mock.calls.filter(([name]) => name === "create")).toHaveLength(1);
+  });
 
-    expect(changes).toEqual([{ kind: "added", entry: expect.objectContaining({ file }) }]);
+  it("walks the journal once when the layout is already ready", () => {
+    const { repository, service } = setup();
+    const listEntries = vi.spyOn(repository, "listEntries");
+    service.load();
+
+    expect(listEntries).toHaveBeenCalledTimes(1);
   });
 });
 

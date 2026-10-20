@@ -68,9 +68,10 @@ JournalEntry>` keyed by path, and is the only thing that mutates either.
   layout-ready reconcile needs it.
 * `replaceAll(list)` is `rebuild()`'s path.
 
-The pure functions (`insertSorted`, `removeByPath`, `findByPath`,
-`compareEntries`, paging, anchoring) stay exported and keep their tests;
-`EntryIndex` is built on them.
+`insertSorted`, `removeByPath` and `findByPath` were removed: `EntryIndex`
+replaced them and nothing else called them. The rest of the pure functions
+(`insertionIndex`, `compareEntries`, paging, anchoring) stay exported and keep
+their tests; `EntryIndex` is built on them.
 
 `JournalService` swaps its `index: JournalEntry[]` for an `EntryIndex`. The
 rename listener calls `rekey(oldPath)` (see § 3 for why at event time).
@@ -97,7 +98,9 @@ Moving out works as it does today: `rekey` files the record under the new path,
 the upsert finds `entryFor` returns null, and the removal reports the new path
 gone. Folder renames keep their existing `isJournalFolderPath` gate.
 
-`delete` is queued only when `index.has(path)`.
+`delete` goes through the same `queue` gate as every other event (the path is
+indexed, or is an entry file), which matches the old behaviour: the removal of
+an unindexed entry file is a no-op.
 
 ### 3. Listeners wait for the layout; one reconcile replaces the storm
 
@@ -124,9 +127,13 @@ reconcile** at layout-ready, before the listeners are registered:
 3. Emit the changes as one ordinary batch, or nothing when there are none.
 
 On a normal launch the diff is empty and nothing is emitted. Views receive
-ordinary changes, never `reload`. Registered from `onload` before the
-capture-URI handler's `onLayoutReady` callback (`main.ts:189`), so the index is
-current before an `obsidian://simple-journal-new` composer opens.
+ordinary changes, never `reload`. Registered from `onload` before
+the plain `onLayoutReady` callback at the end of `main.ts`'s `onload` (calendar
+leaf, mention settings), so the index is current before a mention footer reads
+it. A URI-opened composer is safe regardless: its callback is queued only when
+a URI is dispatched, later still. When the layout is already ready (plugin
+enabled mid-session) the reconcile is skipped, since `rebuild()` just read the
+same vault.
 
 An event that fires between the reconcile and listener registration cannot be
 missed: both happen synchronously in the same callback.

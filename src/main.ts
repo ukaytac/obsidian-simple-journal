@@ -40,10 +40,13 @@ export default class JournalEntriesPlugin extends Plugin {
     // Ties the service's lifecycle to the plugin: its vault/metadata-cache
     // event registrations are released automatically on unload.
     //
-    // Must stay ABOVE the capture-URI handler's `onLayoutReady` below: the
-    // service queues its own layout-ready reconcile here, and Obsidian runs
-    // those callbacks in the order they were queued, so the index is current
-    // before a URI-opened composer looks at it.
+    // Must stay ABOVE the plain `onLayoutReady` callback at the end of this
+    // method (calendar leaf, mention settings): the service queues its own
+    // layout-ready reconcile here, and Obsidian runs those callbacks in the
+    // order they were queued, so the index is current before a mention footer
+    // reads it. A URI-opened composer is safe regardless: the capture-URI
+    // handler only calls `onLayoutReady` when a URI is dispatched, so its
+    // callback is queued later still.
     this.addChild(this.journal);
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));

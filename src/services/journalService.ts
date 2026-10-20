@@ -33,7 +33,7 @@ function sameTags(a: readonly string[], b: readonly string[]): boolean {
  * so the index stays cheap at tens of thousands of entries.
  *
  * `getEntries()` returns the live backing array, not a copy: `JournalView`
- * aliases it as its own paging cursor list, so an `insertSorted`/`removeByPath`
+ * aliases it as its own paging cursor list, so an `EntryIndex.insert`/`remove`
  * done here (inside `applyUpsert`/`applyRemoval`, always before the changes
  * they produce are emitted) is already reflected by the time listeners run,
  * with no separate hand-off.
@@ -82,16 +82,28 @@ export class JournalService extends Component {
    * them.
    *
    * Ordering that `main.ts` relies on: this callback is queued during
-   * `addChild(journal)`, before `main.ts` queues its own capture-URI callback,
-   * and Obsidian runs them in order — so the index is reconciled before an
-   * `obsidian://simple-journal-new` composer opens.
+   * `addChild(journal)`, before the plain `onLayoutReady` callback at the end
+   * of `main.ts`'s `onload` that ensures the calendar leaf and applies the
+   * mention settings (mention footers read the index). Obsidian runs them in
+   * order, so the index is reconciled before any footer asks it anything. A
+   * composer opened by `obsidian://simple-journal-new` is safe regardless: the
+   * URI handler only calls `onLayoutReady` when a URI is dispatched, so its
+   * callback is queued later still.
+   *
+   * When the plugin is enabled mid-session the layout is already ready, so the
+   * callback runs at once, straight after `rebuild()` read the same vault; the
+   * reconcile is skipped then, because it would walk the journal a second time
+   * to find nothing.
    */
   onload(): void {
     const generation = ++this.loadGeneration;
     this.rebuild();
+    // Read BEFORE `onLayoutReady`, which runs the callback synchronously when
+    // the layout is ready already.
+    const alreadyReady = this.app.workspace.layoutReady;
     this.app.workspace.onLayoutReady(() => {
       if (generation !== this.loadGeneration) return;
-      this.reconcile();
+      if (!alreadyReady) this.reconcile();
       this.registerListeners();
     });
   }
@@ -196,8 +208,16 @@ export class JournalService extends Component {
     // A TFile renamed before the listeners existed still sits under its old
     // key. Refile it and report the old path gone, which is the half of a
     // rename `JournalView` needs to tear down a row rendered at that path.
+    //
+    // The new paths are remembered because `removed` alone would leave the
+    // row gone: the fresh-list loop below must still report the entry at its
+    // new path, or an open timeline tears the old row down and never
+    // reinserts it.
+    const rekeyedPaths = new Set<string>();
     for (const oldPath of this.index.staleKeys()) {
+      const record = this.index.get(oldPath);
       this.index.rekey(oldPath);
+      if (record) rekeyedPaths.add(record.file.path);
       changes.push({ kind: "removed", path: oldPath });
     }
 
@@ -212,8 +232,12 @@ export class JournalService extends Component {
 
     for (const entry of fresh) {
       const existing = this.index.get(entry.file.path);
+      // A rekeyed record always goes through `applyUpsert`, even when it
+      // matches `entry` exactly: its `removed` at the old path has already
+      // been queued, and only this change tells a view to render it again.
       if (
         existing &&
+        !rekeyedPaths.has(entry.file.path) &&
         existing.file === entry.file &&
         existing.created.getTime() === entry.created.getTime() &&
         sameTags(existing.tags, entry.tags)
@@ -418,7 +442,7 @@ export class JournalService extends Component {
    * has nothing keyed by `path` any more: whatever entry used to live there
    * (if any) already reads its NEW path through that same object, and is
    * found instead by the "upsert" queued alongside this for the new path.
-   * `removeByPath` is attempted anyway, for defensiveness (a harmless no-op
+   * `EntryIndex.remove` is attempted anyway, for defensiveness (a harmless no-op
    * in the ordinary case), but unlike `applyRemoval`, "removed" is returned
    * UNCONDITIONALLY regardless of its result.
    *
@@ -460,7 +484,7 @@ export class JournalService extends Component {
     // place for a rename (see `applyRenameSource`'s doc), and `.created`
     // matches `entry`'s own. Deliberately returns `existing`, NOT the
     // freshly-parsed `entry`: this is the one `applyUpsert` branch that
-    // never calls `insertSorted`/`removeByPath`, so `entry` is never
+    // never calls `EntryIndex.insert`/`remove`, so `entry` is never
     // spliced into `this.index` — a caller that locates its target via
     // `this.index.indexOf(...)` (e.g. `JournalView.insertEntryInPlace`,
     // reachable here after a same-timestamp rename) needs the exact object

@@ -5,10 +5,7 @@ import {
   anchorSeed,
   compareEntries,
   EntryIndex,
-  findByPath,
-  insertSorted,
   pageAfter,
-  removeByPath,
   sliceBefore,
   sortEntries,
 } from "../src/services/entryIndex";
@@ -85,91 +82,57 @@ describe("compareEntries", () => {
   });
 });
 
-describe("insertSorted", () => {
-  it("puts a newer entry at the top", () => {
-    const list = [aug12_1723, aug12_0934];
-    const index = insertSorted(list, aug12_2241);
-    expect(index).toBe(0);
-    expect(list[0]).toBe(aug12_2241);
-  });
-
-  it("puts an older entry at the bottom", () => {
-    const list = [aug12_2241, aug12_1723];
-    expect(insertSorted(list, aug11_2110)).toBe(2);
-  });
-
-  it("inserts into the middle at the right position", () => {
-    const list = [aug12_2241, aug12_0934];
-    expect(insertSorted(list, aug12_1723)).toBe(1);
-    expect(list.map((e) => e.file.basename)).toEqual([
+describe("EntryIndex.insert ordering", () => {
+  it("returns the position: newer at the top, older at the bottom, else in the middle", () => {
+    const index = new EntryIndex();
+    index.insert(aug12_1723);
+    index.insert(aug12_0934);
+    expect(index.insert(aug12_2241)).toBe(0);
+    expect(index.insert(aug11_2110)).toBe(3);
+    expect(index.entries.map((e) => e.file.basename)).toEqual([
       "2026-08-12-22-41-52",
       "2026-08-12-17-23-41",
       "2026-08-12-09-34-21",
+      "2026-08-11-21-10-00",
     ]);
   });
 
-  it("keeps the list consistent with compareEntries", () => {
-    const list: JournalEntry[] = [];
-    for (const e of [aug12_0934, aug12_2241, aug11_2110, aug12_1723]) insertSorted(list, e);
-    expect(list).toEqual(sortEntries(list));
+  it("keeps the list consistent with compareEntries whatever the insertion order", () => {
+    const index = new EntryIndex();
+    for (const e of [aug12_0934, aug12_2241, aug11_2110, aug12_1723]) index.insert(e);
+    expect(index.entries).toEqual(sortEntries(index.entries));
   });
 
   it("replaces the stale copy when the same path is reinserted with a new timestamp", () => {
-    // The exact mutation the service runs when an entry's created time is
-    // edited: remove-then-reinsert under the same path. Simulated without
-    // the upsert this leaves two copies, one of them stale forever.
-    const list = [aug12_2241, aug12_1723, aug12_0934];
+    // The mutation the service runs when an entry's created time is edited.
+    const index = new EntryIndex();
+    for (const e of [aug12_0934, aug12_1723, aug12_2241]) index.insert(e);
     const edited: JournalEntry = {
       file: aug12_1723.file,
       created: new Date(2026, 7, 12, 23, 0, 0), // now newer than aug12_2241
       tags: [],
     };
 
-    insertSorted(list, edited);
+    index.insert(edited);
 
-    expect(list.filter((e) => e.file.path === aug12_1723.file.path)).toHaveLength(1);
-    expect(list[0]).toBe(edited);
-    expect(list.map((e) => e.file.basename)).toEqual([
+    expect(index.entries.filter((e) => e.file.path === aug12_1723.file.path)).toHaveLength(1);
+    expect(index.entries[0]).toBe(edited);
+    expect(index.entries.map((e) => e.file.basename)).toEqual([
       "2026-08-12-17-23-41",
       "2026-08-12-22-41-52",
       "2026-08-12-09-34-21",
     ]);
   });
 
-  it("keeps exactly one, newest, copy when inserted twice with the same path", () => {
-    const list: JournalEntry[] = [];
-    const first: JournalEntry = { file: aug12_1723.file, created: aug12_1723.created, tags: [] };
-    const second: JournalEntry = {
-      file: aug12_1723.file,
-      created: new Date(2026, 7, 12, 18, 0, 0),
-      tags: [],
-    };
-
-    insertSorted(list, first);
-    insertSorted(list, second);
-
-    expect(list).toHaveLength(1);
-    expect(list[0]).toBe(second);
-  });
-});
-
-describe("removeByPath and findByPath", () => {
-  it("removes the matching entry and reports its old index", () => {
-    const list = [aug12_2241, aug12_1723, aug12_0934];
-    expect(removeByPath(list, aug12_1723.file.path)).toBe(1);
-    expect(list.map((e) => e.file.basename)).toEqual([
+  it("remove reports the former position, or -1 for an unknown path", () => {
+    const index = new EntryIndex();
+    for (const e of [aug12_2241, aug12_1723, aug12_0934]) index.insert(e);
+    expect(index.remove(aug12_1723.file.path)).toBe(1);
+    expect(index.remove("Journal/nope.md")).toBe(-1);
+    expect(index.entries.map((e) => e.file.basename)).toEqual([
       "2026-08-12-22-41-52",
       "2026-08-12-09-34-21",
     ]);
-  });
-
-  it("returns -1 for an unknown path", () => {
-    expect(removeByPath([aug12_2241], "Journal/nope.md")).toBe(-1);
-    expect(findByPath([aug12_2241], "Journal/nope.md")).toBeNull();
-  });
-
-  it("finds an entry by path", () => {
-    expect(findByPath([aug12_2241, aug12_1723], aug12_1723.file.path)).toBe(aug12_1723);
   });
 });
 

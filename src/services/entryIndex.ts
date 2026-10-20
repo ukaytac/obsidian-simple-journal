@@ -46,30 +46,6 @@ export function insertionIndex(list: readonly JournalEntry[], entry: JournalEntr
 }
 
 /**
- * Inserts into an already sorted list and returns the insertion index. If an
- * entry with the same path is already present (e.g. its timestamp was
- * edited), that stale copy is removed first so the list never accumulates
- * duplicate paths.
- */
-export function insertSorted(list: JournalEntry[], entry: JournalEntry): number {
-  removeByPath(list, entry.file.path);
-  const low = insertionIndex(list, entry);
-  list.splice(low, 0, entry);
-  return low;
-}
-
-/** Removes the entry with this path. Returns its former index, or -1. */
-export function removeByPath(list: JournalEntry[], path: string): number {
-  const index = list.findIndex((entry) => entry.file.path === path);
-  if (index >= 0) list.splice(index, 1);
-  return index;
-}
-
-export function findByPath(list: JournalEntry[], path: string): JournalEntry | null {
-  return list.find((entry) => entry.file.path === path) ?? null;
-}
-
-/**
  * Date-based paging: entries strictly older than `before`.
  * Prefer `pageAfter` for timeline paging — see the note in this module's task.
  */
@@ -204,7 +180,16 @@ export class EntryIndex {
     return this.byPath.has(path);
   }
 
-  /** Files `entry` under its path, replacing any record already there. Returns its position. */
+  /**
+   * Files `entry` under its path, replacing any record already there. Returns
+   * its position.
+   *
+   * It removes by the entry's CURRENT path, so while a stale key exists for
+   * the same file (a `TFile` renamed in place, before the layout-ready
+   * reconcile) the old record sits under the old key and a second row could
+   * result. Nothing else needs to guard that: the reconcile repairs stale keys
+   * before it upserts anything, and the rename listener rekeys at event time.
+   */
   insert(entry: JournalEntry): number {
     this.remove(entry.file.path);
     const index = insertionIndex(this.list, entry);
