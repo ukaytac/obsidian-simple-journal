@@ -218,6 +218,14 @@
   line-height: var(--line-height-normal);
 }
 
+/* A body whose first render has not landed yet. Roughly three lines, so the
+   timeline is close to its real height before the bodies arrive and the
+   pager's sentinel is not pulled into view by forty empty rows. Removed by
+   `renderStatic` the moment the render lands. */
+.journal-entry-body.is-pending {
+  min-height: 4.5em;
+}
+
 .journal-entry-body > :first-child {
   margin-top: 0;
 }

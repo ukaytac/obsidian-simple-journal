@@ -96,7 +96,8 @@ describe("JournalView generation/opToken race guards", () => {
     // Simulates a fresh static re-render already in flight for this entry
     // (e.g. one `unmountEditor` just started) when a reload supersedes it.
     const staticPromise = internals(h.view).renderStatic(rendered);
-    expect(rendered.bodyEl.textContent).toBe("");
+    // Read first, swap second: nothing has been emptied while reading.
+    expect(rendered.bodyEl.textContent).toBe("original body");
 
     await h.view.reload();
 
@@ -105,9 +106,9 @@ describe("JournalView generation/opToken race guards", () => {
     await settle();
 
     // Guarded: the stale entry's `bodyEl` is never written into once its
-    // generation has been superseded, so it stays exactly as this
-    // (superseded) renderStatic call itself left it before awaiting.
-    expect(rendered.bodyEl.textContent).toBe("");
+    // generation has been superseded, so it keeps what was on screen when
+    // this (superseded) renderStatic call started reading.
+    expect(rendered.bodyEl.textContent).toBe("original body");
   });
 
   it("unmountEditor bails on a reload that lands while its flush is still in flight", async () => {

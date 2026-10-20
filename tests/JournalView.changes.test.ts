@@ -678,3 +678,24 @@ describe("JournalView commitEntryTimeChange: cross-month reordering, not an anch
     expect(timelineEl(h.view).querySelectorAll(".journal-month-header")).toHaveLength(2);
   });
 });
+
+describe("external change to a statically rendered entry", () => {
+  it("re-renders from the one uncached read it already made", async () => {
+    const h = createHarness();
+    const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "before");
+    h.service.load();
+    await h.view.onOpen();
+    await settle();
+    const cached = vi.spyOn(h.repository, "readBodyCached");
+    const uncached = vi.spyOn(h.repository, "readBody");
+
+    h.app.vault.contents.set(a.path, "after");
+    h.app.vault.trigger("modify", a);
+    vi.advanceTimersByTime(300);
+    await settle();
+
+    expect(uncached).toHaveBeenCalledTimes(1);
+    expect(cached).not.toHaveBeenCalled();
+    expect(internals(h.view).rendered.get(a.path).bodyEl.textContent).toContain("after");
+  });
+});

@@ -86,8 +86,8 @@ export interface MountDeps {
   getGeneration(): number;
   /** `EntryRepository.readBody`. */
   readBody(file: TFile): Promise<string>;
-  /** `JournalView.renderStatic` — the static-rendering fallback, not part of this seam. */
-  renderStatic(target: MountEntry): Promise<void>;
+  /** `JournalView.renderStatic` — the static-rendering fallback, not part of this seam. `knownBody`, when given, is rendered as is and nothing is read. */
+  renderStatic(target: MountEntry, knownBody?: string): Promise<void>;
   editorFactory: EntryEditorFactory;
   /** `this.rendered.get(path)` — storage for `RenderedEntry` is not part of this seam. */
   lookup(path: string): MountEntry | undefined;

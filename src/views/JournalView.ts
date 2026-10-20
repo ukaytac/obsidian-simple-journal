@@ -417,7 +417,7 @@ export class JournalView extends ItemView {
   private readonly mountLifecycle: MountLifecycle = createMountLifecycle(this.mountOrder, MAX_MOUNTED_EDITORS, {
     getGeneration: () => this.generation,
     readBody: (file) => this.plugin.repository.readBody(file),
-    renderStatic: (target) => this.renderStatic(target as RenderedEntry),
+    renderStatic: (target, knownBody) => this.renderStatic(target as RenderedEntry, knownBody),
     editorFactory: this.plugin.editorFactory,
     lookup: (path) => this.rendered.get(path),
     save: this.saveDeps,
@@ -442,7 +442,7 @@ export class JournalView extends ItemView {
     setRendered: (path, rendered) => this.rendered.set(path, rendered as RenderedEntry),
     renderedCount: () => this.rendered.size,
     createEntryEl: (entry) => this.createEntryEl(entry),
-    renderStatic: (target) => this.renderStatic(target as RenderedEntry),
+    renderStatic: (target, knownBody) => this.renderStatic(target as RenderedEntry, knownBody),
     observeForMount: (el) => this.mountObserver?.observe(el),
     getIndex: () => this.index,
     getAnchorDate: () => this.anchorDate,
@@ -480,7 +480,7 @@ export class JournalView extends ItemView {
     insertEntryInPlace: (entry) => this.insertEntryInPlace(entry),
     removeEmptyDayGroups: () => this.removeEmptyDayGroups(),
     readBody: (file) => this.plugin.repository.readBody(file),
-    renderStatic: (rendered) => this.renderStatic(rendered as RenderedEntry),
+    renderStatic: (rendered, knownBody) => this.renderStatic(rendered as RenderedEntry, knownBody),
     fileIdentityStillValid: (file) => this.app.vault.getAbstractFileByPath(file.path) === file,
     logUnsavedTextIfLost: (rendered) => this.logUnsavedTextIfLost(rendered as RenderedEntry),
     clearMobileTimers: (rendered) => this.clearMobileTimers(rendered as RenderedEntry),
@@ -1916,6 +1916,7 @@ export class JournalView extends ItemView {
 
   /**
    * Read-only rendering of an entry, used when no editor is mounted for it.
+   * `knownBody`, when given, is rendered as is and nothing is read.
    *
    * Bumps and re-checks `rendered.opToken` around its one await, same
    * reasoning as `mountEditor`: `appendEntry` calls this and hands the entry
@@ -1925,53 +1926,61 @@ export class JournalView extends ItemView {
    * static Markdown into `bodyEl` after `mountEditor` already mounted a live
    * editor into it.
    */
-  private async renderStatic(rendered: RenderedEntry): Promise<void> {
+  private async renderStatic(rendered: RenderedEntry, knownBody?: string): Promise<void> {
     const generation = this.generation;
-    // Bail before creating any Component if a reload() already ran (e.g. a
-    // future caller that awaits renderStatic before this resumes). Checked
-    // here, first, so a bail can never leave a loaded Component attached to
-    // a RenderedEntry that this.rendered no longer references — nothing
-    // downstream would unload it.
     if (generation !== this.generation) return;
     const token = ++rendered.opToken;
+    const bodyEl = rendered.bodyEl;
+
+    // A body that has never shown anything gets a placeholder height until it
+    // does (see `.journal-entry-body.is-pending` in styles.css). Without it a
+    // fresh page is forty bare headers tall, and the pager's sentinel sits far
+    // higher than it will once the bodies arrive.
+    if (rendered.renderComponent === null && bodyEl.childElementCount === 0) {
+      bodyEl.addClass("is-pending");
+    }
+
+    // Cached: this only displays, and nothing read here is ever written back.
+    // The editor's baseline keeps coming from the uncached `readBody` in
+    // `mountEditor`, which is what the save path's dirty check relies on.
+    const body = knownBody ?? (await this.plugin.repository.readBodyCached(rendered.entry.file));
+    // Re-check both: a reload may have landed while reading (generation), or
+    // `mountEditor` / a newer render may have taken this entry over (opToken).
+    // Nothing has been touched yet, so bailing leaves whatever is on screen.
+    if (generation !== this.generation) return;
+    if (token !== rendered.opToken) return;
+
+    // Read first, swap second, and hold the height across the swap: emptying
+    // the body collapses it to nothing until the render lands, and on iOS —
+    // no scroll anchoring — every collapse above the viewport moves the text
+    // the user is reading.
+    const height = bodyEl.offsetHeight;
+    if (height > 0) bodyEl.style.minHeight = `${height}px`;
 
     rendered.renderComponent?.unload();
-    rendered.bodyEl.empty();
-
+    bodyEl.empty();
     const component = new Component();
     component.load();
     rendered.renderComponent = component;
 
-    const body = await this.plugin.repository.readBody(rendered.entry.file);
-    // Re-check both: the reload may have landed while readBody was in
-    // flight (generation), or mountEditor may have taken over this entry in
-    // the meantime (opToken) — either way, bail rather than render into a
-    // bodyEl this operation no longer owns.
-    //
-    // Note this bails WITHOUT unloading the `component` just created above —
-    // safe only because whatever superseded it already unloaded
-    // `rendered.renderComponent` first: `clearTimeline`'s own destroy loop
-    // (the generation-mismatch case) does this synchronously before it ever
-    // awaits anything, and `mountEditor` (the opToken-mismatch case) unloads
-    // it synchronously before its own await, i.e. before this line could ever
-    // run. A future caller that awaits something before superseding this one
-    // would leak that Component instead of this bail catching it.
-    if (generation !== this.generation) return;
-    if (token !== rendered.opToken) return;
-
-    // `body` is already separator-free (EntryRepository.readBody's job).
-    // Shared with the mentions panel (see `normalizeBodyForRender`): the two
-    // render the same entry, so the rule for what counts as a leading blank
-    // line cannot live in only one of them.
-    const strippedBody = normalizeBodyForRender(body);
-
-    await MarkdownRenderer.render(
-      this.app,
-      strippedBody,
-      rendered.bodyEl,
-      rendered.entry.file.path,
-      component,
-    );
+    try {
+      // `body` is already separator-free (EntryRepository's job). Shared with
+      // the mentions panel (see `normalizeBodyForRender`).
+      await MarkdownRenderer.render(
+        this.app,
+        normalizeBodyForRender(body),
+        bodyEl,
+        rendered.entry.file.path,
+        component,
+      );
+    } finally {
+      // Only the operation that still owns the body clears its marks; one that
+      // superseded this has already set them the way it needs them.
+      if (token === rendered.opToken) {
+        bodyEl.style.removeProperty("min-height");
+        bodyEl.removeClass("is-pending");
+      }
+    }
   }
 
   /**

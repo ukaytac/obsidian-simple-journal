@@ -127,8 +127,8 @@ export interface ChangeApplicationDeps {
   removeEmptyDayGroups(): void;
   /** `EntryRepository.readBody`. */
   readBody(file: ChangeEntry["entry"]["file"]): Promise<string>;
-  /** `this.renderStatic` — the static-rendering fallback, not part of this seam. */
-  renderStatic(rendered: ChangeEntry): Promise<void>;
+  /** `this.renderStatic` — the static-rendering fallback, not part of this seam. `knownBody`, when given, is rendered as is and nothing is read. */
+  renderStatic(rendered: ChangeEntry, knownBody?: string): Promise<void>;
   /**
    * Whether `file` still resolves, BY IDENTITY, somewhere in the current
    * vault state — `this.app.vault.getAbstractFileByPath(file.path) ===
@@ -367,7 +367,9 @@ export function createChangeApplication(mountOrder: string[], deps: ChangeApplic
       return;
     }
 
-    await deps.renderStatic(rendered);
+    // The uncached read above is the one that saw the external change; render
+    // exactly that, rather than reading a second time through the cache.
+    await deps.renderStatic(rendered, body);
   }
 
   /**
