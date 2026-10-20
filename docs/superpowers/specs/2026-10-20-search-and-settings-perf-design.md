@@ -1,7 +1,7 @@
 # Search and the settings tab: stop redoing the same work
 
 **Date:** 2026-10-20
-**Status:** approved design, not yet implemented
+**Status:** approved, implemented
 **Scope:** group D of the 2026-10-20 performance audit. Stacked on
 `perf/timeline-smoothness`. No user-visible behaviour change: the same results,
 the same rows, the same button state.
