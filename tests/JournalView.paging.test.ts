@@ -8,9 +8,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   document.body.innerHTML = "";
 });
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
 
 /** Entries an hour apart, newest at `newest`, oldest `count - 1` hours before it. */
 function seedHourly(h: ReturnType<typeof createHarness>, newest: Date, count: number): Date[] {
@@ -116,5 +125,31 @@ describe("JournalView paging", () => {
     ).map((el) => el.dataset.path);
     expect(new Set(domPaths).size).toBe(44);
     expect(domPaths).not.toContain(cursorPath);
+  });
+
+  it("does not re-ask the sentinel until the new page's bodies have rendered", async () => {
+    const h = createHarness();
+    seedHourly(h, new Date(2026, 7, 12, 0, 0, 0), 100);
+    h.service.load();
+    await h.view.onOpen();
+    await settle();
+
+    const gate = deferred();
+    const real = h.repository.readBodyCached.bind(h.repository);
+    vi.spyOn(h.repository, "readBodyCached").mockImplementation(async (file) => {
+      await gate.promise;
+      return real(file);
+    });
+    const observer = internals(h.view).observer as FakeIntersectionObserver;
+    const reobserve = vi.spyOn(observer, "observe");
+
+    observer.trigger([{ target: internals(h.view).sentinelEl, isIntersecting: true }]);
+    await settle();
+    expect(internals(h.view).rendered.size).toBe(80);
+    expect(reobserve).not.toHaveBeenCalled();
+
+    gate.release();
+    await settle();
+    expect(reobserve).toHaveBeenCalledTimes(1);
   });
 });

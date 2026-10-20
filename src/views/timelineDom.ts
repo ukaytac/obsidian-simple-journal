@@ -85,7 +85,7 @@ export interface TimelineDom {
   rebuildMonthHeaders(): void;
   removeEmptyDayGroups(): void;
   insertEntryInPlace(entry: JournalEntry): void;
-  appendEntry(entry: JournalEntry): void;
+  appendEntry(entry: JournalEntry): Promise<void>;
   renderEmptyState(anchored?: boolean, scope?: JournalScope | null): void;
   /** Clears `dayGroups`/`lastRenderedMonth`. Called by `clearTimeline`. */
   reset(): void;
@@ -232,16 +232,20 @@ export function createTimelineDom(deps: TimelineDomDeps): TimelineDom {
    * while the first stays in the DOM, still `observe()`d, its editor (if
    * mounted) never destroyed: a leaked editor, and for `ObsidianEmbedEditor`
    * a leaked 250ms poll, for the rest of the session.
+   *
+   * Returns the static render it starts, so the pager can wait for real
+   * heights (see `JournalView.onSentinelVisible`).
    */
-  function appendEntry(entry: JournalEntry): void {
-    if (deps.hasRendered(entry.file.path)) return;
+  function appendEntry(entry: JournalEntry): Promise<void> {
+    if (deps.hasRendered(entry.file.path)) return Promise.resolve();
 
     const group = ensureDayGroup(entry.created, "append");
     const rendered = deps.createEntryEl(entry);
     group.appendChild(rendered.el);
     deps.setRendered(entry.file.path, rendered);
-    void deps.renderStatic(rendered);
+    const renderedStatic = deps.renderStatic(rendered);
     deps.observeForMount(rendered.el);
+    return renderedStatic;
   }
 
   /**

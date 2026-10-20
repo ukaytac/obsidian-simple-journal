@@ -286,6 +286,13 @@ export class JournalView extends ItemView {
   /** Consecutive pages loaded in the current forced-reobserve burst. */
   private burstCount = 0;
   /**
+   * The static renders of the page `loadNextPage` appended last.
+   * `onSentinelVisible` waits for them before re-asking the sentinel, so the
+   * question "is it still in range?" is answered against real heights rather
+   * than a page of empty rows.
+   */
+  private lastPageRendered: Promise<unknown> = Promise.resolve();
+  /**
    * Paths of entries with a mounted editor, oldest-mounted first. `readonly`
    * deliberately: `mountLifecycle` (below) closes over this exact array once,
    * at construction, so nothing may ever replace it wholesale — only mutate
@@ -958,10 +965,12 @@ export class JournalView extends ItemView {
       const page = this.nextPage();
       if (page.length === 0) return "exhausted";
 
+      const renders: Promise<void>[] = [];
       for (const entry of page) {
         if (generation !== this.generation) return "exhausted";
-        this.appendEntry(entry);
+        renders.push(this.appendEntry(entry));
       }
+      this.lastPageRendered = Promise.allSettled(renders);
 
       if (generation !== this.generation) return "exhausted";
 
@@ -1125,6 +1134,12 @@ export class JournalView extends ItemView {
     // Keep the sentinel below the newly appended entries.
     if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
 
+    // Re-asking straight after the append measured forty empty rows and
+    // loaded another page, and another — the iOS "scrolls by itself" bug.
+    // The renders settle (allSettled), so a failed read only ends the wait.
+    await this.lastPageRendered;
+    if (generation !== this.generation) return;
+
     if (this.burstCount >= MAX_BURST_PAGES) {
       // Bound hit: stop forcing further checks. The sentinel is still
       // observed, so a genuine scroll (a real transition, not one we forced)
@@ -1223,8 +1238,8 @@ export class JournalView extends ItemView {
    * why; this wrapper exists only so calls go through `this.` (see
    * `renderEmptyState`'s doc above).
    */
-  private appendEntry(entry: JournalEntry): void {
-    this.timelineDom.appendEntry(entry);
+  private appendEntry(entry: JournalEntry): Promise<void> {
+    return this.timelineDom.appendEntry(entry);
   }
 
   /**
