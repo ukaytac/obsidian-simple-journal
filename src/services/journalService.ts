@@ -1,7 +1,7 @@
 import { App, Component, TAbstractFile, TFile, TFolder } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import type { EntryRepository } from "../journal/entryRepository";
-import { findByPath, insertSorted, removeByPath } from "./entryIndex";
+import { EntryIndex } from "./entryIndex";
 
 export type JournalChange =
   | { kind: "added"; entry: JournalEntry }
@@ -40,7 +40,7 @@ const FOLDER_RELOAD_KEY = "__journal-folder-reload__";
  * empty) can do it once per batch instead of once per change.
  */
 export class JournalService extends Component {
-  private index: JournalEntry[] = [];
+  private index = new EntryIndex();
   private listeners = new Set<(changes: JournalChange[]) => void>();
   private selfWrites = new Map<string, number>();
   private pending = new Map<string, "upsert" | "remove" | "renameSource" | "folderReload">();
@@ -80,6 +80,12 @@ export class JournalService extends Component {
           return;
         }
 
+        // Refiled now, at event time, not at flush: Obsidian has already
+        // renamed this TFile in place, so until this runs the index would
+        // answer a lookup by the new path with nothing, and a caller between
+        // here and the flush (`applyKnownEntry` from a time correction) would
+        // insert a second row for the same file.
+        this.index.rekey(oldPath);
         // Queued as "renameSource", not a plain "remove": see
         // `applyRenameSource`'s doc for why a plain removal would silently
         // never fire here.
@@ -124,12 +130,12 @@ export class JournalService extends Component {
    * hand for exactly this reason. A subscription alone will never see it.
    */
   rebuild(): void {
-    this.index = this.repository.listEntries();
+    this.index.replaceAll(this.repository.listEntries());
   }
 
   /** The live, sorted index. See this class's doc for why this is not a copy. */
   getEntries(): JournalEntry[] {
-    return this.index;
+    return this.index.entries;
   }
 
   /**
@@ -290,7 +296,7 @@ export class JournalService extends Component {
   }
 
   private applyRemoval(path: string): JournalChange | null {
-    if (removeByPath(this.index, path) < 0) return null;
+    if (this.index.remove(path) < 0) return null;
     return { kind: "removed", path };
   }
 
@@ -314,23 +320,27 @@ export class JournalService extends Component {
    * rename already happened before this ever runs. Safe to report even when
    * `path` was never a real entry (nothing outside the journal folder is
    * ever rendered, so `JournalView` simply no-ops on it).
+   *
+   * The rename listener has already refiled the record under its new path
+   * (`EntryIndex.rekey`), so the removal here is the defensive no-op it was
+   * always described as.
    */
   private applyRenameSource(path: string): JournalChange {
-    removeByPath(this.index, path);
+    this.index.remove(path);
     return { kind: "removed", path };
   }
 
   private applyUpsert(entry: JournalEntry): JournalChange {
-    const existing = findByPath(this.index, entry.file.path);
+    const existing = this.index.get(entry.file.path);
 
     if (!existing) {
-      insertSorted(this.index, entry);
+      this.index.insert(entry);
       return { kind: "added", entry };
     }
 
     if (existing.created.getTime() !== entry.created.getTime()) {
-      removeByPath(this.index, entry.file.path);
-      insertSorted(this.index, entry);
+      // `insert` drops the record already filed under this path first.
+      this.index.insert(entry);
       return { kind: "moved", entry };
     }
 

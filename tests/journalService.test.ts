@@ -834,3 +834,19 @@ describe("JournalService: onChange unsubscribe", () => {
     expect(b).toHaveLength(1);
   });
 });
+
+describe("JournalService: rename bookkeeping", () => {
+  it("finds an entry renamed moments ago under its new path, before the flush", async () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+
+    await fake.fileManager.renameFile(file, "Journal/2026/08/2026-08-12-22-41-52-2.md");
+    // No timer advance: the rename event has fired, the flush has not.
+    // `JournalView.changeEntryTime` can call this in exactly that window.
+    service.applyKnownEntry({ file, created: new Date(2026, 6, 1, 8, 0, 0), tags: [] });
+
+    expect(service.getEntries()).toHaveLength(1);
+    expect(service.getEntries()[0].file).toBe(file);
+  });
+});
