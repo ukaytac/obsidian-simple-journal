@@ -956,4 +956,20 @@ describe("JournalService: before and at layout-ready", () => {
 
     expect(service.getEntries().map((e) => e.file.path)).not.toContain(AUG12);
   });
+
+  it("registers listeners once across a load, unload, load before the layout is ready", () => {
+    const { fake, service } = setup();
+    fake.workspace.layoutReady = false;
+    service.load();
+    service.unload();
+    service.load();
+    fake.workspace.fireLayoutReady();
+    const changes = collectChanges(service);
+
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([{ kind: "added", entry: expect.objectContaining({ file }) }]);
+  });
 });

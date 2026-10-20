@@ -49,8 +49,11 @@ export class JournalService extends Component {
   private selfWrites = new Map<string, number>();
   private pending = new Map<string, "upsert" | "remove" | "renameSource" | "folderReload">();
   private flushHandle: number | null = null;
-  /** Set by `onunload`, so a layout-ready callback queued before it registers nothing. */
-  private unloaded = false;
+  /**
+   * Bumped by every load and unload, so a layout-ready callback queued by an
+   * earlier load — or one still queued when this unloaded — registers nothing.
+   */
+  private loadGeneration = 0;
 
   constructor(
     private readonly app: App,
@@ -84,12 +87,10 @@ export class JournalService extends Component {
    * `obsidian://simple-journal-new` composer opens.
    */
   onload(): void {
-    // A Component can be loaded again after an unload; the guard below is for
-    // a callback queued by an EARLIER load, so each load starts it cleared.
-    this.unloaded = false;
+    const generation = ++this.loadGeneration;
     this.rebuild();
     this.app.workspace.onLayoutReady(() => {
-      if (this.unloaded) return;
+      if (generation !== this.loadGeneration) return;
       this.reconcile();
       this.registerListeners();
     });
@@ -152,7 +153,7 @@ export class JournalService extends Component {
   }
 
   onunload(): void {
-    this.unloaded = true;
+    this.loadGeneration++;
     if (this.flushHandle !== null) window.clearTimeout(this.flushHandle);
     this.listeners.clear();
     this.selfWrites.clear();
