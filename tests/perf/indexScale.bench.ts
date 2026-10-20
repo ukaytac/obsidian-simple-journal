@@ -50,12 +50,14 @@ function flushNow(service: JournalService): void {
 }
 
 describe("JournalService at 50k entries + 50k other notes", () => {
-  // Every case below seeds its own vault inside the timed body, so this is
-  // the floor each of them stands on. Subtract it to read a case's own cost;
-  // it does not depend on JournalService, so one measurement serves both the
-  // before and the after run.
-  bench("reference: seeding the vault only", () => {
-    seed();
+  // Every case below seeds its own vault AND runs `service.load()` (a full
+  // `listEntries`) inside the timed body, so this is the floor each of them
+  // stands on. Subtract it to read a case's own cost.
+  bench("reference: seeding the vault and loading the index", () => {
+    const { fake, repository } = seed();
+    const service = new JournalService(fake as unknown as App, repository);
+    service.load();
+    service.unload();
   }, ONCE);
 
   bench(
@@ -90,13 +92,13 @@ describe("JournalService at 50k entries + 50k other notes", () => {
   );
 
   bench(
-    "typing elsewhere: 100 modify+changed pairs on a non-journal note, flushed each time",
+    "typing elsewhere: 10000 modify+changed pairs on a non-journal note, flushed each time",
     () => {
       const { fake, others, repository } = seed();
       const service = new JournalService(fake as unknown as App, repository);
       service.load();
       const note = others[0];
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 10_000; i++) {
         fake.vault.trigger("modify", note);
         fake.metadataCache.trigger("changed", note);
         flushNow(service);

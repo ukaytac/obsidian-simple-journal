@@ -1113,6 +1113,59 @@ describe("ObsidianEmbedEditor: polling speed", () => {
     expect(changes).toEqual(["STILL HOT.\n"]);
   });
 
+  it("a stream of focusin events cannot starve the poll", () => {
+    // focusin bubbles for every focus move inside the container (tabbing
+    // through table cells). Re-arming a fresh HOT_POLL_MS timer on each one
+    // pushes the next poll out every time, so focusin faster than the poll
+    // interval meant zero polls and an unreported change.
+    const { setDoc, changes, container } = mounted();
+    const el = embedEl(container);
+    el.dispatchEvent(new FocusEvent("focusin"));
+    setDoc(replaceBody(SEEDED_DOC, "TYPED DURING A STORM.\n"));
+
+    for (let elapsed = 0; elapsed < 2000; elapsed += 200) {
+      vi.advanceTimersByTime(200);
+      el.dispatchEvent(new FocusEvent("focusin"));
+    }
+
+    expect(changes).toEqual(["TYPED DURING A STORM.\n"]);
+  });
+
+  it("a poll whose callback destroys the editor leaves no timer behind", () => {
+    const { editor, setDoc, changes } = mounted();
+    // Past the mount-time work, so the count below is the poll timer alone.
+    vi.advanceTimersByTime(1);
+    expect(vi.getTimerCount()).toBe(1);
+    editor.onChange((value) => {
+      changes.push(value);
+      editor.destroy();
+    });
+
+    setDoc(replaceBody(SEEDED_DOC, "BYE.\n"));
+    vi.advanceTimersByTime(COLD_POLL_MS);
+
+    expect(changes).toEqual(["BYE.\n"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a poll whose callback remounts the editor leaves exactly one timer", () => {
+    // mount() is idempotent (a second call discards the current embed), so
+    // that is the remount path exercised here.
+    const { editor, setDoc, changes, container } = mounted();
+    vi.advanceTimersByTime(1);
+    expect(vi.getTimerCount()).toBe(1);
+    editor.onChange((value) => {
+      changes.push(value);
+      editor.mount(container, fakeFile(), SEEDED_BODY);
+    });
+
+    setDoc(replaceBody(SEEDED_DOC, "AGAIN.\n"));
+    vi.advanceTimersByTime(COLD_POLL_MS);
+
+    expect(changes).toEqual(["AGAIN.\n"]);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
   it("flush() reports text the slow poll has not seen yet", () => {
     // What makes eviction safe at any polling speed: `flushSave` calls
     // `flush()` first, and `isDirty` reads `getValue()`, neither of which

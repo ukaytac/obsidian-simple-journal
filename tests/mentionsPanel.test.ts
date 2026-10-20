@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, TFile } from "obsidian";
 import { MarkdownRenderer } from "obsidian";
-import { createFakeApp, installDomHelpers } from "./obsidian-mock";
+import { createFakeApp, installDomHelpers, TFolder } from "./obsidian-mock";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
 import {
@@ -409,6 +409,25 @@ describe("createMentionsPanel", () => {
       await vi.advanceTimersByTimeAsync(500);
 
       expect(reads).not.toHaveBeenCalled();
+      panel.destroy();
+    });
+
+    it("always re-renders for a reload, the batch that says anything may have changed", async () => {
+      const { app, plugin, target, container } = setup(1);
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      const reads = vi.spyOn(plugin.repository, "readBodyCached");
+
+      // Renaming the journal folder itself is the real route to a sole
+      // `reload` batch; no entry changed individually, so nothing else in
+      // the panel's filter would let it through.
+      const folder = new TFolder();
+      folder.path = "JournalRenamed";
+      folder.name = "JournalRenamed";
+      app.vault.trigger("rename", folder, "Journal");
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(reads).toHaveBeenCalled();
       panel.destroy();
     });
 

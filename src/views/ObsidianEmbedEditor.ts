@@ -297,6 +297,8 @@ export class ObsidianEmbedEditor implements EntryEditor {
   private blurCallback: (() => void) | null = null;
   private unusableCallback: (() => void) | null = null;
   private pollHandle: number | null = null;
+  /** The delay `pollHandle` was armed with; null exactly when no timer is pending. */
+  private pendingPollDelay: number | null = null;
   /** The raw document as of the last poll. */
   private lastRaw = "";
   /**
@@ -462,7 +464,13 @@ export class ObsidianEmbedEditor implements EntryEditor {
         this.hotUntil = Infinity;
         // A cold editor may be up to COLD_POLL_MS from its next look; the
         // first keystroke after focusing must not wait for that.
-        if (this.pollHandle !== null) {
+        //
+        // Only a COLD timer is replaced. focusin bubbles for every focus move
+        // inside the container (tabbing through table cells), so re-arming on
+        // each one would push a pending hot poll out again and again: focusin
+        // faster than HOT_POLL_MS would mean no poll at all. A hot timer is
+        // already as soon as this wants.
+        if (this.pollHandle !== null && this.pendingPollDelay === COLD_POLL_MS) {
           window.clearTimeout(this.pollHandle);
           this.schedulePoll(HOT_POLL_MS);
         }
@@ -667,11 +675,13 @@ export class ObsidianEmbedEditor implements EntryEditor {
   }
 
   private schedulePoll(delay: number): void {
+    this.pendingPollDelay = delay;
     this.pollHandle = window.setTimeout(() => this.poll(), delay);
   }
 
   private poll(): void {
     this.pollHandle = null;
+    this.pendingPollDelay = null;
 
     const raw = this.readRaw();
     // A null read either means nothing changed relevantly or that readRaw()
@@ -695,6 +705,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
     if (this.pollHandle !== null) {
       window.clearTimeout(this.pollHandle);
       this.pollHandle = null;
+      this.pendingPollDelay = null;
     }
   }
 
