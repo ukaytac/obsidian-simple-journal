@@ -1,7 +1,7 @@
 # Index and background work: stop paying for what did not change
 
 **Date:** 2026-10-20
-**Status:** approved design, not yet implemented
+**Status:** approved, implemented
 **Scope:** groups B and C of the 2026-10-20 performance audit. The other three
 groups — iOS paging and scroll jumps (A), search and the settings tab (D), and
 unbounded DOM growth (E) — each get their own spec.
@@ -237,18 +237,25 @@ Test first, per change.
 * `calendarView.test.ts` (new): an identical signature skips the rebuild; a
   change of month, dots or date does not.
 * `obsidianEmbedEditor.test.ts`, fake timers: cold ticks are 2 s apart;
-  `focusin` triggers an immediate tick; cold again 2 s after `focusout`;
-  `getValue()` is current while cold; `destroy` clears the timer.
-* Eviction: a cold editor with an unreported change still writes it on unmount.
+  `focusin` brings the next tick forward to `HOT_POLL_MS`, and a burst of
+  `focusin` cannot keep postponing it; cold again 2 s after `focusout`; a
+  poll whose callback destroys the editor leaves no timer, one that remounts
+  it leaves exactly one.
+* Eviction: `flush()` reports text the slow poll has not seen. That is the
+  editor's half of the guarantee; the other half — `isDirty` and `flushSave`
+  reading the editor directly — is existing code in `mountLifecycle.ts` and
+  `entrySave.ts`, unchanged by this work.
 
 ### Measurement
 
 `tests/perf/indexScale.bench.ts`, run with `vitest bench`, outside `npm test`.
 50,000 synthetic entries plus 50,000 non-journal files:
 
+0. a reference: seeding the vault and loading the index, which every case
+   below also does — subtract it to read a case's own cost
 1. 100,000 `create` events and a flush — old behaviour against new
-2. 50,000 renames, the shape `Update existing journal entries` produces
-3. 100 `modify` events on a note outside the journal
+2. 10,000 renames, the shape `Update existing journal entries` produces
+3. 10,000 `modify`+`changed` pairs on a note outside the journal
 
 Before-and-after numbers go in the commit message and the release notes.
 

@@ -106,6 +106,36 @@ hundred files" is several hundred files.
       `Journal/` and confirm it goes in. Then do the same to an entry in
       `Journal/inbox/` and confirm only its filename changed.
 
+## Index and background work — needs a real vault and a phone
+
+Open, because the index and background performance pass (spec
+`docs/superpowers/specs/2026-10-20-index-and-background-perf-design.md`)
+changed when `JournalService` starts listening and how often idle editors
+poll. The unit tests pin the logic; none of them can show what Obsidian's own
+startup order or an iPhone's battery does with it.
+
+- [ ] **Startup, large vault (desktop).** Open a vault with thousands of
+      entries and a timeline in the saved workspace. Obsidian starts with no
+      visible hitch, and the restored timeline opens full, not empty.
+- [ ] **Capture at startup.** With Obsidian closed, open
+      `obsidian://simple-journal-new`. The composer opens, and the entry saves
+      where the settings say it should.
+- [ ] **Idle editors (iPhone).** Leave the timeline open with entries on
+      screen for five minutes. Settings → Battery shows no unusual Obsidian
+      usage compared with 1.5.1.
+- [ ] **A drop into an editor you are not typing in.** Drag a file link into
+      an entry other than the focused one, wait three seconds, and confirm the
+      change saved. If CodeMirror focuses the editor on drop, this exercises
+      the fast poll rather than the slow one; either way the change must land.
+- [ ] **An entry that embeds another entry.** In an entry that a mentions
+      panel lists, embed a second journal entry with `![[…]]`. Edit the
+      embedded entry in the timeline and confirm the embed inside the panel
+      updates. The panel no longer repaints for a change to an entry it does
+      not list, so this now relies on the embed refreshing itself.
+- [ ] **Surfaces still follow edits.** Edit an entry that links to a note
+      with the mentions footer on: the footer updates. Create an entry on a day
+      that had none: the calendar shows its dot.
+
 ## Fixed: the composer opened without the caret in it
 
 With the Journal tab **closed**, from any other note, the `New journal entry`
