@@ -4,6 +4,7 @@ import {
   anchorPosition,
   anchorSeed,
   compareEntries,
+  EntryIndex,
   findByPath,
   insertSorted,
   pageAfter,
@@ -265,5 +266,115 @@ describe("anchorPosition and anchorSeed", () => {
     const withBoundary = [aug12_2241, boundary];
     expect(anchorPosition(withBoundary, new Date(2026, 7, 11))).toBe(1);
     expect(anchorSeed(withBoundary, new Date(2026, 7, 11))).toBe(aug12_2241.file.path);
+  });
+});
+
+describe("EntryIndex", () => {
+  function fresh(basename: string, created: Date): JournalEntry {
+    return entry(basename, created);
+  }
+
+  it("keeps the array sorted newest first and finds records by path", () => {
+    const index = new EntryIndex();
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    const b = fresh("2026-08-12-22-41-52", new Date(2026, 7, 12, 22, 41, 52));
+    index.insert(a);
+    index.insert(b);
+
+    expect(index.entries.map((e) => e.file.basename)).toEqual(["2026-08-12-22-41-52", "2026-08-12-09-34-21"]);
+    expect(index.get(a.file.path)).toBe(a);
+    expect(index.has(b.file.path)).toBe(true);
+    expect(index.get("Journal/missing.md")).toBeNull();
+  });
+
+  it("insert replaces an existing record for the same path instead of duplicating it", () => {
+    const index = new EntryIndex();
+    const before = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.insert(before);
+    const after = { ...before, created: new Date(2026, 6, 1) };
+    index.insert(after);
+
+    expect(index.entries).toEqual([after]);
+    expect(index.get(before.file.path)).toBe(after);
+  });
+
+  it("remove drops the record from both the array and the map", () => {
+    const index = new EntryIndex();
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.insert(a);
+
+    expect(index.remove(a.file.path)).toBe(0);
+    expect(index.entries).toEqual([]);
+    expect(index.has(a.file.path)).toBe(false);
+    expect(index.remove(a.file.path)).toBe(-1);
+  });
+
+  it("rekey refiles a record whose TFile was renamed in place, through a chain of renames", () => {
+    const index = new EntryIndex();
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.insert(a);
+    const array = index.entries;
+
+    // Obsidian mutates the TFile itself; the record's path follows.
+    (a.file as { path: string }).path = "Journal/B.md";
+    index.rekey("Journal/2026-08-12-09-34-21.md");
+    (a.file as { path: string }).path = "Journal/C.md";
+    index.rekey("Journal/B.md");
+
+    expect(index.get("Journal/C.md")).toBe(a);
+    expect(index.has("Journal/B.md")).toBe(false);
+    expect(index.has("Journal/2026-08-12-09-34-21.md")).toBe(false);
+    expect(index.entries).toBe(array);
+    expect(index.entries).toEqual([a]);
+  });
+
+  it("rekey drops a different, stale record already filed under the new path", () => {
+    const index = new EntryIndex();
+    const stale = fresh("2026-08-11-21-10-00", new Date(2026, 7, 11, 21, 10, 0));
+    const moving = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.insert(stale);
+    index.insert(moving);
+
+    (moving.file as { path: string }).path = stale.file.path;
+    index.rekey("Journal/2026-08-12-09-34-21.md");
+
+    expect(index.entries).toEqual([moving]);
+    expect(index.get(stale.file.path)).toBe(moving);
+  });
+
+  it("a path removed and re-added is found again", () => {
+    const index = new EntryIndex();
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.insert(a);
+    index.remove(a.file.path);
+    index.insert(a);
+
+    expect(index.get(a.file.path)).toBe(a);
+    expect(index.entries).toEqual([a]);
+  });
+
+  it("staleKeys lists only keys whose record now reports another path", () => {
+    const index = new EntryIndex();
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    const b = fresh("2026-08-11-21-10-00", new Date(2026, 7, 11, 21, 10, 0));
+    index.insert(a);
+    index.insert(b);
+    (a.file as { path: string }).path = "Journal/renamed.md";
+
+    expect(index.staleKeys()).toEqual(["Journal/2026-08-12-09-34-21.md"]);
+  });
+
+  it("replaceAll swaps in a new array object and rebuilds the map", () => {
+    const index = new EntryIndex();
+    const before = index.entries;
+    const a = fresh("2026-08-12-09-34-21", new Date(2026, 7, 12, 9, 34, 21));
+    index.replaceAll([a]);
+
+    // A new array, not the old one mutated: `JournalView` treats a rebuild as
+    // "re-fetch getEntries()", and code holding the old array must not see
+    // its contents change underneath it.
+    expect(index.entries).not.toBe(before);
+    expect(index.entries).toEqual([a]);
+    expect(index.get(a.file.path)).toBe(a);
   });
 });

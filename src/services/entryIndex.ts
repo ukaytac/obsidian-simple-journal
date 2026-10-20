@@ -29,14 +29,10 @@ export function sortEntries(entries: JournalEntry[]): JournalEntry[] {
 }
 
 /**
- * Inserts into an already sorted list and returns the insertion index. If an
- * entry with the same path is already present (e.g. its timestamp was
- * edited), that stale copy is removed first so the list never accumulates
- * duplicate paths.
+ * Where `entry` belongs in `list` (sorted by `compareEntries`): the first
+ * position whose entry does not sort before it. Binary search.
  */
-export function insertSorted(list: JournalEntry[], entry: JournalEntry): number {
-  removeByPath(list, entry.file.path);
-
+export function insertionIndex(list: readonly JournalEntry[], entry: JournalEntry): number {
   let low = 0;
   let high = list.length;
 
@@ -46,6 +42,18 @@ export function insertSorted(list: JournalEntry[], entry: JournalEntry): number 
     else high = mid;
   }
 
+  return low;
+}
+
+/**
+ * Inserts into an already sorted list and returns the insertion index. If an
+ * entry with the same path is already present (e.g. its timestamp was
+ * edited), that stale copy is removed first so the list never accumulates
+ * duplicate paths.
+ */
+export function insertSorted(list: JournalEntry[], entry: JournalEntry): number {
+  removeByPath(list, entry.file.path);
+  const low = insertionIndex(list, entry);
   list.splice(low, 0, entry);
   return low;
 }
@@ -160,4 +168,94 @@ export function anchorPosition(list: readonly JournalEntry[], date: Date): numbe
 export function anchorSeed(list: readonly JournalEntry[], date: Date): string | null {
   const position = anchorPosition(list, date);
   return position === 0 ? null : list[position - 1].file.path;
+}
+
+/**
+ * The sorted entry list plus a path → record map, kept in step by being the
+ * only thing that mutates either.
+ *
+ * The map exists because `JournalService` asks "is this path an entry?" for
+ * every vault event, and a linear scan per event made a startup or a bulk
+ * rename quadratic in the size of the journal.
+ *
+ * `entries` is the live array, exactly as `JournalService.getEntries()` has
+ * always returned it: `JournalView` aliases it as its paging cursor list.
+ * `replaceAll` therefore swaps in a NEW array rather than refilling the old
+ * one — a rebuild has always meant "re-fetch", and code still holding the old
+ * array must not see it change underneath it.
+ *
+ * Keys can go stale in exactly one way: Obsidian renames a `TFile` in place,
+ * so the record filed under the old path starts reporting the new one.
+ * `rekey` repairs that for one path; `staleKeys` finds every such key.
+ */
+export class EntryIndex {
+  private list: JournalEntry[] = [];
+  private byPath = new Map<string, JournalEntry>();
+
+  get entries(): JournalEntry[] {
+    return this.list;
+  }
+
+  get(path: string): JournalEntry | null {
+    return this.byPath.get(path) ?? null;
+  }
+
+  has(path: string): boolean {
+    return this.byPath.has(path);
+  }
+
+  /** Files `entry` under its path, replacing any record already there. Returns its position. */
+  insert(entry: JournalEntry): number {
+    this.remove(entry.file.path);
+    const index = insertionIndex(this.list, entry);
+    this.list.splice(index, 0, entry);
+    this.byPath.set(entry.file.path, entry);
+    return index;
+  }
+
+  /**
+   * Removes the record filed under `path`. Returns its former position, or -1.
+   * `indexOf` by reference rather than a search by path string: still linear,
+   * but a pointer comparison per element, and immune to a stale key.
+   */
+  remove(path: string): number {
+    const record = this.byPath.get(path);
+    if (!record) return -1;
+    this.byPath.delete(path);
+    const index = this.list.indexOf(record);
+    if (index >= 0) this.list.splice(index, 1);
+    return index;
+  }
+
+  /**
+   * Refiles the record found under `oldPath` under the path its `TFile` now
+   * reports. A different record already under that path can only be a stale
+   * duplicate, and is removed, so one path never names two rows.
+   */
+  rekey(oldPath: string): void {
+    const record = this.byPath.get(oldPath);
+    if (!record) return;
+    const newPath = record.file.path;
+    if (newPath === oldPath) return;
+
+    const occupant = this.byPath.get(newPath);
+    if (occupant && occupant !== record) this.remove(newPath);
+    this.byPath.delete(oldPath);
+    this.byPath.set(newPath, record);
+  }
+
+  /** Every key whose record now reports a different path. */
+  staleKeys(): string[] {
+    const stale: string[] = [];
+    for (const [key, record] of this.byPath) {
+      if (record.file.path !== key) stale.push(key);
+    }
+    return stale;
+  }
+
+  /** Takes `list` (already sorted) as the new live array. */
+  replaceAll(list: JournalEntry[]): void {
+    this.list = list;
+    this.byPath = new Map(list.map((entry) => [entry.file.path, entry]));
+  }
 }
