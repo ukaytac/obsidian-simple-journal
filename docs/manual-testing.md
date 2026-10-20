@@ -291,6 +291,11 @@ mostly cosmetic by comparison.
       because it starts by focusing an entry: Obsidian's `showEditor()` raised
       the keyboard on every mount (see `showEditorWithoutFocus`), and a
       keyboard that is already open hides that. Reported on a Galaxy Z Fold 7.
+      The 1.5.0 fix did not hold: an iPhone still opened with the keyboard up
+      and the timeline scrolling by itself, because our own CSS kept the
+      editor pane hidden during `showEditor()` and Obsidian deferred the focus
+      past the shadow. Confirmed fixed on an iPhone (iOS 27) before 1.5.1;
+      still to be checked on Android before this is ticked.
 
 ## Calendar — needs a running Obsidian, a device, or a screen reader
 

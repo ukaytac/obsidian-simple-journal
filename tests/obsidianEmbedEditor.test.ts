@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { App, TFile } from "obsidian";
 import { ObsidianEmbedEditor } from "../src/views/ObsidianEmbedEditor";
 import { preserveSeparator, replaceBody, splitFrontmatter, stripSeparator } from "../src/journal/markdownDoc";
@@ -74,9 +76,14 @@ function fakeEmbedCreator(
     /**
      * Models what Obsidian 1.14.4's real `showEditor()` does last:
      * `n = this.editMode || (this.editMode = new EditMode())`, then
-     * `n.focus()`, where `focus` lives on the edit mode's prototype and — in
-     * the mobile app — calls `Keyboard.show()`. `spies.editModeFocus` stands
-     * in for that whole call, keyboard included.
+     * `JE(n.editorEl, () => n.focus())`, where `focus` lives on the edit
+     * mode's prototype and — in the mobile app — calls `Keyboard.show()`.
+     * `spies.editModeFocus` stands in for that whole call, keyboard included.
+     *
+     * `JE` runs the callback at once when the element `isShown()` (has an
+     * `offsetParent`), and otherwise defers it to Obsidian's `node-inserted`
+     * animation, which fires when the element is next displayed. The fake
+     * keeps that deferral, and `nodeInserted()` below plays the animation.
      */
     focusesOnShow?: boolean;
   } = {},
@@ -112,6 +119,17 @@ function fakeEmbedCreator(
     dispatch: vi.fn(),
     editModeFocus: vi.fn(),
   };
+
+  // `HTMLElement.isShown()` is `!!this.offsetParent`, which jsdom does not
+  // compute; this is the same question asked of the cascade directly.
+  const isShown = (el: HTMLElement): boolean => {
+    if (!el.isConnected) return false;
+    for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+      if (node.ownerDocument.defaultView?.getComputedStyle(node).display === "none") return false;
+    }
+    return true;
+  };
+  const deferredOnShown: Array<{ el: HTMLElement; run: () => void }> = [];
 
   const editModeProto = {
     focus(this: { cm: { focus: () => void } }) {
@@ -154,21 +172,29 @@ function fakeEmbedCreator(
       // Obsidian's own `n || (n = this.editMode = …)` does — not a re-read of
       // `embed.editMode` afterwards.
       const editMode = (embed.editMode as typeof built | undefined) ?? (embed.editMode = built);
-      if (opts.focusesOnShow) editMode.focus();
 
+      let editorPane: HTMLElement | null = null;
       if (!opts.noEditorDom && hostContainerEl) {
         const ownerDoc = hostContainerEl.ownerDocument;
 
         const preview = ownerDoc.createElement("div");
         preview.className = "markdown-embed-content";
+        // `showEditor()` hides the preview pane inline, as the real one does.
+        preview.style.display = "none";
         hostContainerEl.appendChild(preview);
 
-        const editorPane = ownerDoc.createElement("div");
+        editorPane = ownerDoc.createElement("div");
         editorPane.className = "markdown-embed-content";
         const cmEditor = ownerDoc.createElement("div");
         cmEditor.className = "cm-editor";
         editorPane.appendChild(cmEditor);
         hostContainerEl.appendChild(editorPane);
+      }
+
+      if (opts.focusesOnShow) {
+        // The trailing `JE(n.editorEl, …)`: now if shown, else when shown.
+        if (!editorPane || isShown(editorPane)) editMode.focus();
+        else deferredOnShown.push({ el: editorPane, run: () => editMode.focus() });
       }
     },
   };
@@ -186,6 +212,13 @@ function fakeEmbedCreator(
     setDoc: (v: string) => (doc = v),
     breakGet: () => {
       getShouldThrow = true;
+    },
+    /** Obsidian's `node-inserted` animation: runs what `JE` deferred, once shown. */
+    nodeInserted: () => {
+      for (const pending of deferredOnShown.splice(0)) {
+        if (isShown(pending.el)) pending.run();
+        else deferredOnShown.push(pending);
+      }
     },
   };
 }
@@ -906,11 +939,62 @@ describe("ObsidianEmbedEditor: hasFocus()", () => {
  * pulled to whichever entry had mounted last.
  */
 describe("ObsidianEmbedEditor: mounting does not take focus", () => {
+  // The plugin's real stylesheet, because what decides whether Obsidian
+  // focuses now or later is whether our CSS has the editor pane displayed
+  // while `showEditor()` runs.
+  let stylesheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    stylesheet = document.createElement("style");
+    stylesheet.textContent = readFileSync(resolve(__dirname, "../styles.css"), "utf8");
+    document.head.appendChild(stylesheet);
+  });
+  afterEach(() => {
+    stylesheet?.remove();
+    stylesheet = null;
+  });
+
+  // A timeline row is in the document when it mounts: the mount observer
+  // only fires for rows intersecting the scrollport.
+  const hostEl = (): HTMLElement => document.body.appendChild(document.createElement("div"));
+
+  it("does not take focus when the editor pane is displayed afterwards", () => {
+    // Before this, the blanket `display: none` on `.markdown-embed-content`
+    // hid the editor pane until `tagEditorPane()` ran, after `showEditor()`.
+    // Obsidian therefore deferred its focus to the pane's first display —
+    // after `showEditorWithoutFocus` had already put `focus` back — so the
+    // real focus ran anyway, and on a phone raised the keyboard on every
+    // mount. Reported on an iPhone with 1.5.0.
+    const { creator, embed, spies, nodeInserted } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+
+    editor.mount(hostEl(), fakeFile(), SEEDED_BODY);
+    nodeInserted();
+
+    expect(editor.isUsable()).toBe(true);
+    expect(spies.editModeFocus).not.toHaveBeenCalled();
+    const editMode = embed.editMode as { cm: { focus: ReturnType<typeof vi.fn> } };
+    expect(editMode.cm.focus).not.toHaveBeenCalled();
+  });
+
+  it("leaves only the editor pane displayed once mounted", () => {
+    const { creator } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
+    const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
+    const host = hostEl();
+
+    editor.mount(host, fakeFile(), SEEDED_BODY);
+
+    const panes = Array.from(host.querySelectorAll<HTMLElement>(".markdown-embed-content"));
+    const shown = panes.filter((pane) => getComputedStyle(pane).display !== "none");
+    expect(panes).toHaveLength(2);
+    expect(shown).toHaveLength(1);
+    expect(shown[0].querySelector(".cm-editor")).not.toBeNull();
+  });
+
   it("swallows the focus showEditor() calls on the edit mode it builds", () => {
     const { creator, embed, spies } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
 
-    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+    editor.mount(hostEl(), fakeFile(), SEEDED_BODY);
 
     expect(editor.isUsable()).toBe(true);
     expect(spies.editModeFocus).not.toHaveBeenCalled();
@@ -922,7 +1006,7 @@ describe("ObsidianEmbedEditor: mounting does not take focus", () => {
     const { creator, embed, spies } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
 
-    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+    editor.mount(hostEl(), fakeFile(), SEEDED_BODY);
 
     const descriptor = Object.getOwnPropertyDescriptor(embed, "editMode");
     expect(descriptor && "value" in descriptor).toBe(true);
@@ -938,7 +1022,7 @@ describe("ObsidianEmbedEditor: mounting does not take focus", () => {
     const { creator, embed } = fakeEmbedCreator(SEEDED_DOC, { focusesOnShow: true });
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
 
-    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+    editor.mount(hostEl(), fakeFile(), SEEDED_BODY);
     editor.focus();
 
     const editMode = embed.editMode as { cm: { focus: ReturnType<typeof vi.fn> } };
@@ -949,7 +1033,7 @@ describe("ObsidianEmbedEditor: mounting does not take focus", () => {
     const { creator, embed } = fakeEmbedCreator(SEEDED_DOC, { throwOnShowEditor: true });
     const editor = tracked(new ObsidianEmbedEditor(fakeApp(creator)));
 
-    editor.mount(document.createElement("div"), fakeFile(), SEEDED_BODY);
+    editor.mount(hostEl(), fakeFile(), SEEDED_BODY);
 
     expect(editor.isUsable()).toBe(false);
     expect(Object.getOwnPropertyDescriptor(embed, "editMode")).toBeUndefined();

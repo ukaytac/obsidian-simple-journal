@@ -210,13 +210,26 @@ function neutralise(record: Record<string, unknown>, name: string, asyncReturn =
  * runs exactly as it did before this existed, and the only cost is the
  * stray focus again.
  *
- * Not covered: an embed mounted while hidden (`display: none`), where
- * Obsidian defers the focus until the element is next shown — after this
- * has already restored it. `mountObserver` only mounts entries that are
- * intersecting a visible scrollport, so that is a mount racing the leaf
- * being hidden, not a path this view takes on purpose.
+ * Obsidian only focuses synchronously if the editor is shown: the call is
+ * `JE(n.editorEl, () => … n.focus())`, which runs at once when the element
+ * has an `offsetParent` and otherwise waits for its `node-inserted`
+ * animation — the next time it is displayed, after this has already
+ * restored `focus`. Our own stylesheet hides every `.markdown-embed-content`
+ * until `tagEditorPane()` picks the editor one, which runs after this. So
+ * `containerEl` carries `journal-entry-embed-showing` for the duration of
+ * `showEditor()`, which displays the panes Obsidian has not hidden inline
+ * itself. The 1.5.0 version of this function lacked that, so every mount
+ * still deferred the focus past the shadow and raised the keyboard on an
+ * iPhone; the fake embed in the tests now models the deferral.
+ *
+ * Still not covered: an embed mounted while the leaf itself is hidden.
+ * `mountObserver` only mounts entries intersecting a visible scrollport, so
+ * that is a mount racing the leaf being hidden, not a path this view takes
+ * on purpose.
  */
-function showEditorWithoutFocus(embed: MarkdownEmbed): void {
+const SHOWING_CLASS = "journal-entry-embed-showing";
+
+function showEditorWithoutFocus(embed: MarkdownEmbed, containerEl: HTMLElement): void {
   const record = embed as unknown as Record<string, unknown>;
   const hadOwnEditMode = Object.prototype.hasOwnProperty.call(record, "editMode");
   let editMode: unknown = record.editMode;
@@ -253,9 +266,11 @@ function showEditorWithoutFocus(embed: MarkdownEmbed): void {
   // building a new one; cover that shape too.
   if (trapped) shadowFocus(editMode);
 
+  containerEl.classList.add(SHOWING_CLASS);
   try {
     embed.showEditor?.();
   } finally {
+    containerEl.classList.remove(SHOWING_CLASS);
     if (trapped) {
       delete record.editMode;
       if (hadOwnEditMode || editMode !== undefined) record.editMode = editMode;
@@ -367,7 +382,7 @@ export class ObsidianEmbedEditor implements EntryEditor {
       // Order matters (docs/editor-embed-api.md): editMode does not exist
       // until showEditor() runs, and showEditor() must run after load().
       embed.load?.();
-      showEditorWithoutFocus(embed);
+      showEditorWithoutFocus(embed, this.containerEl);
 
       if (typeof embed.editMode?.get !== "function" || typeof embed.editMode?.set !== "function") {
         this.teardownEmbed(embed);

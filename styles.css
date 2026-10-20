@@ -291,6 +291,15 @@
   display: block;
 }
 
+/* Only while `showEditor()` runs, inside one synchronous call, so it is never
+   painted. Obsidian focuses the editor it builds at once if it is displayed
+   and later otherwise, and "later" escapes `showEditorWithoutFocus` and
+   raises the keyboard on a phone. The preview pane stays hidden: Obsidian
+   hides it inline, which this rule does not outrank. */
+.journal-entry-embed.journal-entry-embed-showing .markdown-embed-content {
+  display: block;
+}
+
 /* Obsidian styles an embed as a quoted card: a left border, an inset and a
    background. Inside the timeline the embed is not a quotation of another
    note, it *is* the entry, so all of that chrome has to go — CLAUDE.md:
