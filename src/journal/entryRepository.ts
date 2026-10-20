@@ -539,7 +539,9 @@ export class EntryRepository {
     let staying = 0;
 
     for (const entry of this.listEntries()) {
-      const target = this.reorganizeTarget(entry.file, root, layout, format);
+      // `entry.created` is the date `listEntries` already resolved; passing it
+      // keeps this the one reading of the question without a second walk.
+      const target = this.reorganizeTarget(entry.file, entry.created, root, layout, format);
       const undated = this.lacksDateProperty(entry.file);
 
       if (target !== null) moves.push({ file: entry.file, target });
@@ -548,6 +550,31 @@ export class EntryRepository {
     }
 
     return { moves, missingDate, staying };
+  }
+
+  /**
+   * Whether `planReorganize` would find anything to do over `entries` — the
+   * same two questions it asks of each entry (a non-null `reorganizeTarget`,
+   * or `lacksDateProperty`), answered `true` at the first entry that needs
+   * either and without building a plan.
+   *
+   * Takes the list rather than walking the vault, so a caller that already
+   * holds one (the settings button reads `JournalService`'s index) pays for no
+   * `listEntries` walk, resolve or sort. The list is trusted for the dates it
+   * carries and nothing else; the command re-plans from `listEntries` and the
+   * run re-checks every file before writing, so a stale list can make a
+   * button wrongly enabled or disabled, never make a write wrong.
+   */
+  hasPendingUpdates(entries: readonly JournalEntry[]): boolean {
+    const root = this.resolveFolder().resolved;
+    const layout = this.getLayout();
+    const format = this.getFilenameFormat();
+
+    return entries.some(
+      (entry) =>
+        this.reorganizeTarget(entry.file, entry.created, root, layout, format) !== null ||
+        this.lacksDateProperty(entry.file),
+    );
   }
 
   /**
@@ -583,6 +610,7 @@ export class EntryRepository {
    */
   private reorganizeTarget(
     file: TFile,
+    created: Date,
     root: string,
     layout: EntryFolderLayout,
     format: EntryFilenameFormat,
@@ -594,13 +622,11 @@ export class EntryRepository {
     const currentFolder = lastSlash === -1 ? "" : file.path.slice(0, lastSlash);
     if (!isManagedFolder(root, currentFolder)) return null;
 
-    // Through `entryFor`, so the date comes from the one resolver CLAUDE.md
-    // names — `created`, then the filename, then ctime — rather than a second
-    // reading of the same question here.
-    const entry = this.entryFor(file);
-    if (!entry) return null;
-
-    const folder = entryFolderPath(root, entry.created, layout);
+    // The date is the caller's, resolved by the one resolver CLAUDE.md names —
+    // `created`, then the filename, then ctime — through `entryFor`. Taking it
+    // as a parameter rather than asking again is what stops a plan from
+    // resolving every entry twice; it is not a second reading of the question.
+    const folder = entryFolderPath(root, created, layout);
     const stem =
       parsed.format === format
         ? file.basename
@@ -670,7 +696,10 @@ export class EntryRepository {
     for (const move of plan.moves) {
       // Re-derived rather than trusting `move.target`: both the file and the
       // setting may have changed while the confirmation was on screen.
-      const target = this.reorganizeTarget(move.file, root, layout, format);
+      // The date is resolved afresh here, through `entryFor`, for the same
+      // reason the target is: the plan's own may be minutes old.
+      const entry = this.entryFor(move.file);
+      const target = entry ? this.reorganizeTarget(move.file, entry.created, root, layout, format) : null;
       if (target === null || this.app.vault.getAbstractFileByPath(move.file.path) !== move.file) {
         report.skipped += 1;
         continue;

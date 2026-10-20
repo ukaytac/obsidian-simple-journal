@@ -418,3 +418,52 @@ describe("filename format and date property", () => {
     expect(repo.planReorganize()).toMatchObject({ moves: [], missingDate: [], staying: 1 });
   });
 });
+
+describe("hasPendingUpdates", () => {
+  /** The answer `planReorganize` gives, as the boolean the settings button needs. */
+  function planSaysPending(repo: EntryRepository): boolean {
+    const plan = repo.planReorganize();
+    return plan.moves.length > 0 || plan.missingDate.length > 0;
+  }
+
+  it("agrees with planReorganize when an entry would move", () => {
+    const { fake, repo } = setup("flat");
+    seedNested(fake);
+
+    expect(planSaysPending(repo)).toBe(true);
+    expect(repo.hasPendingUpdates(repo.listEntries())).toBe(true);
+  });
+
+  it("agrees with planReorganize when only the date property is missing", () => {
+    const { fake, repo } = setup("year-month");
+    fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", "undated");
+
+    expect(planSaysPending(repo)).toBe(true);
+    expect(repo.hasPendingUpdates(repo.listEntries())).toBe(true);
+  });
+
+  it("agrees with planReorganize when there is nothing to do", () => {
+    const { fake, repo } = setup("year-month");
+    seedNested(fake);
+    // An entry the plugin may not touch contributes nothing either.
+    fake.vault.addFile("Journal/2026/08/holiday-notes.md", "named");
+
+    expect(planSaysPending(repo)).toBe(false);
+    expect(repo.hasPendingUpdates(repo.listEntries())).toBe(false);
+  });
+
+  it("is false for an empty journal", () => {
+    const { repo } = setup("flat");
+    expect(repo.hasPendingUpdates([])).toBe(false);
+  });
+
+  it("stops at the first entry that needs something", () => {
+    const { fake, repo } = setup("flat");
+    seedNested(fake);
+    const entries = repo.listEntries();
+    const target = vi.spyOn(repo as unknown as { reorganizeTarget: () => unknown }, "reorganizeTarget");
+
+    expect(repo.hasPendingUpdates(entries)).toBe(true);
+    expect(target).toHaveBeenCalledTimes(1);
+  });
+});

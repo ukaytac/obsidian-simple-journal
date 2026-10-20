@@ -691,17 +691,24 @@ export default class JournalEntriesPlugin extends Plugin {
 
   /**
    * Whether `Update existing journal entries` has anything to do — what
-   * enables the settings tab's button. Computed from the same plan the
-   * command would show rather than from a "settings changed" flag, so entries
-   * added by hand light it too, and a finished run turns it off.
+   * enables the settings tab's button. Computed from the same two questions
+   * the command's plan asks rather than from a "settings changed" flag, so
+   * entries added by hand light it too, and a finished run turns it off.
+   *
+   * It asks them of `journal.getEntries()` — the index already in memory — and
+   * not of a fresh `planReorganize`, which would walk, resolve and sort the
+   * whole journal every time the tab is shown or a storage setting changes.
+   * That is safe because the index can only lag disk by the change-batching
+   * delay (~300 ms): the command re-plans from the vault before showing its
+   * confirmation, and the run re-checks each file before writing, so the
+   * button can be wrong only about whether it is enabled, and only briefly.
    *
    * Never throws: a button that cannot work out its state stays enabled, and
    * the command it runs reports the problem properly.
    */
   hasPendingEntryUpdates(): boolean {
     try {
-      const plan = this.repository.planReorganize();
-      return plan.moves.length > 0 || plan.missingDate.length > 0;
+      return this.repository.hasPendingUpdates(this.journal.getEntries());
     } catch (error) {
       console.error("Simple Journal: could not work out what to update", error);
       return true;
