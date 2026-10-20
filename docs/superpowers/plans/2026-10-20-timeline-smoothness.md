@@ -46,6 +46,7 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 | `src/views/timelineDom.ts` | `appendEntry` returns its render promise; deps signature |
 | `styles.css` | `.journal-entry-body.is-pending` |
 | `tests/JournalView.staticRender.test.ts` (new), `tests/JournalView.mountWindow.test.ts`, `tests/JournalView.paging.test.ts`, `tests/JournalView.changes.test.ts` | tests |
+| `tests/obsidian-mock.ts` | `Component.registerDomEvent` |
 | `docs/manual-testing.md` | five device checks |
 
 ---
@@ -835,6 +836,22 @@ In `onOpen`, where the view's other DOM listeners are registered (search for the
     // Passive: this only reads `scrollTop`, and must never delay a scroll.
     this.registerDomEvent(this.contentEl, "scroll", () => this.onTimelineScroll(), { passive: true });
 ```
+
+`registerDomEvent` is real `Component` API, but `tests/obsidian-mock.ts`'s `Component` does not have it yet. Add it there, matching the real contract (listener attached now, removed on `unload()`), following how that class already implements `register`/`registerEvent`:
+
+```ts
+  registerDomEvent(
+    el: EventTarget,
+    type: string,
+    callback: (evt: Event) => unknown,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    el.addEventListener(type, callback as EventListener, options);
+    this.register(() => el.removeEventListener(type, callback as EventListener, options));
+  }
+```
+
+If the mock `Component` has no `register(cb)` to hang the removal on, use whatever list it keeps for `registerEvent` cleanup.
 
 - [ ] **Step 7: Mark the load in flight, and remember where it ended**
 
