@@ -121,6 +121,12 @@ export class JournalService extends Component {
           return;
         }
 
+        if (!(file instanceof TFile)) return;
+        // Tested against the OLD path, before `rekey` below moves the key:
+        // an entry leaving the journal is indexed there, and a note arriving
+        // is an entry file at its new path.
+        if (!this.concernsJournal(file, oldPath)) return;
+
         // Refiled now, at event time, not at flush: Obsidian has already
         // renamed this TFile in place, so until this runs the index would
         // answer a lookup by the new path with nothing, and a caller between
@@ -304,9 +310,27 @@ export class JournalService extends Component {
     return false;
   }
 
+  /**
+   * Drops events for files that are not, and were not, journal entries.
+   *
+   * Every note in the vault produces `modify` and `changed` while someone
+   * types in it, and each one used to cost a flush, an `entryFor`, and a
+   * linear scan of the index that found nothing — and restarted the shared
+   * debounce, delaying real journal changes queued just before it.
+   *
+   * "Were not" is the half that matters: a file moved OUT of the journal is
+   * no longer an entry file, but is still indexed until the flush removes it,
+   * and that removal is how the timeline learns it is gone.
+   */
   private queue(file: TAbstractFile, action: "upsert" | "remove"): void {
     if (!(file instanceof TFile)) return;
+    if (!this.concernsJournal(file, file.path)) return;
     this.queuePath(file.path, action);
+  }
+
+  /** True when `file` is an entry file now, or `indexedPath` is in the index. */
+  private concernsJournal(file: TFile, indexedPath: string): boolean {
+    return this.index.has(indexedPath) || this.repository.isEntryFile(file);
   }
 
   private queuePath(path: string, action: "upsert" | "remove" | "renameSource" | "folderReload"): void {

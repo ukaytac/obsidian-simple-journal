@@ -973,3 +973,72 @@ describe("JournalService: before and at layout-ready", () => {
     expect(changes).toEqual([{ kind: "added", entry: expect.objectContaining({ file }) }]);
   });
 });
+
+describe("JournalService: events outside the journal", () => {
+  it("does no index work for an edit to a note outside the journal", () => {
+    const { fake, repository, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    service.load();
+    const entryFor = vi.spyOn(repository, "entryFor");
+    const note = fake.vault.addFile("Notes/idea.md", "");
+
+    fake.vault.trigger("modify", note);
+    fake.metadataCache.trigger("changed", note);
+    vi.advanceTimersByTime(300);
+
+    expect(entryFor).not.toHaveBeenCalled();
+  });
+
+  it("does not push back a pending journal change", () => {
+    const { fake, service } = setup();
+    service.load();
+    const changes = collectChanges(service);
+    const file = fake.vault.addFile(AUG12, "");
+    const note = fake.vault.addFile("Notes/idea.md", "");
+
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(200);
+    fake.vault.trigger("modify", note);
+    vi.advanceTimersByTime(100);
+
+    expect(changes).toEqual([{ kind: "added", entry: expect.objectContaining({ file }) }]);
+  });
+
+  it("still removes an entry moved out of the journal folder", async () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    service.load();
+    const changes = collectChanges(service);
+
+    await fake.fileManager.renameFile(file, "Archive/2026-08-12-22-41-52.md");
+    vi.advanceTimersByTime(300);
+
+    expect(service.getEntries()).toEqual([]);
+    expect(changes).toContainEqual({ kind: "removed", path: AUG12 });
+  });
+
+  it("adds a note moved into the journal folder", async () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile("Inbox/2026-08-12-22-41-52.md", "");
+    service.load();
+    const changes = collectChanges(service);
+
+    await fake.fileManager.renameFile(file, AUG12);
+    vi.advanceTimersByTime(300);
+
+    expect(service.getEntries().map((e) => e.file.path)).toEqual([AUG12]);
+    expect(changes).toContainEqual({ kind: "added", entry: expect.objectContaining({ file }) });
+  });
+
+  it("ignores a rename that starts and ends outside the journal", async () => {
+    const { fake, service } = setup();
+    const note = fake.vault.addFile("Notes/a.md", "");
+    service.load();
+    const batches = collectBatches(service);
+
+    await fake.fileManager.renameFile(note, "Notes/b.md");
+    vi.advanceTimersByTime(300);
+
+    expect(batches).toEqual([]);
+  });
+});
