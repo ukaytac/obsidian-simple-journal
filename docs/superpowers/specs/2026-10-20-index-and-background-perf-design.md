@@ -61,17 +61,21 @@ JournalEntry>` keyed by path, and is the only thing that mutates either.
   string comparison per element.
 * `rekey(oldPath)` handles a rename. Obsidian mutates the renamed `TFile` in
   place, so the record found under `oldPath` already reports its new path
-  through `entry.file.path`; `rekey` moves the map key there. It does not touch
-  the array.
+  through `entry.file.path`; `rekey` moves the map key there. It leaves the
+  array alone, except that a *different* record already filed under the new
+  path is a stale duplicate and is removed, so one path never names two rows.
+* `staleKeys()` lists keys whose record now reports a different path — only the
+  layout-ready reconcile needs it.
 * `replaceAll(list)` is `rebuild()`'s path.
 
 The pure functions (`insertSorted`, `removeByPath`, `findByPath`,
 `compareEntries`, paging, anchoring) stay exported and keep their tests;
 `EntryIndex` is built on them.
 
-`JournalService` swaps its `index: JournalEntry[]` for an `EntryIndex`.
-`applyRenameSource(path)` calls `rekey(path)` and still returns
-`{ kind: "removed", path }` unconditionally — `JournalView.rendered` is keyed
+`JournalService` swaps its `index: JournalEntry[]` for an `EntryIndex`. The
+rename listener calls `rekey(oldPath)` (see § 3 for why at event time).
+`applyRenameSource(path)` still returns `{ kind: "removed", path }`
+unconditionally — `JournalView.rendered` is keyed
 by the stale path and depends on that removal (see its existing doc). The
 upsert queued for the new path then finds the record by map lookup and reports
 `content` or `moved` exactly as today.
@@ -87,8 +91,8 @@ but its path is still indexed until the flush removes it.
 
 A file rename is queued, both halves, when `index.has(oldPath)` (an entry is
 moving, possibly out of the journal) or `repository.isEntryFile(file)` (a file
-is arriving in the journal). At event time the map still holds the record under
-`oldPath` — `rekey` runs only at flush — so `oldPath` is the key to test.
+is arriving in the journal). The test runs before `rekey`, while the map still
+holds the record under `oldPath`, so `oldPath` is the key to test.
 Moving out works as it does today: `rekey` files the record under the new path,
 the upsert finds `entryFor` returns null, and the removal reports the new path
 gone. Folder renames keep their existing `isJournalFolderPath` gate.
@@ -127,6 +131,15 @@ current before an `obsidian://simple-journal-new` composer opens.
 An event that fires between the reconcile and listener registration cannot be
 missed: both happen synchronously in the same callback.
 
+The reconcile also repairs a record whose `TFile` was renamed before the
+listeners existed: Obsidian mutates the file in place, so its map key no longer
+matches `entry.file.path`. Those keys are re-filed first and reported as
+`removed` for the old path, which is the half of a rename `JournalView` needs.
+
+The rename listener calls `rekey` synchronously, at event time rather than at
+flush, so no caller in between — `applyKnownEntry` above all — can look a
+renamed entry up under its new path and miss it.
+
 ### 4. Mentions panels repaint only when affected (`mentions/MentionsPanel.ts`)
 
 Each render records the paths of **every** mention `findMentions` returned —
@@ -160,16 +173,16 @@ always render. Today's date is in the signature so the midnight change of the
 Confined to the one file that holds the editor exception, as `CLAUDE.md`
 § Editing requires.
 
-The `setInterval` becomes a self-rescheduling `setTimeout` on the container's
-own window:
+The `setInterval` becomes a self-rescheduling `window.setTimeout`, on the same
+global `window` the interval used:
 
 * **hot, 250 ms** — the editor holds focus, or lost it under 2 s ago
 * **cold, 2000 ms** — everything else
 
-A `focusin` listener on the container cancels a pending cold tick and runs a
-hot one immediately, so the first keystroke after focusing is never up to 2 s
-late. The existing `focusout` path stamps the blur time; the editor goes cold
-2 s later.
+A `focusin` listener on the container cancels a pending cold tick and
+schedules a hot one, so the first keystroke after focusing is picked up within
+250 ms, exactly as today, never up to 2 s late. The existing `focusout` path
+stamps the blur time; the editor goes cold 2 s later.
 
 The tick body (`readRaw` → compare → `readBody` → `onChange`), `markUnusable`,
 `getValue` and `destroy` are unchanged, and `destroy` clears the timer.
@@ -177,11 +190,12 @@ The tick body (`readRaw` → compare → `readBody` → `onChange`), `markUnusab
 latest text regardless of polling speed. A change made without focus — a drop,
 a plugin writing through the editor — is reported within 2 s, never lost.
 
-Must be confirmed in the plan, against `mountLifecycle.ts`: what eviction
-treats as "unsaved". If it relies only on a pending save that `onChange`
-started, a cold editor's unreported change looks clean to eviction; the unmount
-still calls `flushSave`, and `saveIfChanged` compares `getValue()` against the
-saved body, so the text is written. A test pins that.
+Confirmed against `mountLifecycle.ts` while planning: eviction does not depend
+on `onChange` at all. `isDirty` compares `editor.getValue()` with `savedBody`,
+and `flushSave` starts with `editor.flush()`, which reads the editor directly
+and reports it. A cold editor's not-yet-polled change is therefore still seen
+as unsaved and still written on unmount. A test pins `flush()` reporting text
+the poll has not seen.
 
 `TextareaEditor` already works from `input` events and is not touched.
 
