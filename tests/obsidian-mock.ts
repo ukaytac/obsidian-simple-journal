@@ -118,6 +118,15 @@ export class Component {
   register(cb: () => void): void {
     this.unloadCallbacks.push(cb);
   }
+  registerDomEvent(
+    el: EventTarget,
+    type: string,
+    callback: (evt: Event) => unknown,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    el.addEventListener(type, callback as EventListener, options);
+    this.register(() => el.removeEventListener(type, callback as EventListener, options));
+  }
   addChild<T extends Component>(component: T): T {
     component.load();
     return component;

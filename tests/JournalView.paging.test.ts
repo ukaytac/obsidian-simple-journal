@@ -152,4 +152,93 @@ describe("JournalView paging", () => {
     await settle();
     expect(reobserve).toHaveBeenCalledTimes(1);
   });
+
+  describe("a new burst needs a real scroll", () => {
+    /** Gives the scroll container a size, so it overflows like a real one. */
+    function overflowing(view: ReturnType<typeof createHarness>["view"], scrollTop = 0): HTMLElement {
+      const el = internals(view).contentEl as HTMLElement;
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+      Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: scrollTop });
+      return el;
+    }
+
+    async function openWithTwoPages() {
+      const h = createHarness();
+      seedHourly(h, new Date(2026, 7, 12, 0, 0, 0), 200);
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const contentEl = overflowing(h.view);
+      const observer = internals(h.view).observer as FakeIntersectionObserver;
+      const sentinelEl = internals(h.view).sentinelEl as HTMLElement;
+      // The first callback after a reload is always allowed.
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+      // The forced re-observe found it out of range: the burst ends.
+      observer.trigger([{ target: sentinelEl, isIntersecting: false }]);
+      await settle();
+      expect(internals(h.view).rendered.size).toBe(80);
+      return { h, contentEl, observer, sentinelEl };
+    }
+
+    it("ignores a re-entry nobody scrolled for", async () => {
+      const { h, observer, sentinelEl } = await openWithTwoPages();
+
+      // Heights changed and carried the sentinel back into range.
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(80);
+    });
+
+    it("loads on the next scroll once one happens", async () => {
+      const { h, contentEl, observer, sentinelEl } = await openWithTwoPages();
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      contentEl.scrollTop = 400;
+      contentEl.dispatchEvent(new Event("scroll"));
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(120);
+    });
+
+    it("a scroll after the sentinel left again loads nothing", async () => {
+      const { h, contentEl, observer, sentinelEl } = await openWithTwoPages();
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+      observer.trigger([{ target: sentinelEl, isIntersecting: false }]);
+      await settle();
+
+      contentEl.scrollTop = 400;
+      contentEl.dispatchEvent(new Event("scroll"));
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(80);
+    });
+
+    it("loads without a scroll when the content does not fill the pane", async () => {
+      const { h, contentEl, observer, sentinelEl } = await openWithTwoPages();
+      Object.defineProperty(contentEl, "scrollHeight", { configurable: true, value: 600 });
+
+      observer.trigger([{ target: sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(120);
+    });
+
+    it("a reload allows the first callback again", async () => {
+      const { h } = await openWithTwoPages();
+      await h.view.reload();
+      await settle();
+      overflowing(h.view);
+      const observer = internals(h.view).observer as FakeIntersectionObserver;
+
+      observer.trigger([{ target: internals(h.view).sentinelEl, isIntersecting: true }]);
+      await settle();
+
+      expect(internals(h.view).rendered.size).toBe(80);
+    });
+  });
 });

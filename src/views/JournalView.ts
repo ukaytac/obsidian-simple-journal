@@ -293,6 +293,18 @@ export class JournalView extends ItemView {
    */
   private lastPageRendered: Promise<unknown> = Promise.resolve();
   /**
+   * `contentEl.scrollTop` when the last page finished loading, or null right
+   * after a reload. Outside a burst, a sentinel that comes back into range is
+   * only believed if this changed — see `mayStartBurst`.
+   */
+  private scrollTopAtLastLoad: number | null = null;
+  /** The sentinel's last reported intersection, for the scroll listener. */
+  private sentinelIntersecting = false;
+  /** A load `mayStartBurst` held back until the user next scrolls. */
+  private loadWaitingForScroll = false;
+  /** `onSentinelVisible` is between its start and its end. */
+  private sentinelLoadInFlight = false;
+  /**
    * Paths of entries with a mounted editor, oldest-mounted first. `readonly`
    * deliberately: `mountLifecycle` (below) closes over this exact array once,
    * at construction, so nothing may ever replace it wholesale — only mutate
@@ -576,6 +588,9 @@ export class JournalView extends ItemView {
     this.scopeBarEl = this.contentEl.createDiv({ cls: "journal-scope-bar" });
     this.timelineEl = this.contentEl.createDiv({ cls: "journal-timeline" });
     this.renderScopeBar();
+
+    // Passive: this only reads `scrollTop`, and must never delay a scroll.
+    this.registerDomEvent(this.contentEl, "scroll", () => this.onTimelineScroll(), { passive: true });
 
     // ItemView.register runs this unsubscribe when the view closes, so no
     // change can reach `applyChange` once torn down, short of the race
@@ -1058,6 +1073,10 @@ export class JournalView extends ItemView {
     this.sentinelEl = sentinelEl;
     this.forcedReobserve = false;
     this.burstCount = 0;
+    this.scrollTopAtLastLoad = null;
+    this.sentinelIntersecting = false;
+    this.loadWaitingForScroll = false;
+    this.sentinelLoadInFlight = false;
 
     // Constructed from the sentinel's own window rather than the plugin's
     // global scope, so this still works when the leaf has been dragged into
@@ -1079,7 +1098,20 @@ export class JournalView extends ItemView {
         const isBurstContinuation = this.forcedReobserve;
         this.forcedReobserve = false;
 
-        if (!entries.some((e) => e.isIntersecting)) return;
+        this.sentinelIntersecting = entries.some((e) => e.isIntersecting);
+        if (!this.sentinelIntersecting) {
+          this.loadWaitingForScroll = false;
+          return;
+        }
+        if (!isBurstContinuation) {
+          // A load already running ends with its own forced re-observe, which
+          // asks this question again with settled heights.
+          if (this.sentinelLoadInFlight) return;
+          if (!this.mayStartBurst()) {
+            this.loadWaitingForScroll = true;
+            return;
+          }
+        }
         void this.onSentinelVisible(isBurstContinuation);
       },
       {
@@ -1106,52 +1138,87 @@ export class JournalView extends ItemView {
    */
   private async onSentinelVisible(isBurstContinuation: boolean): Promise<void> {
     const generation = this.generation;
-    this.burstCount = isBurstContinuation ? this.burstCount + 1 : 1;
+    this.sentinelLoadInFlight = true;
+    try {
+      this.burstCount = isBurstContinuation ? this.burstCount + 1 : 1;
 
-    const result = await this.loadNextPage();
-    // A concurrent reload() (e.g. from the settings tab's debounced
-    // refreshJournal, or the rebuild `nextPage` queues on a lost cursor) may
-    // have already torn down this observer/sentinel and installed new ones
-    // while loadNextPage was in flight. this.sentinelEl and this.observer
-    // are instance fields, not a captured snapshot, so touching them here
-    // without this check could re-append or disconnect state that belongs
-    // to the new generation, not this one.
-    if (generation !== this.generation) return;
+      const result = await this.loadNextPage();
+      // A concurrent reload() (e.g. from the settings tab's debounced
+      // refreshJournal, or the rebuild `nextPage` queues on a lost cursor) may
+      // have already torn down this observer/sentinel and installed new ones
+      // while loadNextPage was in flight. this.sentinelEl and this.observer
+      // are instance fields, not a captured snapshot, so touching them here
+      // without this check could re-append or disconnect state that belongs
+      // to the new generation, not this one.
+      if (generation !== this.generation) return;
 
-    // "busy" means a load was already in flight when this call started —
-    // not that paging is exhausted. Reading it as exhausted would tear down
-    // a perfectly live observer/sentinel out from under an in-flight load.
-    // Unreachable today (loadNextPage's guard never trips without a real
-    // await inside it), but do nothing here rather than assume either
-    // outcome.
-    if (result === "busy") return;
+      // "busy" means a load was already in flight when this call started —
+      // not that paging is exhausted. Reading it as exhausted would tear down
+      // a perfectly live observer/sentinel out from under an in-flight load.
+      // Unreachable today (loadNextPage's guard never trips without a real
+      // await inside it), but do nothing here rather than assume either
+      // outcome.
+      if (result === "busy") return;
 
-    if (result === "exhausted") {
-      this.teardownSentinel();
-      return;
+      if (result === "exhausted") {
+        this.teardownSentinel();
+        return;
+      }
+
+      // Keep the sentinel below the newly appended entries.
+      if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+
+      // Re-asking straight after the append measured forty empty rows and
+      // loaded another page, and another — the iOS "scrolls by itself" bug.
+      // The renders settle (allSettled), so a failed read only ends the wait.
+      await this.lastPageRendered;
+      if (generation !== this.generation) return;
+      this.scrollTopAtLastLoad = this.contentEl.scrollTop;
+
+      if (this.burstCount >= MAX_BURST_PAGES) {
+        // Bound hit: stop forcing further checks. The sentinel is still
+        // observed, so a genuine scroll (a real transition, not one we forced)
+        // resumes the cascade.
+        return;
+      }
+
+      if (this.observer && this.sentinelEl) {
+        this.forcedReobserve = true;
+        this.observer.unobserve(this.sentinelEl);
+        this.observer.observe(this.sentinelEl);
+      }
+    } finally {
+      // A stale call must not clear the flag of the timeline that replaced
+      // its own: `installSentinel`/`teardownSentinel` already reset it.
+      if (generation === this.generation) this.sentinelLoadInFlight = false;
     }
+  }
 
-    // Keep the sentinel below the newly appended entries.
-    if (this.sentinelEl) this.timelineEl.appendChild(this.sentinelEl);
+  /**
+   * Whether a sentinel that came back into range outside a burst may start
+   * one. Heights changing — a body filling in, an editor mounting — move the
+   * sentinel without anyone scrolling; on iOS that read as a user scroll and
+   * started a fresh ten-page burst with no finger on the screen.
+   *
+   * So: only when the user actually scrolled since the last load, or right
+   * after a reload, or when the content does not even fill the pane (there is
+   * nothing to scroll, and refusing would stall loading for good).
+   * Programmatic scrolls (a calendar jump) change `scrollTop` too, and pass.
+   */
+  private mayStartBurst(): boolean {
+    if (this.scrollTopAtLastLoad === null) return true;
+    const el = this.contentEl;
+    if (el.scrollHeight <= el.clientHeight) return true;
+    return el.scrollTop !== this.scrollTopAtLastLoad;
+  }
 
-    // Re-asking straight after the append measured forty empty rows and
-    // loaded another page, and another — the iOS "scrolls by itself" bug.
-    // The renders settle (allSettled), so a failed read only ends the wait.
-    await this.lastPageRendered;
-    if (generation !== this.generation) return;
-
-    if (this.burstCount >= MAX_BURST_PAGES) {
-      // Bound hit: stop forcing further checks. The sentinel is still
-      // observed, so a genuine scroll (a real transition, not one we forced)
-      // resumes the cascade.
-      return;
-    }
-
-    if (this.observer && this.sentinelEl) {
-      this.forcedReobserve = true;
-      this.observer.unobserve(this.sentinelEl);
-      this.observer.observe(this.sentinelEl);
-    }
+  /** Runs the load `mayStartBurst` held back, on the first scroll that counts. */
+  private onTimelineScroll(): void {
+    if (!this.loadWaitingForScroll || !this.sentinelIntersecting) return;
+    if (this.sentinelLoadInFlight) return;
+    if (!this.mayStartBurst()) return;
+    this.loadWaitingForScroll = false;
+    void this.onSentinelVisible(false);
   }
 
   private teardownSentinel(): void {
@@ -1161,6 +1228,10 @@ export class JournalView extends ItemView {
     this.sentinelEl = null;
     this.forcedReobserve = false;
     this.burstCount = 0;
+    this.scrollTopAtLastLoad = null;
+    this.sentinelIntersecting = false;
+    this.loadWaitingForScroll = false;
+    this.sentinelLoadInFlight = false;
   }
 
   /**
