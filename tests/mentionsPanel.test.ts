@@ -392,6 +392,85 @@ describe("createMentionsPanel", () => {
     expect(isEntryFile).not.toHaveBeenCalled();
     expect(container.childElementCount).toBe(0);
   });
+
+  describe("staying current without repainting for nothing", () => {
+    const UNRELATED = "Journal/2026/08/2026-08-01-10-00-00.md";
+
+    it("does not re-render for a change to an entry that does not mention the target", async () => {
+      const { app, plugin, target, container } = setup(1);
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      const reads = vi.spyOn(plugin.repository, "readBodyCached");
+
+      const unrelated = app.vault.addFile(UNRELATED, "about something else");
+      app.vault.trigger("create", unrelated);
+      await vi.advanceTimersByTimeAsync(500);
+      app.vault.trigger("modify", unrelated);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(reads).not.toHaveBeenCalled();
+      panel.destroy();
+    });
+
+    it("re-renders for a change to an entry it lists", async () => {
+      const { app, plugin, target, container, entries } = setup(1);
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      const reads = vi.spyOn(plugin.repository, "readBodyCached");
+
+      app.vault.trigger("modify", entries[0]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(reads).toHaveBeenCalled();
+      panel.destroy();
+    });
+
+    it("re-renders for an entry it lists but has not shown yet", async () => {
+      const { app, plugin, target, container, entries } = setup(7);
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      const reads = vi.spyOn(plugin.repository, "readBodyCached");
+
+      // Only five are shown; the sixth still counts towards the header.
+      app.vault.trigger("delete", entries[6]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(reads).toHaveBeenCalled();
+      expect(container.querySelector(".journal-mentions-count")?.textContent).toBe("6");
+      panel.destroy();
+    });
+
+    it("re-renders when an entry starts linking to the target", async () => {
+      const { app, plugin, target, container } = setup(1);
+      const unrelated = app.vault.addFile(UNRELATED, "now about [[Ekin Arslan Aytaç]]");
+      plugin.journal.rebuild();
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(1);
+
+      app.metadataCache.resolvedLinks[unrelated.path] = { [TARGET_PATH]: 1 };
+      app.metadataCache.trigger("resolve", unrelated);
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(container.querySelectorAll(".journal-mentions-entry")).toHaveLength(2);
+      panel.destroy();
+    });
+
+    it("ignores a resolve for an entry that neither is listed nor links to the target", async () => {
+      const { app, plugin, target, container } = setup(1);
+      const unrelated = app.vault.addFile(UNRELATED, "about something else");
+      plugin.journal.rebuild();
+      const panel = createMentionsPanel({ plugin, container, target });
+      await panel.render();
+      const reads = vi.spyOn(plugin.repository, "readBodyCached");
+
+      app.metadataCache.trigger("resolve", unrelated);
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(reads).not.toHaveBeenCalled();
+      panel.destroy();
+    });
+  });
 });
 
 /**

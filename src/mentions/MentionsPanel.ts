@@ -4,6 +4,7 @@ import type { JournalEntry } from "../journal/entry";
 import { normalizeBodyForRender } from "../journal/markdownDoc";
 import { dayKey, formatDayHeader, formatTime } from "../utils/dates";
 import { findMentions } from "./mentionQuery";
+import type { JournalChange } from "../services/journalService";
 
 /**
  * The ONE renderer behind all three mention surfaces (the `simple-journal`
@@ -132,6 +133,13 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
   let renderToken = 0;
   /** Owns the current render's `MarkdownRenderer` children, so they unload. */
   let contentOwner: Component | null = null;
+  /**
+   * Paths of EVERY entry the last render found mentioning the target — not
+   * only the shown slice, because the header counts them all. A change to
+   * anything else cannot alter what this panel shows unless it now links to
+   * the target, which `concerns` asks `resolvedLinks` directly.
+   */
+  let mentionPaths = new Set<string>();
 
   const scheduleRefresh = debounce(
     () => {
@@ -141,7 +149,15 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
     false,
   );
 
-  const unsubscribeJournal = plugin.journal.onChange(() => scheduleRefresh());
+  /**
+   * Every timeline autosave reaches here as a batch, and so does every other
+   * entry change in the journal. Repainting for each one meant a read and a
+   * `MarkdownRenderer` pass per shown entry, in every live footer, sidebar
+   * and code block, for saves that had nothing to do with the target.
+   */
+  const unsubscribeJournal = plugin.journal.onChange((changes) => {
+    if (changes.some(batchChangeConcerns)) scheduleRefresh();
+  });
   /**
    * Filtered to journal entries, unlike `CalendarView`'s equivalent
    * subscription. `resolve` fires for EVERY file the vault re-resolves —
@@ -151,11 +167,36 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
    * check because its reaction is two binary searches; this one is a read
    * plus a full `MarkdownRenderer` pass per visible entry, so typing in the
    * host note would rebuild the whole panel five times a second.
+   *
+   * Of those, only an entry this panel lists, or one that now links to the
+   * target, can change what it shows: a link removed drops a listed entry, a
+   * link added shows up in `resolvedLinks`.
    */
   const resolveRef = plugin.app.metadataCache.on("resolve", (file) => {
     if (!plugin.repository.isEntryFile(file)) return;
+    if (!concerns(file.path)) return;
     scheduleRefresh();
   });
+
+  /**
+   * Whether a change to the entry at `path` can alter this panel: it is one
+   * the last render listed (shown or not), or it links to the target now.
+   * Function declarations hoist, so the subscriptions above can use these.
+   */
+  function concerns(path: string): boolean {
+    return mentionPaths.has(path) || Boolean(plugin.app.metadataCache.resolvedLinks[path]?.[target.path]);
+  }
+
+  /**
+   * A `reload` is the one batch that says "anything may have changed", so it
+   * always concerns the panel; a removal can only matter if the removed entry
+   * was listed, since a deleted file no longer resolves to the target.
+   */
+  function batchChangeConcerns(change: JournalChange): boolean {
+    if (change.kind === "reload") return true;
+    if (change.kind === "removed") return mentionPaths.has(change.path);
+    return concerns(change.entry.file.path);
+  }
 
   async function render(): Promise<void> {
     if (destroyed) return;
@@ -166,6 +207,7 @@ export function createMentionsPanel(options: MentionsPanelOptions): MentionsPane
       target,
       plugin.app.metadataCache.resolvedLinks,
     );
+    mentionPaths = new Set(mentions.map((entry) => entry.file.path));
     // Read from the setting on every render rather than latched at mount, so
     // the repaint `toggleCollapsed` drives through the registry is all it
     // takes for every other live panel to agree with the one that was clicked.
