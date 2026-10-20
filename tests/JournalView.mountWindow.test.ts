@@ -8,9 +8,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   document.body.innerHTML = "";
 });
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
 
 function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   textarea.value = value;
@@ -492,5 +501,82 @@ describe("JournalView mount window", () => {
 
     expect(rendered.editor).toBeNull();
     expect(rendered.bodyEl.querySelector("textarea")).toBeNull();
+  });
+
+  describe("heights across a mount and an unmount", () => {
+    it("keeps the static body on screen while the editor's read is in flight", async () => {
+      const h = createHarness();
+      const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const rendered = internals(h.view).rendered.get(a.path);
+      const gate = deferred();
+      const real = h.repository.readBody.bind(h.repository);
+      vi.spyOn(h.repository, "readBody").mockImplementation(async (file) => {
+        await gate.promise;
+        return real(file);
+      });
+
+      (internals(h.view).mountObserver as FakeIntersectionObserver).trigger([
+        { target: rendered.el, isIntersecting: true },
+      ]);
+      await settle();
+      expect(rendered.bodyEl.textContent).toContain("alpha body");
+      expect(rendered.bodyEl.querySelector("textarea")).toBeNull();
+
+      gate.release();
+      await settle();
+      expect(rendered.editor).not.toBeNull();
+    });
+
+    it("leaves the static body alone when the entry leaves the margin mid-read", async () => {
+      const h = createHarness();
+      const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const rendered = internals(h.view).rendered.get(a.path);
+      const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+      const gate = deferred();
+      const real = h.repository.readBody.bind(h.repository);
+      vi.spyOn(h.repository, "readBody").mockImplementation(async (file) => {
+        await gate.promise;
+        return real(file);
+      });
+      const cached = vi.spyOn(h.repository, "readBodyCached");
+
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+      await settle();
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      gate.release();
+      await settle();
+
+      expect(rendered.editor).toBeNull();
+      expect(rendered.bodyEl.textContent).toContain("alpha body");
+      expect(cached).not.toHaveBeenCalled();
+    });
+
+    it("renders the saved text on unmount without reading the file", async () => {
+      const h = createHarness();
+      const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
+      h.service.load();
+      await h.view.onOpen();
+      await settle();
+      const rendered = internals(h.view).rendered.get(a.path);
+      const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
+      await settle();
+      const cached = vi.spyOn(h.repository, "readBodyCached");
+      const uncached = vi.spyOn(h.repository, "readBody");
+
+      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      await settle();
+
+      expect(rendered.editor).toBeNull();
+      expect(cached).not.toHaveBeenCalled();
+      expect(uncached).not.toHaveBeenCalled();
+      expect(rendered.bodyEl.textContent).toContain("alpha body");
+    });
   });
 });

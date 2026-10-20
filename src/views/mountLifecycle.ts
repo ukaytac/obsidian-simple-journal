@@ -276,17 +276,19 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
    * `target.intersecting` after the await, for the symmetric reason
    * `unmountEditor` does: the entry may have left the margin again while
    * this was reading the file.
+   *
+   * It reads first and swaps the static body for the editor in one synchronous
+   * step afterwards, so the row never sits empty across the read.
    */
   async function mountEditor(target: MountEntry): Promise<void> {
     if (target.editor) return;
     const generation = deps.getGeneration();
     const token = ++target.opToken;
 
-    target.renderComponent?.unload();
-    target.renderComponent = null;
-    target.bodyEl.empty();
-    target.bodyEl.style.removeProperty("min-height");
-
+    // Read first, swap second. The static body stays on screen for the whole
+    // read: emptying it first left the entry zero pixels tall for a bridge
+    // round-trip on iOS, and with no scroll anchoring there every such
+    // collapse above the viewport moved the text being read.
     const body = await deps.readBody(target.entry.file);
     if (generation !== deps.getGeneration()) return;
     if (token !== target.opToken) return;
@@ -295,15 +297,20 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     if (!target.intersecting) {
       // Left MOUNT_ROOT_MARGIN while this was reading the file. The
       // observer's exit transition already fired and called unmountEditor,
-      // which no-opped (target.editor was still null) — no further callback
-      // arrives until another transition, so without this check an entry
-      // that's now off-screen would mount a live editor anyway (and stay
-      // mounted indefinitely, invisible to any future scroll-driven unmount).
-      // Restore static rendering instead of leaving bodyEl blank (already
-      // cleared above).
-      void deps.renderStatic(target);
+      // which no-opped (target.editor was still null), and no further
+      // callback arrives until another transition — so this must not mount.
+      // The static body is untouched and still showing; only a row whose
+      // first static render this mount pre-empted (bumping opToken above)
+      // has nothing on screen, and gets the text just read.
+      if (target.renderComponent === null) void deps.renderStatic(target, body);
       return;
     }
+
+    target.renderComponent?.unload();
+    target.renderComponent = null;
+    target.bodyEl.empty();
+    target.bodyEl.style.removeProperty("min-height");
+    target.bodyEl.removeClass("is-pending");
 
     const editor = mountUsableEditor(target, body);
 
@@ -426,7 +433,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
       // because `saveIfChanged`'s write failed and `save()` is showing the
       // "not saved" marker (see `showSaveError`), though this also covers the
       // (currently unreachable) case of a fresh edit racing the flush.
-      // Destroying the editor and falling back to `renderStatic`'s disk read
+      // Destroying the editor and falling back to a static render of the last saved body
       // would silently replace the on-screen text with the last known-good
       // (and now stale) saved body — exactly the loss the marker promises
       // hasn't happened. Decline the unmount and keep the editor live so the
@@ -454,7 +461,11 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     const index = order.indexOf(target.entry.file.path);
     if (index >= 0) order.splice(index, 1);
 
-    await deps.renderStatic(target);
+    // `isDirty` just returned false, so the editor's text equals `savedBody`,
+    // which is what disk holds. Rendering it directly skips a read and its
+    // wait — the gap in which the frozen height above was all that kept the
+    // row from collapsing.
+    await deps.renderStatic(target, target.savedBody);
     target.bodyEl.style.removeProperty("min-height");
   }
 
