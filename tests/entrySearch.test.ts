@@ -3,6 +3,7 @@ import {
   MIN_QUERY_LENGTH,
   SNIPPET_CONTEXT,
   bodyMatchesTerms,
+  foldedMatchesTerms,
   buildSnippet,
   foldForSearch,
   parseSearchQuery,
@@ -138,5 +139,22 @@ describe("buildSnippet", () => {
     expect(snippet.match).toBe("");
     expect(snippet.before).toBe("hiçbir şey");
     expect(snippet.after).toBe("");
+  });
+});
+
+describe("foldedMatchesTerms", () => {
+  it("agrees with bodyMatchesTerms once the body is folded, so there is one matching rule", () => {
+    const bodies = ["İstanbul'a gittik", "kahve\n\nkutu", "ısı ve sık", "hiçbir şey", ""];
+    const queries = ["istanbul", "kahve kutu", "isi sik", "çay", "kahve çay"];
+    for (const body of bodies) {
+      for (const query of queries) {
+        const terms = parseSearchQuery(query);
+        expect(foldedMatchesTerms(foldForSearch(body), terms)).toBe(bodyMatchesTerms(body, terms));
+      }
+    }
+  });
+
+  it("matches nothing for no terms", () => {
+    expect(foldedMatchesTerms("anything", [])).toBe(false);
   });
 });

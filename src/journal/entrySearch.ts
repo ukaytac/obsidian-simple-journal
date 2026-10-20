@@ -72,6 +72,27 @@ export function parseSearchQuery(query: string): string[] {
 }
 
 /**
+ * Whether every term appears somewhere in a body that has ALREADY been through
+ * `foldForSearch`. This is the matching rule; `bodyMatchesTerms` is it plus
+ * the fold, so there is still exactly one place that decides what matches.
+ *
+ * It exists so a caller holding many bodies can fold each once and then match
+ * on every keystroke without folding again — `services/journalSearch.ts` does
+ * exactly that. Matching the folded body unflattened gives the same answer as
+ * flattening first, because a term never contains whitespace
+ * (`parseSearchQuery` splits on it) and flattening only collapses runs of it.
+ *
+ * Passing a body that was NOT folded is a caller bug, not a different mode:
+ * the terms are folded, so an unfolded `İstanbul` would miss `istanbul`.
+ *
+ * No terms means no match, not "everything matches" — see `MIN_QUERY_LENGTH`.
+ */
+export function foldedMatchesTerms(folded: string, terms: readonly string[]): boolean {
+  if (terms.length === 0) return false;
+  return terms.every((term) => folded.includes(term));
+}
+
+/**
  * Whether every term appears somewhere in `body`. Substring, not fuzzy and
  * not word-bounded: the user is recalling a phrase they wrote themselves,
  * where fuzzy recall adds noise to what is supposed to be an answer, and a
@@ -80,9 +101,7 @@ export function parseSearchQuery(query: string): string[] {
  * No terms means no match, not "everything matches" — see `MIN_QUERY_LENGTH`.
  */
 export function bodyMatchesTerms(body: string, terms: readonly string[]): boolean {
-  if (terms.length === 0) return false;
-  const folded = foldForSearch(body);
-  return terms.every((term) => folded.includes(term));
+  return foldedMatchesTerms(foldForSearch(body), terms);
 }
 
 /** Characters of context kept on each side of a match in a suggester row. */

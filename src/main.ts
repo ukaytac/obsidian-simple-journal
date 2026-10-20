@@ -410,7 +410,8 @@ export default class JournalEntriesPlugin extends Plugin {
    * rejection that never reaches the console — the command would appear to
    * do nothing at all.
    *
-   * The snapshot is read HERE, before the modal opens, and deliberately not
+   * The snapshot is read HERE, before the modal opens (with a "Reading the
+   * journal…" notice if that takes over 300 ms), and deliberately not
    * inside `getSuggestions`: that runs on every keystroke, and a search that
    * touches the disk per keystroke is the unscalable shape CLAUDE.md
    * § Performance warns against. One read, then pure string work.
@@ -448,7 +449,21 @@ export default class JournalEntriesPlugin extends Plugin {
         return;
       }
 
-      const snapshot = await readJournalSnapshot(this.repository, entries);
+      // Said only if it is slow. A journal that reads inside 300 ms sees
+      // nothing new; one that does not would otherwise show nothing at all
+      // between the command and the modal. Hidden on success and on failure
+      // alike, so the notice cannot outlive the read it describes.
+      let reading: Notice | null = null;
+      const timer = window.setTimeout(() => {
+        reading = new Notice("Reading the journal…", 0);
+      }, 300);
+      let snapshot: Awaited<ReturnType<typeof readJournalSnapshot>>;
+      try {
+        snapshot = await readJournalSnapshot(this.repository, entries);
+      } finally {
+        window.clearTimeout(timer);
+        (reading as Notice | null)?.hide();
+      }
 
       new SearchModal(this.app, snapshot, active !== null, (choice) => {
         switch (choice.kind) {

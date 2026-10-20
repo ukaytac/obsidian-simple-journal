@@ -1,5 +1,5 @@
 import { type App, SuggestModal } from "obsidian";
-import { parseSearchQuery } from "../journal/entrySearch";
+import { buildSnippet, parseSearchQuery } from "../journal/entrySearch";
 import { searchSnapshot, type JournalSnapshot, type SearchHit } from "../services/journalSearch";
 import { formatTime } from "../utils/dates";
 
@@ -94,13 +94,16 @@ export class SearchModal extends SuggestModal<SearchChoice> {
 
     el.addClass("journal-search-suggestion");
     el.createSpan({ cls: "journal-search-time", text: formatTime(choice.hit.entry.created) });
+    // Built here, for this row only: a hit carries the body and terms rather
+    // than an excerpt, so rows the list never draws never pay for one.
+    const snippet = buildSnippet(choice.hit.body, choice.hit.terms);
     // Three spans, not one string with markup: the excerpt is the user's own
     // text, and it reaches the DOM as text nodes only. Nothing anyone writes
     // in an entry can style or restructure the list it appears in.
     const excerpt = el.createSpan({ cls: "journal-search-excerpt" });
-    excerpt.createSpan({ text: choice.hit.snippet.before });
-    excerpt.createSpan({ cls: "journal-search-match", text: choice.hit.snippet.match });
-    excerpt.createSpan({ text: choice.hit.snippet.after });
+    excerpt.createSpan({ text: snippet.before });
+    excerpt.createSpan({ cls: "journal-search-match", text: snippet.match });
+    excerpt.createSpan({ text: snippet.after });
   }
 
   // Takes the same two parameters as the real abstract member, for the reason

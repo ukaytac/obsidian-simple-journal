@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as entrySearch from "../src/journal/entrySearch";
 import type { App, TFile } from "obsidian";
 import type { JournalEntry } from "../src/journal/entry";
+import { foldForSearch } from "../src/journal/entrySearch";
 import type { JournalSnapshot } from "../src/services/journalSearch";
 import { SearchModal, type SearchChoice } from "../src/views/SearchModal";
 import { installDomHelpers } from "./obsidian-mock";
@@ -17,8 +19,8 @@ const B = entry("Journal/b.md", new Date(2026, 7, 10, 9, 34, 0));
 
 const SNAPSHOT: JournalSnapshot = {
   entries: [
-    { entry: A, body: "bugün kahve içtik" },
-    { entry: B, body: "çay içtik" },
+    { entry: A, body: "bugün kahve içtik", folded: foldForSearch("bugün kahve içtik") },
+    { entry: B, body: "çay içtik", folded: foldForSearch("çay içtik") },
   ],
   unreadable: 0,
 };
@@ -73,6 +75,18 @@ describe("SearchModal", () => {
     expect(el.querySelector(".journal-search-time")?.textContent).toBe("22:41");
     expect(el.querySelector(".journal-search-match")?.textContent).toBe("kahve");
     expect(el.textContent).toContain("bugün ");
+  });
+
+  it("builds an excerpt only for a row it actually renders", () => {
+    const { instance } = modal(SNAPSHOT);
+    const suggestions = instance.getSuggestions("içtik");
+    const spy = vi.spyOn(entrySearch, "buildSnippet");
+
+    expect(spy).not.toHaveBeenCalled();
+    instance.renderSuggestion(suggestions[1], createDiv());
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("bugün kahve içtik", ["içtik"]);
+    spy.mockRestore();
   });
 
   it("says so when entries could not be read, last rather than first", () => {

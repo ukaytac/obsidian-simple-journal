@@ -1,6 +1,6 @@
 import type { TFile } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
-import { bodyMatchesTerms, buildSnippet, type SearchSnippet } from "../journal/entrySearch";
+import { foldForSearch, foldedMatchesTerms } from "../journal/entrySearch";
 
 /**
  * The one thing search needs from `EntryRepository`, named as an interface so
@@ -20,6 +20,14 @@ export interface SnapshotEntry {
   entry: JournalEntry;
   /** Body only — `readBodyCached` has already taken the frontmatter off. */
   body: string;
+  /**
+   * `foldForSearch(body)`, computed once when the snapshot is read. Matching
+   * runs on every keystroke and must not redo a regex replace and a
+   * `toLowerCase` over the whole journal each time. The body is therefore held
+   * twice while a search is open — the original for the excerpt, which slices
+   * it, and this for matching — and both go when the snapshot does.
+   */
+  folded: string;
 }
 
 export interface JournalSnapshot {
@@ -28,9 +36,50 @@ export interface JournalSnapshot {
   unreadable: number;
 }
 
+/**
+ * A hit carries what an excerpt is built FROM, not the excerpt. A two-letter
+ * query matches nearly everything while `SuggestModal` draws only a screenful
+ * of rows, so building one per hit paid for rows nobody saw — and
+ * `JournalView`'s text scope, which needs only paths, paid for none it used.
+ * `SearchModal.renderSuggestion` calls `buildSnippet(body, terms)` for the row
+ * it is drawing.
+ */
 export interface SearchHit {
   entry: JournalEntry;
-  snippet: SearchSnippet;
+  body: string;
+  terms: readonly string[];
+}
+
+/**
+ * How many reads may be outstanding at once. On iOS each `cachedRead` crosses
+ * the native bridge, and starting every one together peaked memory with the
+ * whole journal in flight; 32 keeps the bridge busy without that. Not a
+ * setting: nothing about it is a preference.
+ */
+export const SNAPSHOT_READ_CONCURRENCY = 32;
+
+/**
+ * Runs `task` over every item with at most `limit` in flight, returning the
+ * results in the items' order whatever order they finished in. `task` must not
+ * throw — the caller turns failures into values, which is what lets one bad
+ * file be counted instead of aborting the pool. A private helper rather than a
+ * dependency: it is a dozen lines and nothing else in the plugin needs it.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await task(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 /**
@@ -47,6 +96,9 @@ export interface SearchHit {
  * the reason that stays a one-file change is that nothing outside this module
  * knows search reads anything at all.
  *
+ * At most `SNAPSHOT_READ_CONCURRENCY` reads are in flight at once, and the
+ * result keeps the index's order regardless of which finishes first.
+ *
  * An unreadable entry is logged and dropped rather than thrown: one bad file
  * must not take the whole search with it. It is also COUNTED, because the
  * worst thing a search can do is quietly answer with less than it has —
@@ -57,15 +109,18 @@ export async function readJournalSnapshot(
   reader: JournalSnapshotReader,
   entries: readonly JournalEntry[],
 ): Promise<JournalSnapshot> {
-  const results = await Promise.all(
-    entries.map(async (entry): Promise<SnapshotEntry | null> => {
+  const results = await mapWithConcurrency(
+    entries,
+    SNAPSHOT_READ_CONCURRENCY,
+    async (entry): Promise<SnapshotEntry | null> => {
       try {
-        return { entry, body: await reader.readBodyCached(entry.file) };
+        const body = await reader.readBodyCached(entry.file);
+        return { entry, body, folded: foldForSearch(body) };
       } catch (error) {
         console.error(`Simple Journal: could not read ${entry.file.path} to search it`, error);
         return null;
       }
-    }),
+    },
   );
 
   return {
@@ -85,8 +140,8 @@ export async function readJournalSnapshot(
 export function searchSnapshot(snapshot: JournalSnapshot, terms: readonly string[]): SearchHit[] {
   if (terms.length === 0) return [];
   return snapshot.entries
-    .filter(({ body }) => bodyMatchesTerms(body, terms))
-    .map(({ entry, body }) => ({ entry, snippet: buildSnippet(body, terms) }));
+    .filter(({ folded }) => foldedMatchesTerms(folded, terms))
+    .map(({ entry, body }) => ({ entry, body, terms }));
 }
 
 /**

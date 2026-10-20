@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, PluginManifest } from "obsidian";
-import { createFakeApp, installDomHelpers, Modal } from "./obsidian-mock";
+import { createFakeApp, installDomHelpers, Modal, Notice } from "./obsidian-mock";
 import JournalEntriesPlugin from "../src/main";
 import { EntryRepository } from "../src/journal/entryRepository";
 import { JournalService } from "../src/services/journalService";
@@ -87,8 +87,52 @@ function setup(): Setup {
 /** The choice a user makes by picking one result out of the list. */
 function hitChoice(plugin: JournalEntriesPlugin): SearchChoice {
   const entry = plugin.journal.getEntries()[0];
-  return { kind: "hit", hit: { entry, snippet: { before: "", match: "İstanbul", after: "" } } };
+  return { kind: "hit", hit: { entry, body: "İstanbul", terms: ["istanbul"] } };
 }
+
+describe("searchJournal: reading notice", () => {
+  /** A reader that stays pending until `release()`, so the read can be "slow". */
+  function slowRead(plugin: JournalEntriesPlugin) {
+    let release: () => void = () => {};
+    vi.spyOn(plugin.repository, "readBodyCached").mockImplementation(
+      () => new Promise<string>((resolve) => (release = () => resolve("İstanbul"))),
+    );
+    return () => release();
+  }
+
+  const reading = () => Notice.instances.filter((n) => n.message === "Reading the journal…");
+
+  it("says nothing when the journal reads inside 300 ms", async () => {
+    Notice.instances.length = 0;
+    const { plugin, modal } = setup();
+    await plugin.searchJournal();
+    modal();
+    expect(reading()).toHaveLength(0);
+  });
+
+  it("shows a notice after 300 ms and hides it when the read finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      Notice.instances.length = 0;
+      const { plugin } = setup();
+      const release = slowRead(plugin);
+
+      const done = plugin.searchJournal();
+      await vi.advanceTimersByTimeAsync(299);
+      expect(reading()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(reading()).toHaveLength(1);
+      expect(reading()[0].duration).toBe(0);
+      expect(reading()[0].hidden).toBe(false);
+
+      release();
+      await done;
+      expect(reading()[0].hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("searchJournal", () => {
   it("opens the chosen entry's own note, in a new tab", async () => {

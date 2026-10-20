@@ -77,7 +77,17 @@ export function normalizePath(path: string): string {
 }
 
 export class Notice {
-  constructor(public message: string) {}
+  static instances: Notice[] = [];
+  hidden = false;
+  constructor(
+    public message: string,
+    public duration?: number,
+  ) {
+    Notice.instances.push(this);
+  }
+  hide(): void {
+    this.hidden = true;
+  }
 }
 
 /** An `EventRef`-shaped handle a mock `Events` emitter hands back from `on()`. */
