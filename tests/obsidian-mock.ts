@@ -782,13 +782,25 @@ export class FakeWorkspace extends FakeEvents {
   async revealLeaf(_leaf: WorkspaceLeaf): Promise<void> {}
 
   /**
-   * Runs immediately. Real Obsidian defers until the layout is ready and runs
-   * it straight away afterwards; this mock is always "afterwards", and a test
-   * that needs to observe the deferral would have to model a layout this has
-   * no notion of.
+   * Whether the layout counts as ready. True by default, so every test that
+   * does not care keeps the "always afterwards" behaviour it was written
+   * against. A test that needs to see what happens BEFORE the layout is ready
+   * (the window in which real Obsidian fires `create` for every file in the
+   * vault), sets this false before loading, then calls `fireLayoutReady()`.
    */
+  layoutReady = true;
+  private layoutReadyQueue: Array<() => unknown> = [];
+
+  /** Same contract as the real method: run now if ready, else queue in order. */
   onLayoutReady(callback: () => unknown): void {
-    callback();
+    if (this.layoutReady) callback();
+    else this.layoutReadyQueue.push(callback);
+  }
+
+  /** Test-only: marks the layout ready and runs the queued callbacks in order. */
+  fireLayoutReady(): void {
+    this.layoutReady = true;
+    for (const callback of this.layoutReadyQueue.splice(0)) callback();
   }
 
   /**
