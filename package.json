@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:tz": "TZ=America/New_York vitest run",
+    "bench": "vitest bench --run",
     "sync": "bash scripts/sync-to-vault.sh",
     "lint": "eslint ."
   },
