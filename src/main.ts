@@ -39,6 +39,11 @@ export default class JournalEntriesPlugin extends Plugin {
     this.journal = new JournalService(this.app, this.repository);
     // Ties the service's lifecycle to the plugin: its vault/metadata-cache
     // event registrations are released automatically on unload.
+    //
+    // Must stay ABOVE the capture-URI handler's `onLayoutReady` below: the
+    // service queues its own layout-ready reconcile here, and Obsidian runs
+    // those callbacks in the order they were queued, so the index is current
+    // before a URI-opened composer looks at it.
     this.addChild(this.journal);
 
     this.registerView(VIEW_TYPE_JOURNAL, (leaf) => new JournalView(leaf, this));

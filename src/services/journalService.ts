@@ -23,6 +23,10 @@ const SELF_WRITE_TTL_MS = 2000;
 /** Sentinel pending-map key for a debounced folder-level reload; never a real vault path. */
 const FOLDER_RELOAD_KEY = "__journal-folder-reload__";
 
+function sameTags(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((tag, i) => tag === b[i]);
+}
+
 /**
  * Owns the in-memory index of entries and translates vault events into
  * timeline-level changes. Stores only `{ file, created, tags }` — never content —
@@ -45,6 +49,8 @@ export class JournalService extends Component {
   private selfWrites = new Map<string, number>();
   private pending = new Map<string, "upsert" | "remove" | "renameSource" | "folderReload">();
   private flushHandle: number | null = null;
+  /** Set by `onunload`, so a layout-ready callback queued before it registers nothing. */
+  private unloaded = false;
 
   constructor(
     private readonly app: App,
@@ -53,9 +59,43 @@ export class JournalService extends Component {
     super();
   }
 
+  /**
+   * The index is built now, synchronously, and the listeners wait for the
+   * layout.
+   *
+   * Built now because a timeline restored from the saved workspace can open
+   * before the layout is ready; with an empty index it would show the empty
+   * state, and repainting it later means `reload()`, which runs through the
+   * composer path.
+   *
+   * Listeners wait because Obsidian's vault initialisation fires `create` for
+   * EVERY file in the vault (Obsidian's "Optimize plugin load time" guide says
+   * to register vault events in `onLayoutReady` for exactly this reason), and
+   * each queued path used to cost a linear scan of the index.
+   *
+   * What the storm did that was useful — correcting entries indexed while the
+   * metadata cache was still filling in — `reconcile()` does instead, once.
+   * Both run in the same synchronous callback, so no event can fall between
+   * them.
+   *
+   * Ordering that `main.ts` relies on: this callback is queued during
+   * `addChild(journal)`, before `main.ts` queues its own capture-URI callback,
+   * and Obsidian runs them in order — so the index is reconciled before an
+   * `obsidian://simple-journal-new` composer opens.
+   */
   onload(): void {
+    // A Component can be loaded again after an unload; the guard below is for
+    // a callback queued by an EARLIER load, so each load starts it cleared.
+    this.unloaded = false;
     this.rebuild();
+    this.app.workspace.onLayoutReady(() => {
+      if (this.unloaded) return;
+      this.reconcile();
+      this.registerListeners();
+    });
+  }
 
+  private registerListeners(): void {
     this.registerEvent(this.app.vault.on("create", (file) => this.queue(file, "upsert")));
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
@@ -112,6 +152,7 @@ export class JournalService extends Component {
   }
 
   onunload(): void {
+    this.unloaded = true;
     if (this.flushHandle !== null) window.clearTimeout(this.flushHandle);
     this.listeners.clear();
     this.selfWrites.clear();
@@ -131,6 +172,51 @@ export class JournalService extends Component {
    */
   rebuild(): void {
     this.index.replaceAll(this.repository.listEntries());
+  }
+
+  /**
+   * One pass at layout-ready that brings the index built in `onload` into
+   * line with the vault as it is now, and reports only what differs — an
+   * ordinary batch of changes, never `reload`, so no view goes through its
+   * composer path. On a normal launch nothing differs and nothing is emitted.
+   *
+   * Removals are collected first, the same order `flush()` guarantees and
+   * for the same reason (see its doc).
+   */
+  private reconcile(): void {
+    const changes: JournalChange[] = [];
+
+    // A TFile renamed before the listeners existed still sits under its old
+    // key. Refile it and report the old path gone, which is the half of a
+    // rename `JournalView` needs to tear down a row rendered at that path.
+    for (const oldPath of this.index.staleKeys()) {
+      this.index.rekey(oldPath);
+      changes.push({ kind: "removed", path: oldPath });
+    }
+
+    const fresh = this.repository.listEntries();
+    const freshPaths = new Set(fresh.map((entry) => entry.file.path));
+
+    for (const entry of [...this.index.entries]) {
+      if (freshPaths.has(entry.file.path)) continue;
+      const change = this.applyRemoval(entry.file.path);
+      if (change) changes.push(change);
+    }
+
+    for (const entry of fresh) {
+      const existing = this.index.get(entry.file.path);
+      if (
+        existing &&
+        existing.file === entry.file &&
+        existing.created.getTime() === entry.created.getTime() &&
+        sameTags(existing.tags, entry.tags)
+      ) {
+        continue;
+      }
+      changes.push(this.applyUpsert(entry));
+    }
+
+    if (changes.length > 0) this.emitBatch(changes);
   }
 
   /** The live, sorted index. See this class's doc for why this is not a copy. */

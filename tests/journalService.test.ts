@@ -850,3 +850,110 @@ describe("JournalService: rename bookkeeping", () => {
     expect(service.getEntries()[0].file).toBe(file);
   });
 });
+
+describe("JournalService: before and at layout-ready", () => {
+  it("ignores the create storm Obsidian fires before the layout is ready", () => {
+    const { fake, service } = setup();
+    fake.workspace.layoutReady = false;
+    service.load();
+    const changes = collectChanges(service);
+
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([]);
+  });
+
+  it("emits nothing at layout-ready when the index already matches the vault", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG12, "");
+    fake.vault.addFile(AUG11, "");
+    fake.workspace.layoutReady = false;
+    service.load();
+    const batches = collectBatches(service);
+
+    fake.workspace.fireLayoutReady();
+
+    expect(batches).toEqual([]);
+  });
+
+  it("reports a date the metadata cache learned before layout-ready as one moved entry", () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.addFile(AUG11, "");
+    fake.workspace.layoutReady = false;
+    service.load();
+    const changes = collectChanges(service);
+
+    fake.metadataCache.frontmatter.set(file.path, {
+      created: formatCreatedProperty(new Date(2026, 6, 1, 8, 0, 0)),
+    });
+    fake.workspace.fireLayoutReady();
+
+    expect(changes).toEqual([{ kind: "moved", entry: expect.objectContaining({ file }) }]);
+    expect(service.getEntries().map((e) => e.file.path)).toEqual([AUG11, AUG12]);
+  });
+
+  it("reports files created and deleted before layout-ready as added and removed", () => {
+    const { fake, service } = setup();
+    fake.vault.addFile(AUG11, "");
+    fake.workspace.layoutReady = false;
+    service.load();
+    const changes = collectChanges(service);
+
+    const added = fake.vault.addFile(AUG12, "");
+    fake.vault.files.delete(AUG11);
+    fake.vault.contents.delete(AUG11);
+    fake.workspace.fireLayoutReady();
+
+    expect(changes).toEqual([
+      { kind: "removed", path: AUG11 },
+      { kind: "added", entry: expect.objectContaining({ file: added }) },
+    ]);
+  });
+
+  it("repairs an entry renamed before layout-ready: removed at the old path, added at the new", async () => {
+    const { fake, service } = setup();
+    const file = fake.vault.addFile(AUG12, "");
+    fake.workspace.layoutReady = false;
+    service.load();
+    const changes = collectChanges(service);
+
+    const renamed = "Journal/2026/08/2026-08-12-22-41-52-2.md";
+    await fake.fileManager.renameFile(file, renamed);
+    fake.workspace.fireLayoutReady();
+
+    expect(changes[0]).toEqual({ kind: "removed", path: AUG12 });
+    expect(service.getEntries()).toHaveLength(1);
+    expect(service.getEntries()[0].file.path).toBe(renamed);
+  });
+
+  it("starts listening once the layout is ready", () => {
+    const { fake, service } = setup();
+    fake.workspace.layoutReady = false;
+    service.load();
+    fake.workspace.fireLayoutReady();
+    const changes = collectChanges(service);
+
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(300);
+
+    expect(changes).toEqual([{ kind: "added", entry: expect.objectContaining({ file }) }]);
+  });
+
+  it("registers nothing if unloaded before the layout became ready", () => {
+    const { fake, service } = setup();
+    fake.workspace.layoutReady = false;
+    service.load();
+    service.unload();
+    fake.workspace.fireLayoutReady();
+
+    const file = fake.vault.addFile(AUG12, "");
+    fake.vault.trigger("create", file);
+    vi.advanceTimersByTime(300);
+
+    expect(service.getEntries().map((e) => e.file.path)).not.toContain(AUG12);
+  });
+});
