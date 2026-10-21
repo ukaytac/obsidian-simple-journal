@@ -76,6 +76,21 @@ const MAX_MOUNTED_EDITORS = Platform.isMobile ? 25 : 60;
 const MOUNT_ROOT_MARGIN = Platform.isMobile ? "900px 0px" : "400px 0px";
 
 /**
+ * How far outside the visible viewport a row keeps its rendered body and its
+ * `Component` (see `installResidencyObserver`). Beyond it a static row gives
+ * them back and keeps only its height.
+ *
+ * Must stay well outside `MOUNT_ROOT_MARGIN`, on both platforms: a row has to
+ * be resident again — re-read and re-rendered — long before it can mount and
+ * long before it is on screen, or the user scrolls into rows that are still
+ * blank, and the mount would be racing the render it needs to replace. The
+ * gap between the two margins is that lead time. Smaller on mobile only
+ * because memory is the reason this exists, and memory is tighter there; it
+ * is still more than twice the mobile mount margin.
+ */
+const RESIDENCY_ROOT_MARGIN = Platform.isMobile ? "2400px 0px" : "3000px 0px";
+
+/**
  * Cap on consecutive pages loaded in one burst without a genuine scroll
  * event in between (see `onSentinelVisible`). Bounds the cascade that a
  * short-entry vault can trigger — each appended page may still leave the
@@ -255,6 +270,12 @@ export class JournalView extends ItemView {
    * sentinel), which only ever watches one element.
    */
   private mountObserver: IntersectionObserver | null = null;
+  /**
+   * Watches the same rows as `mountObserver`, at `RESIDENCY_ROOT_MARGIN`: a
+   * static row leaving it gives back its rendered body and `Component`, and
+   * renders again on the way back. See `installResidencyObserver`.
+   */
+  private residencyObserver: IntersectionObserver | null = null;
   private index: JournalEntry[] = [];
   private lastLoadedPath: string | null = null;
   /**
@@ -480,7 +501,7 @@ export class JournalView extends ItemView {
     renderedCount: () => this.rendered.size,
     createEntryEl: (entry) => this.createEntryEl(entry),
     renderStatic: (target, knownBody) => this.renderStatic(target as RenderedEntry, knownBody),
-    observeForMount: (el) => this.mountObserver?.observe(el),
+    observeForMount: (el) => this.observeRow(el),
     getIndex: () => this.index,
     getAnchorDate: () => this.anchorDate,
     hasSentinel: () => this.sentinelEl !== null,
@@ -706,6 +727,7 @@ export class JournalView extends ItemView {
     // anchor's page rather than the newest entries in the whole journal.
     this.lastLoadedPath = this.anchorDate ? anchorSeed(this.index, this.anchorDate) : null;
     this.installMountObserver();
+    this.installResidencyObserver();
 
     if (this.index.length === 0) {
       // A scope only EXPLAINS an empty timeline when the unfiltered index
@@ -878,6 +900,7 @@ export class JournalView extends ItemView {
   private async clearTimeline(): Promise<ComposerSnapshot | null> {
     this.teardownSentinel();
     this.teardownMountObserver();
+    this.teardownResidencyObserver();
 
     // An open, uncommitted composer has no entry in `this.rendered` for the
     // flush-and-destroy loop below to reach. Without this, a reload (or the
@@ -1358,6 +1381,134 @@ export class JournalView extends ItemView {
   private teardownMountObserver(): void {
     this.mountObserver?.disconnect();
     this.mountObserver = null;
+  }
+
+  /**
+   * Hands one row to every observer that watches rows: `mountObserver` and
+   * `residencyObserver`. The one way a row is observed, so the two can never
+   * disagree about which rows they watch.
+   */
+  private observeRow(el: HTMLElement): void {
+    this.mountObserver?.observe(el);
+    this.residencyObserver?.observe(el);
+  }
+
+  /**
+   * Installs the observer that decides which rows keep their rendered body.
+   * Every row ever paged in would otherwise keep its rendered Markdown and its
+   * `Component` — embeds, images, listeners — for the life of the view;
+   * `content-visibility: auto` stops the browser laying those rows out, but
+   * frees nothing, and on iOS memory pressure is what gets Obsidian killed.
+   *
+   * Leaving `RESIDENCY_ROOT_MARGIN`, a static row (never one with an editor,
+   * and never the composer) keeps its height as an inline `min-height`, has
+   * `opToken` bumped so a render still in flight bails at its next guard, and
+   * only then has its `Component` unloaded and its body emptied — marked
+   * `is-dehydrated`. The row and its header stay, at the same height, so
+   * nothing above or below moves and the pager's sentinel sees the same
+   * timeline. Nothing a static row holds can be unsaved, so nothing here can
+   * lose text.
+   *
+   * Entering it, a dehydrated row renders again through `renderStatic`, which
+   * reads through the cache; the inline `min-height` holds the height across
+   * the read, and `renderStatic`'s token-guarded `finally` removes it when the
+   * render lands. A row that is also inside `MOUNT_ROOT_MARGIN` is left to
+   * the mount instead: on a long jump (the composer scrolling to the top from
+   * deep history) both observers report in the same frame, `mountObserver`
+   * first, and a static render started here would bump `opToken` past the
+   * mount already reading the file — leaving a row inside the mount window
+   * with no editor. The mount either swaps the editor in or, if the row left
+   * again, renders the body itself (`mountEditor`'s `renderComponent === null`
+   * branch).
+   *
+   * Constructed from the timeline's own window, same reasoning as
+   * `installSentinel`: this must keep working if the leaf is in a popout.
+   */
+  private installResidencyObserver(): void {
+    this.teardownResidencyObserver();
+
+    const win = this.timelineEl.win as Window & { IntersectionObserver: typeof IntersectionObserver };
+
+    this.residencyObserver = new win.IntersectionObserver(
+      (entries) => {
+        const leaving: RenderedEntry[] = [];
+        const entering: RenderedEntry[] = [];
+        for (const observerEntry of entries) {
+          const target = observerEntry.target as HTMLElement;
+          const path = target.dataset.path;
+          if (!path) continue;
+          const rendered = this.rendered.get(path);
+          // By identity: a row removed from the timeline stays observed until
+          // the next reload disconnects this observer, and its element still
+          // carries its old `data-path` — which may by now belong to a
+          // different, live row.
+          if (!rendered || rendered.el !== target) continue;
+          if (!this.mayChangeResidency(rendered)) continue;
+          (observerEntry.isIntersecting ? entering : leaving).push(rendered);
+        }
+
+        // Every height read before the first write, same reasoning as
+        // `mountObserver`'s pre-read: each unload below empties a body, and a
+        // read after that would be a fresh forced layout per leaving row.
+        const heights = leaving.map((rendered) => rendered.bodyEl.offsetHeight);
+        leaving.forEach((rendered, i) => this.dehydrate(rendered, heights[i]));
+
+        for (const rendered of entering) {
+          if (!rendered.bodyEl.hasClass("is-dehydrated")) continue;
+          if (rendered.intersecting) continue;
+          rendered.bodyEl.removeClass("is-dehydrated");
+          void this.renderStatic(rendered);
+        }
+      },
+      {
+        root: this.contentEl,
+        rootMargin: RESIDENCY_ROOT_MARGIN,
+      },
+    );
+  }
+
+  private teardownResidencyObserver(): void {
+    this.residencyObserver?.disconnect();
+    this.residencyObserver = null;
+  }
+
+  /**
+   * Whether residency may touch this row at all. Never a row with an editor
+   * (a mounted editor is always inside the mount margin, so it cannot be
+   * outside residency; the check is still explicit, because the editor is
+   * where unsaved text lives), never the composer, and never a row being
+   * deleted (its file may already be gone, so it could not be read back).
+   */
+  private mayChangeResidency(rendered: RenderedEntry): boolean {
+    if (rendered.editor !== null) return false;
+    if (rendered === this.composer || rendered === this.pendingComposerCommit) return false;
+    if (!rendered.entry.file) return false;
+    if (rendered.el.hasClass("is-deleting")) return false;
+    return true;
+  }
+
+  /**
+   * Gives back a static row's rendered body and `Component`, keeping its
+   * height. `height` is read by the caller, batched with every other row
+   * leaving in the same callback. The order is load-bearing: `opToken` is
+   * bumped before anything is emptied, so a `renderStatic` still reading
+   * the file bails at its next guard instead of rendering into the empty
+   * body afterwards (and its `finally` leaves the marks alone).
+   */
+  private dehydrate(rendered: RenderedEntry, height: number): void {
+    const bodyEl = rendered.bodyEl;
+    if (bodyEl.hasClass("is-dehydrated")) return;
+    if (height > 0) bodyEl.style.minHeight = `${height}px`;
+    rendered.opToken++;
+    rendered.renderComponent?.unload();
+    rendered.renderComponent = null;
+    bodyEl.empty();
+    bodyEl.removeClass("is-static");
+    // A first render this pre-empted had marked the body pending; its height
+    // is already held inline above, and the render that brings the body back
+    // sets the mark again for itself.
+    bodyEl.removeClass("is-pending");
+    bodyEl.addClass("is-dehydrated");
   }
 
   /**
@@ -2133,6 +2284,10 @@ export class JournalView extends ItemView {
 
     rendered.renderComponent?.unload();
     bodyEl.empty();
+    // Whatever unloaded this body (`dehydrate`) is undone by this render
+    // filling it; a mark left behind would make `refreshEntryContent` skip
+    // this row's next external change.
+    bodyEl.removeClass("is-dehydrated");
     const component = new Component();
     component.load();
     rendered.renderComponent = component;
@@ -2938,9 +3093,9 @@ export class JournalView extends ItemView {
 
     this.mountOrder.push(file.path);
     this.enforceMountLimit();
-    // Joins the mount window normally from here on, so a later scroll past
-    // it (and back) is handled exactly like any other entry.
-    this.mountObserver?.observe(rendered.el);
+    // Joins the mount window (and residency) normally from here on, so a
+    // later scroll past it (and back) is handled exactly like any other entry.
+    this.observeRow(rendered.el);
 
     if (focus) editor.focus("end");
   }

@@ -226,6 +226,11 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     // scrolled into view, remounted on tap, or a committed composer — comes
     // in through here, so this is the one place that has to say it.
     target.bodyEl.removeClass("is-static");
+    // A row residency unloaded (`JournalView.dehydrate`) and that mounts
+    // before its static render comes back: the editor fills the body, so the
+    // mark is no longer true, and left behind it would make
+    // `refreshEntryContent` skip this row once it is static again.
+    target.bodyEl.removeClass("is-dehydrated");
     const editor = deps.editorFactory.create();
     wireEditor(target, editor);
 

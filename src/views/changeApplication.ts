@@ -89,6 +89,8 @@ export interface ChangeEditor {
 export interface ChangeEntry {
   entry: JournalEntry;
   el: HTMLElement;
+  /** Read only for its `is-dehydrated` mark; see `refreshEntryContent`. */
+  bodyEl: HTMLElement;
   /** Component that owns any MarkdownRenderer output, so it can be unloaded. */
   renderComponent: Component | null;
   editor: ChangeEditor | null;
@@ -366,6 +368,13 @@ export function createChangeApplication(mountOrder: string[], deps: ChangeApplic
       rendered.savedBody = rendered.editor.getValue();
       return;
     }
+
+    // A row residency unloaded (`JournalView.dehydrate`) is left empty: it
+    // re-renders from disk when it comes back, which picks this change up, and
+    // rendering it now would undo the unload — handing the memory back to a
+    // row thousands of pixels away. Nothing else about it needs updating; the
+    // header and chips are handled by the caller, as for any other row.
+    if (rendered.bodyEl.hasClass("is-dehydrated")) return;
 
     // The uncached read above is the one that saw the external change; render
     // exactly that, rather than reading a second time through the cache.
