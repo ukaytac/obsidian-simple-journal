@@ -57,9 +57,11 @@ describe("unmountEditor across a concurrent re-key", () => {
     const oldPath = file.path;
     expect(view.mountOrder).toContain(oldPath);
 
-    // The entry has genuinely left the mount margin: not focused, not dirty,
-    // so `unmountEditor` runs its teardown rather than taking a decline
-    // branch.
+    // The entry has genuinely left the keep band: not focused, not dirty, and
+    // `withinKeep` false, so `unmountEditor` runs its teardown rather than
+    // taking its "re-entered while flushing" decline, which reads the keep
+    // band. Out of the mount margin too, since the keep band contains it.
+    rendered.withinKeep = false;
     rendered.intersecting = false;
 
     // Dirty the entry so its flush actually reaches `vault.process` — gating

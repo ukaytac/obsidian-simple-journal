@@ -521,7 +521,7 @@ describe("JournalView mount window", () => {
    * as a victim in the first place (see the two tests above), so the
    * eviction-flavoured call to this same decline branch is not reachable
    * with a focused entry through that path. The ordinary, non-evict path —
-   * `mountObserver`'s exit transition calling `unmountEditor` directly on a
+   * `keepObserver`'s exit transition calling `unmountEditor` directly on a
    * still-focused entry — reaches the identical decline branch for real
    * (this is exactly what a user scrolling away while still typing
    * triggers), which is what this test drives.
@@ -563,8 +563,8 @@ describe("JournalView mount window", () => {
    * `unmountEditor` only because it was still focused (see
    * `unmountEditor`'s own doc) must actually unmount once the user clicks
    * away, rather than staying mounted for the rest of the session because
-   * no further `mountObserver` transition is coming (it never re-entered
-   * the margin).
+   * no further `keepObserver` transition is coming (it never re-entered
+   * the keep band).
    */
   it("losing focus after a declined unmount actually unmounts the editor", async () => {
     const h = createHarness();

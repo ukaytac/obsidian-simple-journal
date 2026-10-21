@@ -1,7 +1,7 @@
 # Unloading far rows, and mounting in stages
 
 **Date:** 2026-10-21
-**Status:** approved design, not yet implemented
+**Status:** approved, implemented — awaiting the device check
 **Scope:** the two items the 2026-10-20 performance work deferred: group E's
 unloading (only the CSS half shipped) and group A's staged mounting with
 hysteresis. Stacked on `perf/remaining`. No change to what any entry shows, to
@@ -107,3 +107,42 @@ Repeat the six timeline checks in `docs/manual-testing.md`, plus:
    screen, nothing jumps.
 8. Open the journal with the composer (`New journal entry`): caret in the
    composer, keyboard up, and it stays there while the rows below mount.
+9. Tap an entry that has just scrolled into view: its editor opens with the
+   caret and the keyboard.
+
+## As built
+
+What review changed, or what the design above did not say:
+
+* **Residency skips only a row a mount has started.** Entering residency, a
+  dehydrated row is left to the mount when `intersecting &&
+  !pendingMounts.has(rendered)`. A row only queued renders statically like any
+  other: nothing is reading its file yet, and if it leaves before its turn the
+  queue drops it and no mount would ever fill the body.
+* **A tap on a still-queued row keeps its caret.** A row queued off screen and
+  then scrolled on screen gets no new transition, so it was still queued when
+  tapped; the next frame mounted it a second time, superseding the tap's mount
+  — the only one that focuses — and the editor arrived without caret or
+  keyboard. `remountOnInteraction` now takes the row out of `pendingMounts`
+  first, and `mountPendingRows` skips a row with a mount in flight
+  (`mountsInFlight`, a count, since a tap and an observer can both start one).
+* **Heights survive coming back off screen.** `dehydrate` and `unmountEditor`'s
+  freeze both drop `is-static` for a while, which makes the browser forget the
+  size `contain-intrinsic-size: auto` remembered; the static render that
+  follows sets `is-static` again off screen and the body laid out at the 4.5em
+  fallback, growing on approach — a jump on iOS. Both now also set an inline
+  `contain-intrinsic-size: auto <height>px` and leave it in place. Not on a
+  first render.
+* **A row that left residency with an editor is unloaded when the editor
+  goes.** Residency skips a row with an editor (a focused or dirty one that
+  declined to unmount, one the keep band kept, one a jump carried away), and
+  its observer does not report again until the row crosses back. Every row now
+  records `withinResidency` (starting true: wrongly true only leaves a row
+  rendered, wrongly false could empty a visible one), and a `MountDeps`
+  `afterUnmount` hook — run after every unmount attempt, including `onBlur`'s
+  and an eviction's, which bypass the view's wrapper — unloads the row if it is
+  still outside residency and residency may touch it.
+* **`onBlur` reads `withinKeep`**, not `intersecting`: an editor blurred between
+  the two margins is one the keep observer itself would have kept.
+* **Removal unobserves.** A row removed without a reload is unobserved by all
+  three observers and dropped from the queue (`unobserveRow`).

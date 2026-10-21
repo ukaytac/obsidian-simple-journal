@@ -155,6 +155,19 @@ the answers come out right.
 - [ ] **5. New entry.** Run **New journal entry**: the composer opens with the
       caret in it, exactly as before.
 
+Added with the residency and staged-mounting work (spec
+`docs/superpowers/specs/2026-10-21-residency-and-staged-mounting-design.md`);
+check 6 is **6. Mobile: mounting never raises the keyboard** under
+`## Run these first`, and is part of the same pass.
+
+- [ ] **7. Coming back.** Scroll far down, then back up through what you read:
+      rows are rendered before they arrive and nothing jumps.
+- [ ] **8. New entry from deep in the timeline.** Run **New journal entry** from
+      far down: caret in the composer, keyboard up, and it stays while rows
+      below mount.
+- [ ] **9. Tap a row that just arrived.** Tap an entry that just scrolled into
+      view: its editor opens with the caret and the keyboard.
+
 ## Off-screen rows — needs a running Obsidian
 
 Open, because static entry bodies now carry `content-visibility: auto` (see
