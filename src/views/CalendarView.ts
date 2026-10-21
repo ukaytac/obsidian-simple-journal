@@ -88,22 +88,32 @@ export class CalendarView extends ItemView {
    * on the next batch, as it always has.
    */
   private renderIfChanged(): void {
-    if (this.currentSignature() === this.renderedSignature) return;
-    this.render();
+    const state = this.monthState();
+    if (state.signature === this.renderedSignature) return;
+    this.render(state);
   }
 
-  private currentSignature(): string {
+  /**
+   * Everything one paint of the displayed month needs from the index, worked
+   * out once. The day set used to be recomputed by the signature check, by
+   * `render`'s own signature, and again by `renderGrid`: three passes over
+   * the same two binary searches for a batch that changed nothing on screen.
+   * `getEntries()` returns the live index and is read fresh on every call
+   * here (never cached across calls), so an in-flight vault change is always
+   * reflected without a separate cache-invalidation path.
+   */
+  private monthState(): { year: number; month: number; entryDays: Set<string>; signature: string } {
     const year = this.displayedMonth.getFullYear();
     const month = this.displayedMonth.getMonth();
     const entryDays = entryDaysInMonth(this.plugin.journal.getEntries(), year, month);
-    return calendarSignature(year, month, entryDays, dayKey(new Date()));
+    return { year, month, entryDays, signature: calendarSignature(year, month, entryDays, dayKey(new Date())) };
   }
 
   /** Rebuilds the header and grid for `this.displayedMonth`. */
-  private render(): void {
-    this.renderedSignature = this.currentSignature();
+  private render(state = this.monthState()): void {
+    this.renderedSignature = state.signature;
     this.renderHeader();
-    this.renderGrid();
+    this.renderGrid(state.year, state.month, state.entryDays);
   }
 
   private renderHeader(): void {
@@ -130,7 +140,7 @@ export class CalendarView extends ItemView {
       .onClick(() => this.stepMonth(1));
   }
 
-  private renderGrid(): void {
+  private renderGrid(year: number, month: number, entryDays: Set<string>): void {
     this.gridEl.empty();
 
     const weekdayRowEl = this.gridEl.createDiv({ cls: "journal-calendar-weekdays" });
@@ -138,13 +148,7 @@ export class CalendarView extends ItemView {
       weekdayRowEl.createDiv({ cls: "journal-calendar-weekday", text: label });
     }
 
-    const year = this.displayedMonth.getFullYear();
-    const month = this.displayedMonth.getMonth();
     const cells = buildMonthGrid(year, month);
-    // `getEntries()` returns the live index; reading it fresh on every
-    // render (rather than caching it) means an in-flight vault change is
-    // always reflected without a separate cache-invalidation path.
-    const entryDays = entryDaysInMonth(this.plugin.journal.getEntries(), year, month);
     const todayKey = dayKey(new Date());
 
     const daysEl = this.gridEl.createDiv({ cls: "journal-calendar-days" });
