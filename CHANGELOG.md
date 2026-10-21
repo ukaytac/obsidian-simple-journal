@@ -3,6 +3,48 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.6.0
+
+A release about speed. Nothing you write, and nothing the timeline shows, has
+changed — the journal just does far less work to show it.
+
+### The timeline no longer scrolls by itself on a phone
+
+On an iPhone the journal could keep sliding down and loading older entries
+with nothing touching the screen. A freshly loaded page was measured before its
+entries had any text in them, so it looked short and the next page loaded, and
+the next; entries then changing height as they filled in started it again.
+
+The timeline now waits for a page's entries to be drawn before deciding whether
+it needs another, and loads more only once you have actually scrolled. An entry
+keeps its height while its editor opens and closes, so the text you are
+reading stays where it is.
+
+### Faster everywhere else
+
+- **Startup.** The journal no longer reprocesses every file in the vault each
+  time Obsidian opens. On a test journal of 50,000 entries that took startup
+  work from about 11 seconds to about 0.2.
+- **Updating existing entries** on a large journal: from about 9 seconds to a
+  fraction of one for 10,000 entries.
+- **Typing in other notes** costs the journal nothing any more.
+- **Search** no longer reprocesses the whole journal on every keystroke, and
+  says "Reading the journal…" if opening it takes a moment.
+- **The settings tab** opens without scanning the journal.
+- **Battery.** Entries you are not editing check for changes every two seconds
+  instead of four times a second, and the calendar and the mentions panels only
+  redraw when something they show has changed.
+- **Long sessions.** Entries far above or below what you are reading give their
+  memory back and are drawn again before you scroll to them, so scrolling stays
+  as smooth after a few hundred entries as at the start.
+
+### Small changes you may notice
+
+- **On a touch screen, an entry's editor opens on a tap**, not when a scroll
+  happens to start on it, so the keyboard no longer appears mid-scroll.
+- **An editor stays open a little longer** after you scroll it out of view, so
+  entries at the edge of the screen stop flickering between editable and not.
+
 ## 1.5.1
 
 ### Opening the journal on a phone no longer raises the keyboard
