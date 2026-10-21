@@ -61,7 +61,7 @@ export interface SaveDeps {
  * Neither `EntryEditor` implementation has a dirty check — `flush()` always
  * fires its change callback — so without this guard, every unmount
  * (including a plain scroll past an entry nobody edited, since
- * `mountObserver` flushes on every exit) would call `write` unconditionally:
+ * `keepObserver` flushes on every exit) would call `write` unconditionally:
  * a real mtime bump, a real vault `modify` event, a real sync upload, for
  * zero actual change. `vault.process` itself is not documented to skip an
  * identical write, so this can't be left to it.

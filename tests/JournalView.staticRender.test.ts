@@ -108,7 +108,12 @@ describe("JournalView off-screen skipping", () => {
     expect(rendered.editor).not.toBeNull();
     expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(false);
 
-    mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+    // Unmounting is the keep band's job since staged mounting; leaving the
+    // mount margin alone no longer tears an editor down.
+    const keepObserver = internals(h.view).keepObserver as {
+      trigger(states: Array<{ target: Element; isIntersecting: boolean }>): void;
+    };
+    keepObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
     await settle();
     expect(rendered.editor).toBeNull();
     expect((rendered.bodyEl as HTMLElement).classList.contains("is-static")).toBe(true);

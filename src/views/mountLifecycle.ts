@@ -70,11 +70,19 @@ export interface MountEntry {
   saveHandle: number | null;
   savedBody: string;
   saveToken: number;
+  /** Inside `MOUNT_ROOT_MARGIN`: the question `mountEditor` asks. */
   intersecting: boolean;
+  /**
+   * Inside the wider `KEEP_ROOT_MARGIN`: the question every "is this editor
+   * still wanted?" check asks — `unmountEditor`'s re-entered-while-flushing
+   * decline and `onBlur`'s second chance. See `JournalView.KEEP_ROOT_MARGIN`
+   * for why the two margins differ.
+   */
+  withinKeep: boolean;
   mountDistance: number;
   opToken: number;
   /**
-   * The body's height as measured by the mount observer's callback BEFORE
+   * The body's height as measured by the keep observer's callback BEFORE
    * it started unmounting a batch, or null when nobody measured it. See
    * `unmountEditor`'s freeze for why the read is hoisted.
    */
@@ -193,12 +201,18 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
    * none of the three call sites can drift out of sync with each other.
    *
    * `onBlur` unmounts the editor once it is both unfocused and already
-   * outside the viewport: `mountObserver` skips unmounting a focused editor
+   * outside the keep band: `keepObserver` skips unmounting a focused editor
    * (see `unmountEditor`) so a scroll-driven blur never rips the keyboard
    * out from under the user mid-sentence, but that means the entry needs a
    * second chance to unmount once the user actually does click away —
    * otherwise an entry the user typed in and then scrolled past stays
    * mounted for the rest of the session.
+   *
+   * `withinKeep`, not `intersecting`: this is the same question the keep
+   * observer answers — is this editor still wanted — and an editor blurred
+   * while it sits between the two margins is one the observer itself would
+   * have kept. Asking `intersecting` here would put back, through blur, the
+   * edge thrash the keep band exists to remove.
    */
   function wireEditor(target: MountEntry, editor: EntryEditor): void {
     editor.onChange((value) => scheduleSave(target, value, deps.save));
@@ -210,7 +224,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     editor.onUnusable(() => void replaceWithFallback(target));
 
     editor.onBlur(() => {
-      if (!target.intersecting) void unmountEditor(target);
+      if (!target.withinKeep) void unmountEditor(target);
     });
   }
 
@@ -311,10 +325,12 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     if (target.editor) return;
 
     if (!target.intersecting) {
-      // Left MOUNT_ROOT_MARGIN while this was reading the file. The
-      // observer's exit transition already fired and called unmountEditor,
-      // which no-opped (target.editor was still null), and no further
-      // callback arrives until another transition — so this must not mount.
+      // Left MOUNT_ROOT_MARGIN while this was reading the file. The mount
+      // observer's exit transition already fired (it only records the exit;
+      // unmounting is the keep observer's), and no further mount callback
+      // arrives until another transition — so this must not mount: an
+      // editor built now would sit outside the margin it mounts in, and on a
+      // row that may never leave the keep band again to be taken down.
       // The static body is untouched and still showing; only a row whose
       // first static render this mount pre-empted (bumping opToken above)
       // has nothing on screen, and gets the text just read.
@@ -361,18 +377,18 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
 
   /**
    * Flushes pending edits, destroys the editor, and restores static
-   * rendering. Never unmounts a focused editor: `mountObserver` calls this
-   * unconditionally the moment an entry leaves `MOUNT_ROOT_MARGIN`, and
+   * rendering. Never unmounts a focused editor: `keepObserver` calls this
+   * unconditionally the moment an entry leaves `KEEP_ROOT_MARGIN`, and
    * ripping the keyboard focus out from under the user mid-sentence just
    * because they scrolled would be worse than leaving one editor mounted
    * past the margin. `wireEditor`'s `onBlur` callback gives that entry a
    * second chance to unmount once the user actually clicks away.
    *
    * `evict`, when true, marks this call as an `enforceMountLimit` eviction
-   * rather than the ordinary viewport-driven unmount `mountObserver` fires
+   * rather than the ordinary viewport-driven unmount `keepObserver` fires
    * on every exit transition. The two mean different things by "still
-   * intersecting": for the ordinary path it means "re-entered
-   * `MOUNT_ROOT_MARGIN` while the flush was in flight, decline" (see below).
+   * nearby": for the ordinary path it means "re-entered
+   * `KEEP_ROOT_MARGIN` while the flush was in flight, decline" (see below).
    * For an eviction it means nothing of the sort — `pickEvictionCandidate`
    * already chose this exact path as its fallback specifically *because*
    * every candidate was intersecting (see `mountWindow.ts`), so declining
@@ -415,7 +431,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
 
     if (target.editor.hasFocus()) {
       // Still legitimately mounted — keep it tracked. Reachable when this is
-      // called directly by mountObserver's exit callback (which never
+      // called directly by keepObserver's exit callback (which never
       // pre-removes `order`) as well as, in principle, via enforceMountLimit
       // (which does): pickEvictionCandidate already excludes focused entries
       // at selection time, so this path shouldn't fire from there, but
@@ -457,13 +473,17 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
       return;
     }
 
-    if (target.intersecting && !opts.evict) {
-      // Re-entered MOUNT_ROOT_MARGIN while the flush was in flight.
-      // mountEditor's own guard (`if (target.editor) return`) already saw
-      // this editor still set and no-opped, so no other code path will
-      // remount it — leave it mounted rather than destroying a now-visible
-      // entry's live editor out from under the user. Keep it tracked in
-      // `order` for the same reason as the focused case above.
+    if (target.withinKeep && !opts.evict) {
+      // Re-entered KEEP_ROOT_MARGIN while the flush was in flight — the band
+      // an editor stays mounted in, not the narrower one it mounts in: this
+      // asks whether the row is still wanted, and that is the keep band's
+      // question (a row back inside it would not have been unmounted had it
+      // got there a moment sooner). mountEditor's own guard
+      // (`if (target.editor) return`) already saw this editor still set and
+      // no-opped, so no other code path will remount it — leave it mounted
+      // rather than destroying a nearby entry's live editor out from under
+      // the user. Keep it tracked in `order` for the same reason as the
+      // focused case above.
       ensureMountOrderContains(target.entry.file.path);
       return;
     }
@@ -493,7 +513,7 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
 
     // Freeze the height across the swap so the scroll position does not shift.
     //
-    // `frozenHeight` was read by the mount observer's callback before it
+    // `frozenHeight` was read by the keep observer's callback before it
     // started this batch's unmounts: `offsetHeight` forces layout, and the
     // `minHeight` write below invalidates it, so reading here would make a
     // fast flick that delivers N leaving rows pay N layouts (read, write,

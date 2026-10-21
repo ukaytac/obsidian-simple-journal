@@ -63,7 +63,7 @@ describe("JournalView mount window", () => {
     expect(rendered.get(a.path).editor).toBeNull();
   });
 
-  it("leaving the mount margin unmounts the editor and restores static rendering", async () => {
+  it("leaving the keep band unmounts the editor and restores static rendering", async () => {
     const h = createHarness();
     const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "alpha body");
     h.service.load();
@@ -71,13 +71,16 @@ describe("JournalView mount window", () => {
 
     const rendered = internals(h.view).rendered;
     const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const keepObserver = internals(h.view).keepObserver as FakeIntersectionObserver;
     const el = rendered.get(a.path).el;
 
     mountObserver.trigger([{ target: el, isIntersecting: true }]);
     await settle();
     expect(rendered.get(a.path).editor).not.toBeNull();
 
-    mountObserver.trigger([{ target: el, isIntersecting: false }]);
+    // Unmounting is `keepObserver`'s job since staged mounting (see
+    // tests/JournalView.staging.test.ts for the band itself).
+    keepObserver.trigger([{ target: el, isIntersecting: false }]);
     await settle();
 
     expect(rendered.get(a.path).editor).toBeNull();
@@ -336,7 +339,7 @@ describe("JournalView mount window", () => {
     // Nothing on disk yet — still inside the 500ms save debounce.
     expect(h.app.vault.contents.get(file.path)).not.toContain("edited body");
 
-    mountObserver.trigger([{ target: el, isIntersecting: false }]);
+    (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([{ target: el, isIntersecting: false }]);
     await settle();
     await settle();
 
@@ -437,7 +440,8 @@ describe("JournalView mount window", () => {
       frozen.push(`${name}=${target.bodyEl.style.minHeight}`);
     });
 
-    mountObserver.trigger([
+    // The pre-read moved with the unmounts, to `keepObserver`.
+    (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([
       { target: rowA.el, isIntersecting: false },
       { target: rowB.el, isIntersecting: false },
     ]);
@@ -576,10 +580,14 @@ describe("JournalView mount window", () => {
     const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
     textarea.focus();
 
-    // Scrolled out while still focused: mountObserver's exit transition
-    // calls unmountEditor unconditionally, but it must decline — the editor
-    // stays mounted and focused even though it's now outside the margin.
+    // Scrolled out while still focused: both margins report the exit, and
+    // keepObserver's calls unmountEditor unconditionally, but it must decline
+    // — the editor stays mounted and focused even though it's now outside
+    // both margins.
     mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+    (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([
+      { target: rendered.el, isIntersecting: false },
+    ]);
     await settle();
     expect(rendered.editor).not.toBeNull();
     expect(rendered.editor.hasFocus()).toBe(true);
@@ -660,7 +668,9 @@ describe("JournalView mount window", () => {
       const cached = vi.spyOn(h.repository, "readBodyCached");
       const uncached = vi.spyOn(h.repository, "readBody");
 
-      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([
+        { target: rendered.el, isIntersecting: false },
+      ]);
       await settle();
 
       expect(rendered.editor).toBeNull();
@@ -677,6 +687,12 @@ describe("JournalView mount window", () => {
       await settle();
       const rendered = internals(h.view).rendered.get(a.path);
       const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+      // Inside the keep band too, as a mounted row always is — so the blur
+      // below leaves the editor mounted and the keep band's exit is what
+      // unmounts it, as it was before staged mounting.
+      (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([
+        { target: rendered.el, isIntersecting: true },
+      ]);
       mountObserver.trigger([{ target: rendered.el, isIntersecting: true }]);
       await settle();
       const textarea = rendered.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
@@ -693,7 +709,11 @@ describe("JournalView mount window", () => {
       expect(rendered.editor.getValue()).toBe("alpha body");
 
       textarea.blur();
-      mountObserver.trigger([{ target: rendered.el, isIntersecting: false }]);
+      await settle();
+      expect(rendered.editor).not.toBeNull();
+      (internals(h.view).keepObserver as FakeIntersectionObserver).trigger([
+        { target: rendered.el, isIntersecting: false },
+      ]);
       await settle();
 
       expect(rendered.editor).toBeNull();

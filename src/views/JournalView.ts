@@ -57,8 +57,9 @@ const COMPOSER_FOCUS_CLAIM_MS = 400;
 
 /**
  * Backstop cap on simultaneously mounted editors. The primary mechanism that
- * keeps the mounted set bounded is `mountObserver` reacting to entries
- * entering/leaving the viewport (see `installMountObserver`); this only binds
+ * keeps the mounted set bounded is `mountObserver`/`keepObserver` reacting
+ * to entries entering/leaving the viewport (see `installMountObserver` and
+ * `installKeepObserver`); this only binds
  * when more entries are simultaneously within the observed window than this
  * allows — a very tall pane, or many short entries packed into
  * `MOUNT_ROOT_MARGIN`. Lower on mobile, where memory is tighter.
@@ -66,14 +67,42 @@ const COMPOSER_FOCUS_CLAIM_MS = 400;
 const MAX_MOUNTED_EDITORS = Platform.isMobile ? 25 : 60;
 
 /**
- * How far outside the visible viewport an entry mounts a live editor / stays
- * mounted, so typing is ready slightly before the entry is actually on
- * screen rather than popping in exactly at the edge. Larger on mobile: a
+ * How far outside the visible viewport an entry mounts a live editor, so
+ * typing is ready slightly before the entry is actually on screen rather than
+ * popping in exactly at the edge. It stays mounted out to the wider
+ * `KEEP_ROOT_MARGIN`. Larger on mobile: a
  * flick scroll covers more of the pane per gesture there than a desktop
  * scroll-wheel tick does, so a small margin would otherwise show a visible
  * lag between an entry appearing and it becoming editable.
  */
 const MOUNT_ROOT_MARGIN = Platform.isMobile ? "900px 0px" : "400px 0px";
+
+/**
+ * How far outside the visible viewport a mounted editor STAYS mounted —
+ * `MOUNT_ROOT_MARGIN` plus 600px on each side (see `installKeepObserver`).
+ *
+ * The gap is hysteresis. With one margin doing both jobs, a row sitting at its
+ * edge mounted and unmounted again every time the user nudged the scroll: a
+ * file read, an editor built, a flush and a static render, over and over, for
+ * a row nobody was looking at. Mounting at one edge and unmounting at another
+ * 600px further out means a row has to travel a real distance before it pays
+ * for the round trip again.
+ *
+ * Must stay inside `RESIDENCY_ROOT_MARGIN` on both platforms: residency never
+ * touches a row with an editor, and that is only free of consequence while
+ * every mounted row is also a resident one.
+ */
+const KEEP_ROOT_MARGIN = Platform.isMobile ? "1500px 0px" : "1000px 0px";
+
+/**
+ * How many off-screen rows `mountObserver` mounts per animation frame (see
+ * `mountPendingRows`). Rows overlapping the viewport itself mount at once, as
+ * they always did; the rest only need to be ready before the user reaches
+ * them, and building a dozen editors in one task — which is what a page
+ * landing inside the margin used to do — is a long frame the user feels as a
+ * stutter in the scroll they are in the middle of.
+ */
+const MOUNTS_PER_FRAME = 2;
 
 /**
  * How far outside the visible viewport a row keeps its rendered body and its
@@ -143,6 +172,13 @@ interface RenderedEntry {
   /** Whether `el` currently intersects the viewport, per `mountObserver`. */
   intersecting: boolean;
   /**
+   * Whether `el` is inside `KEEP_ROOT_MARGIN`, per `keepObserver` — the band
+   * a mounted editor stays mounted in. Distinct from `intersecting` on
+   * purpose: that one says "mount me", this one says "do not unmount me", and
+   * the gap between them is the hysteresis (see `KEEP_ROOT_MARGIN`).
+   */
+  withinKeep: boolean;
+  /**
    * Absolute pixel distance between this entry's vertical centre and the
    * viewport's, as of the most recent `mountObserver` callback — fed to
    * `enforceMountLimit` (see `mountWindow.ts`'s `MountState.distance`) so an
@@ -153,7 +189,7 @@ interface RenderedEntry {
    */
   mountDistance: number;
   /**
-   * Body height pre-read by `mountObserver`'s callback for a row leaving in
+   * Body height pre-read by `keepObserver`'s callback for a row leaving in
    * this batch, consumed (and reset to null) by `unmountEditor`. See there.
    */
   frozenHeight: number | null;
@@ -270,6 +306,22 @@ export class JournalView extends ItemView {
    * sentinel), which only ever watches one element.
    */
   private mountObserver: IntersectionObserver | null = null;
+  /**
+   * Watches the same rows as `mountObserver`, at the wider `KEEP_ROOT_MARGIN`,
+   * and is the only observer that unmounts: a row leaving it gives its editor
+   * back. See `installKeepObserver`.
+   */
+  private keepObserver: IntersectionObserver | null = null;
+  /**
+   * Rows that entered `MOUNT_ROOT_MARGIN` without being on screen, waiting
+   * for `mountPendingRows` to mount them a few per frame. Holds the
+   * `RenderedEntry` itself rather than its path, so a re-key cannot strand an
+   * entry here under a path nothing will ever look up again; every consumer
+   * re-checks that the object is still the one `rendered` holds.
+   */
+  private readonly pendingMounts = new Set<RenderedEntry>();
+  /** The `requestAnimationFrame` handle of the scheduled `mountPendingRows`, or null. */
+  private pendingMountFrame: number | null = null;
   /**
    * Watches the same rows as `mountObserver`, at `RESIDENCY_ROOT_MARGIN`: a
    * static row leaving it gives back its rendered body and `Component`, and
@@ -542,6 +594,7 @@ export class JournalView extends ItemView {
     fileIdentityStillValid: (file) => this.app.vault.getAbstractFileByPath(file.path) === file,
     logUnsavedTextIfLost: (rendered) => this.logUnsavedTextIfLost(rendered as RenderedEntry),
     clearMobileTimers: (rendered) => this.clearMobileTimers(rendered as RenderedEntry),
+    unobserveRow: (rendered) => this.unobserveRow(rendered as RenderedEntry),
     matchesScope: (entry) => this.matchesScope(entry),
     refreshEntryTags: (rendered) => this.refreshEntryTags(rendered),
     save: this.saveDeps,
@@ -727,6 +780,7 @@ export class JournalView extends ItemView {
     // anchor's page rather than the newest entries in the whole journal.
     this.lastLoadedPath = this.anchorDate ? anchorSeed(this.index, this.anchorDate) : null;
     this.installMountObserver();
+    this.installKeepObserver();
     this.installResidencyObserver();
 
     if (this.index.length === 0) {
@@ -900,7 +954,13 @@ export class JournalView extends ItemView {
   private async clearTimeline(): Promise<ComposerSnapshot | null> {
     this.teardownSentinel();
     this.teardownMountObserver();
+    this.teardownKeepObserver();
     this.teardownResidencyObserver();
+    // Every row is about to be discarded, and a frame that ran after this
+    // would mount editors into a timeline already being torn down. The
+    // generation check in `mountEditor` would catch it after the read; this
+    // keeps it from starting the read at all.
+    this.cancelPendingMounts();
 
     // An open, uncommitted composer has no entry in `this.rendered` for the
     // flush-and-destroy loop below to reach. Without this, a reload (or the
@@ -1315,11 +1375,27 @@ export class JournalView extends ItemView {
    * rendered entry is `observe()`d as it is appended (see `appendEntry`);
    * this only needs to construct the observer itself once per timeline.
    *
-   * An entry crossing into `MOUNT_ROOT_MARGIN` mounts a live editor; crossing
-   * back out unmounts it (flushing first) and restores static rendering.
-   * This is the primary bound on mounted editors — `MAX_MOUNTED_EDITORS` in
-   * `enforceMountLimit` is only a backstop for when more entries are
-   * simultaneously within the margin than that allows.
+   * An entry crossing into `MOUNT_ROOT_MARGIN` mounts a live editor. Crossing
+   * back out only records that it left — unmounting is `keepObserver`'s job,
+   * at a wider margin, so a row at the edge does not mount and unmount on
+   * every nudge (see `KEEP_ROOT_MARGIN`). This is the primary bound on mounted
+   * editors — `MAX_MOUNTED_EDITORS` in `enforceMountLimit` is only a backstop
+   * for when more entries are simultaneously within the margin than that
+   * allows.
+   *
+   * Mounting is staged. A row that overlaps the viewport itself mounts in this
+   * callback, exactly as before: it is what the user is looking at, and on a
+   * jump (`New journal entry` from deep history, a calendar click) it is what
+   * the composer's focus window was measured against. A row that is only
+   * inside the margin joins `pendingMounts` and is mounted by
+   * `mountPendingRows`, `MOUNTS_PER_FRAME` at a time, nearest first. Those
+   * later mounts cannot take the caret from the composer: mounting an
+   * embedded editor does not focus it (`showEditorWithoutFocus`), and the
+   * textarea fallback never did.
+   *
+   * "Overlaps" is inclusive — a row whose edge touches the viewport's counts.
+   * It is about to be on screen, and the cost of treating it as such is one
+   * mount a frame early.
    */
   private installMountObserver(): void {
     this.teardownMountObserver();
@@ -1334,42 +1410,42 @@ export class JournalView extends ItemView {
         // MOUNT_ROOT_MARGIN) viewport rect per callback, not per entry —
         // `enforceMountLimit`'s distance-based eviction (see
         // `mountWindow.ts`) needs a common centre to measure every entry
-        // against. `boundingClientRect` on each `observerEntry` below is
-        // already computed by the browser as part of the intersection
-        // observation itself, so this is the only extra layout read this
-        // callback performs.
+        // against, and staging needs the viewport's own edges to tell "on
+        // screen" from "inside the margin". `boundingClientRect` on each
+        // `observerEntry` below is already computed by the browser as part
+        // of the intersection observation itself, so this is the only extra
+        // layout read this callback performs.
         const rootRect = this.contentEl.getBoundingClientRect();
         const rootCenter = rootRect.top + rootRect.height / 2;
 
-        // Every height this batch is about to freeze, read before the first
-        // unmount can write: `unmountEditor` sets `min-height` and swaps the
-        // body's content, and each of those invalidates layout, so a read
-        // left inside it would be a fresh forced layout per leaving row on a
-        // fast flick. Only rows that have an editor to tear down need one.
         for (const observerEntry of entries) {
-          if (observerEntry.isIntersecting) continue;
-          const path = (observerEntry.target as HTMLElement).dataset.path;
-          const leaving = path ? this.rendered.get(path) : undefined;
-          if (leaving?.editor) leaving.frozenHeight = leaving.bodyEl.offsetHeight;
-        }
-
-        for (const observerEntry of entries) {
-          const path = (observerEntry.target as HTMLElement).dataset.path;
-          if (!path) continue;
-
-          const rendered = this.rendered.get(path);
+          const target = observerEntry.target as HTMLElement;
+          const rendered = this.renderedForObserved(target);
           if (!rendered) continue;
 
           rendered.intersecting = observerEntry.isIntersecting;
           const rect = observerEntry.boundingClientRect;
           rendered.mountDistance = Math.abs(rect.top + rect.height / 2 - rootCenter);
 
-          if (observerEntry.isIntersecting) {
+          if (!observerEntry.isIntersecting) {
+            // Nothing to unmount here (see `installKeepObserver`); only a
+            // mount that has not started yet is withdrawn. One already
+            // reading the file bails on its own (`mountEditor`'s
+            // `intersecting` re-check).
+            this.pendingMounts.delete(rendered);
+            continue;
+          }
+
+          const onScreen = rect.bottom >= rootRect.top && rect.top <= rootRect.bottom;
+          if (onScreen) {
+            this.pendingMounts.delete(rendered);
             void this.mountEditor(rendered);
           } else {
-            void this.unmountEditor(rendered);
+            this.pendingMounts.add(rendered);
           }
         }
+
+        this.schedulePendingMounts();
       },
       {
         root: this.contentEl,
@@ -1384,13 +1460,155 @@ export class JournalView extends ItemView {
   }
 
   /**
-   * Hands one row to every observer that watches rows: `mountObserver` and
-   * `residencyObserver`. The one way a row is observed, so the two can never
-   * disagree about which rows they watch.
+   * The live row an observer callback is talking about, or undefined.
+   *
+   * By identity, not only by path: an element's `data-path` outlives the row
+   * it belonged to — a removed row is unobserved (`unobserveRow`), but a
+   * callback the browser had already queued for it can still be delivered —
+   * and by then that path may belong to a different, live row. Acting on the
+   * live row because a dead element said so would mount, unmount or unload
+   * the wrong entry.
+   */
+  private renderedForObserved(target: HTMLElement): RenderedEntry | undefined {
+    const path = target.dataset.path;
+    if (!path) return undefined;
+    const rendered = this.rendered.get(path);
+    if (!rendered || rendered.el !== target) return undefined;
+    return rendered;
+  }
+
+  /**
+   * Schedules one `mountPendingRows` frame, unless one is already scheduled
+   * or there is nothing to mount. One loop at a time: two would each take
+   * `MOUNTS_PER_FRAME` from the same queue and double the per-frame cost the
+   * staging exists to cap.
+   *
+   * On the view's own window (`contentEl.win`), like `openComposer`'s focus
+   * claim, so a popout leaf is paced by the window it is drawn in.
+   */
+  private schedulePendingMounts(): void {
+    if (this.pendingMountFrame !== null || this.pendingMounts.size === 0) return;
+    this.pendingMountFrame = this.contentEl.win.requestAnimationFrame(() => this.mountPendingRows());
+  }
+
+  /**
+   * One frame of staged mounting: the `MOUNTS_PER_FRAME` queued rows nearest
+   * the viewport's centre, then the next frame if any remain.
+   *
+   * A queued row is dropped rather than mounted when it is no longer inside
+   * the mount margin (`mountEditor` would read the file only to bail), when it
+   * already has an editor (a tap's `remountOnInteraction` got there first), or
+   * when it is no longer the row `rendered` holds for its path (removed, or
+   * replaced by a reposition). `mountDistance` is as of each row's latest
+   * `mountObserver` report, which is the freshest distance anything has.
+   */
+  private mountPendingRows(): void {
+    this.pendingMountFrame = null;
+
+    const candidates: RenderedEntry[] = [];
+    for (const rendered of this.pendingMounts) {
+      const live = this.rendered.get(rendered.el.dataset.path ?? "") === rendered;
+      if (!live || !rendered.intersecting || rendered.editor) {
+        this.pendingMounts.delete(rendered);
+        continue;
+      }
+      candidates.push(rendered);
+    }
+
+    candidates.sort((a, b) => a.mountDistance - b.mountDistance);
+    for (const rendered of candidates.slice(0, MOUNTS_PER_FRAME)) {
+      this.pendingMounts.delete(rendered);
+      void this.mountEditor(rendered);
+    }
+
+    this.schedulePendingMounts();
+  }
+
+  /** Drops every queued mount and the frame that would have run them. */
+  private cancelPendingMounts(): void {
+    if (this.pendingMountFrame !== null) {
+      this.contentEl.win.cancelAnimationFrame(this.pendingMountFrame);
+      this.pendingMountFrame = null;
+    }
+    this.pendingMounts.clear();
+  }
+
+  /**
+   * Installs the observer that unmounts: a row leaving `KEEP_ROOT_MARGIN`
+   * flushes and gives back its editor (`unmountEditor`, with all its
+   * declines — focused, dirty, back inside the band while flushing). Every
+   * row it reports on has its `withinKeep` updated, which is what
+   * `unmountEditor`'s "re-entered while flushing" decline and an editor's
+   * `onBlur` second chance read.
+   *
+   * Constructed from the timeline's own window, same reasoning as
+   * `installSentinel`: this must keep working if the leaf is in a popout.
+   */
+  private installKeepObserver(): void {
+    this.teardownKeepObserver();
+
+    const win = this.timelineEl.win as Window & { IntersectionObserver: typeof IntersectionObserver };
+
+    this.keepObserver = new win.IntersectionObserver(
+      (entries) => {
+        const leaving: RenderedEntry[] = [];
+        for (const observerEntry of entries) {
+          const rendered = this.renderedForObserved(observerEntry.target as HTMLElement);
+          if (!rendered) continue;
+
+          rendered.withinKeep = observerEntry.isIntersecting;
+          if (observerEntry.isIntersecting) continue;
+          // Outside the keep band is outside the mount margin too; a queued
+          // mount for it is stale whatever `mountObserver` last said.
+          this.pendingMounts.delete(rendered);
+          if (rendered.editor) leaving.push(rendered);
+        }
+
+        // Every height this batch is about to freeze, read before the first
+        // unmount can write: `unmountEditor` sets `min-height` and swaps the
+        // body's content, and each of those invalidates layout, so a read
+        // left inside it would be a fresh forced layout per leaving row on a
+        // fast flick. Only rows that have an editor to tear down need one.
+        for (const rendered of leaving) rendered.frozenHeight = rendered.bodyEl.offsetHeight;
+        for (const rendered of leaving) void this.unmountEditor(rendered);
+      },
+      {
+        root: this.contentEl,
+        rootMargin: KEEP_ROOT_MARGIN,
+      },
+    );
+  }
+
+  private teardownKeepObserver(): void {
+    this.keepObserver?.disconnect();
+    this.keepObserver = null;
+  }
+
+  /**
+   * Hands one row to every observer that watches rows: `mountObserver`,
+   * `keepObserver` and `residencyObserver`. The one way a row is observed, so
+   * they can never disagree about which rows they watch.
    */
   private observeRow(el: HTMLElement): void {
     this.mountObserver?.observe(el);
+    this.keepObserver?.observe(el);
     this.residencyObserver?.observe(el);
+  }
+
+  /**
+   * The inverse of `observeRow`, for a row leaving the timeline without a
+   * reload (`changeApplication`'s `removeRenderedEntry`). Without it a removed
+   * row stayed observed by all three until the next reload disconnected them:
+   * a detached element the observers kept computing geometry for, and kept
+   * reporting under a `data-path` that may since belong to a live row. Also
+   * withdraws a queued mount, which `mountPendingRows` would only have
+   * dropped a frame later.
+   */
+  private unobserveRow(rendered: RenderedEntry): void {
+    this.mountObserver?.unobserve(rendered.el);
+    this.keepObserver?.unobserve(rendered.el);
+    this.residencyObserver?.unobserve(rendered.el);
+    this.pendingMounts.delete(rendered);
   }
 
   /**
@@ -1419,7 +1637,9 @@ export class JournalView extends ItemView {
    * mount already reading the file — leaving a row inside the mount window
    * with no editor. The mount either swaps the editor in or, if the row left
    * again, renders the body itself (`mountEditor`'s `renderComponent === null`
-   * branch).
+   * branch). Only a mount that has started, though: a row `mountObserver`
+   * merely queued (`pendingMounts`, off screen) renders here like any other,
+   * because nothing is reading its file yet and the queue may still drop it.
    *
    * Constructed from the timeline's own window, same reasoning as
    * `installSentinel`: this must keep working if the leaf is in a popout.
@@ -1434,15 +1654,9 @@ export class JournalView extends ItemView {
         const leaving: RenderedEntry[] = [];
         const entering: RenderedEntry[] = [];
         for (const observerEntry of entries) {
-          const target = observerEntry.target as HTMLElement;
-          const path = target.dataset.path;
-          if (!path) continue;
-          const rendered = this.rendered.get(path);
-          // By identity: a row removed from the timeline stays observed until
-          // the next reload disconnects this observer, and its element still
-          // carries its old `data-path` — which may by now belong to a
-          // different, live row.
-          if (!rendered || rendered.el !== target) continue;
+          // By identity — see `renderedForObserved`.
+          const rendered = this.renderedForObserved(observerEntry.target as HTMLElement);
+          if (!rendered) continue;
           if (!this.mayChangeResidency(rendered)) continue;
           (observerEntry.isIntersecting ? entering : leaving).push(rendered);
         }
@@ -1455,7 +1669,15 @@ export class JournalView extends ItemView {
 
         for (const rendered of entering) {
           if (!rendered.bodyEl.hasClass("is-dehydrated")) continue;
-          if (rendered.intersecting) continue;
+          // Left to a mount that has already STARTED (see this method's doc).
+          // A row still queued in `pendingMounts` has not: nothing is reading
+          // its file yet, so rendering it now races nothing — the mount, when
+          // its frame comes, bumps `opToken` past this render and replaces it
+          // as any mount replaces a static body. And it must render: if the
+          // row leaves the mount margin before its turn, the queue drops it
+          // and no mount ever runs, so skipping here would leave a row on its
+          // way into view with an empty body and nothing coming to fill it.
+          if (rendered.intersecting && !this.pendingMounts.has(rendered)) continue;
           rendered.bodyEl.removeClass("is-dehydrated");
           void this.renderStatic(rendered);
         }
@@ -1612,6 +1834,7 @@ export class JournalView extends ItemView {
       // since nothing can trigger a save before that happens.
       savedBody: "",
       intersecting: false,
+      withinKeep: false,
       mountDistance: 0,
       opToken: 0,
       frozenHeight: null,
@@ -3080,6 +3303,11 @@ export class JournalView extends ItemView {
     // to. Nothing else sets this for a fresh mount outside mountEditor's own
     // observer-driven path, which this deliberately bypasses (see below).
     rendered.intersecting = true;
+    // Same reason: inside the mount margin is inside the keep band, and the
+    // observer's own report only arrives once `observeRow` below hands it
+    // over. Left false, a blur before that report would unmount the editor
+    // the user just wrote into.
+    rendered.withinKeep = true;
 
     if (plan.needsSave) {
       this.scheduleSave(rendered, plan.seed);

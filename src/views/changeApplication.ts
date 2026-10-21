@@ -142,6 +142,12 @@ export interface ChangeApplicationDeps {
   /** `this.clearMobileTimers` — shared with `clearTimeline`/`confirmDelete`. */
   clearMobileTimers(rendered: ChangeEntry): void;
   /**
+   * `this.unobserveRow` — stops every row observer watching this row and
+   * withdraws any mount queued for it. The observers are `JournalView`'s, not
+   * this seam's; a removal is the one moment this seam knows a row is gone.
+   */
+  unobserveRow(rendered: ChangeEntry): void;
+  /**
    * Whether `entry` belongs in the timeline as currently filtered —
    * `JournalView.matchesScope`. Always true when no tag scope is active.
    */
@@ -264,6 +270,10 @@ export function createChangeApplication(mountOrder: string[], deps: ChangeApplic
     deps.clearMobileTimers(rendered);
     rendered.editor?.destroy();
     rendered.renderComponent?.unload();
+    // Before the element goes: an observer still watching a detached row
+    // would keep reporting it under a `data-path` that a reposition's
+    // replacement row reuses at once.
+    deps.unobserveRow(rendered);
     rendered.el.remove();
 
     deps.deleteRendered(path);
