@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TFile } from "obsidian";
 import type { FakeIntersectionObserver } from "./obsidian-mock";
 import { addEntry, createHarness, installFakeRaf, internals, settle, timelineEl, type FakeRaf } from "./journalViewHarness";
+import { TextareaEditor } from "../src/views/TextareaEditor";
 
 /**
  * Staged mounting and hysteresis
@@ -327,6 +328,122 @@ describe("JournalView staged mounting", () => {
     await settle();
     expect(row.withinKeep).toBe(true);
     expect(row.editor).not.toBeNull();
+  });
+});
+
+describe("JournalView tapping a queued row", () => {
+  it("a tap on a row still queued in pendingMounts mounts once, and the editor it mounts gets the caret", async () => {
+    const { h, view, rows, mount } = await openWith(1);
+    const [row] = rows;
+    // Queued: inside the mount margin, off screen.
+    place(row.el, 1100);
+    mount.trigger([{ target: row.el, isIntersecting: true }]);
+    expect(view.pendingMounts.has(row)).toBe(true);
+    // Scrolled on screen with no new observer transition, then tapped.
+    place(row.el, 100);
+    const read = vi.spyOn(h.repository, "readBody");
+    const focus = vi.spyOn(TextareaEditor.prototype, "focus");
+
+    row.bodyEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    // The queue's frame arrives while the tap's mount is still reading.
+    raf.flush();
+    await settle();
+    raf.flush();
+    await settle();
+
+    expect(row.editor).not.toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(focus.mock.instances[0]).toBe(row.editor);
+  });
+
+  it("the queue skips a row whose mount is already in flight, even if it is still queued", async () => {
+    const { h, view, rows, mount } = await openWith(1);
+    const [row] = rows;
+    place(row.el, 1100);
+    mount.trigger([{ target: row.el, isIntersecting: true }]);
+    const read = vi.spyOn(h.repository, "readBody");
+
+    // A mount started some other way, leaving the row in the queue.
+    const inFlight = view.mountEditor(row);
+    expect(view.pendingMounts.has(row)).toBe(true);
+    raf.flush();
+    await inFlight;
+    await settle();
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(row.editor).not.toBeNull();
+    expect(row.mountsInFlight).toBe(0);
+  });
+});
+
+describe("JournalView unmount freeze", () => {
+  it("an unmount freezes the height as the intrinsic size too, and it survives the static render", async () => {
+    const { rows, mount, keep } = await openWith(1);
+    const [row] = rows;
+    place(row.el, 100);
+    keep.trigger([{ target: row.el, isIntersecting: true }]);
+    mount.trigger([{ target: row.el, isIntersecting: true }]);
+    await settle();
+    Object.defineProperty(row.bodyEl, "offsetHeight", { configurable: true, value: 120 });
+    mount.trigger([{ target: row.el, isIntersecting: false }]);
+
+    keep.trigger([{ target: row.el, isIntersecting: false }]);
+    await settle();
+
+    expect(row.editor).toBeNull();
+    expect(row.bodyEl.style.minHeight).toBe("");
+    expect(row.bodyEl.classList.contains("is-static")).toBe(true);
+    expect(row.bodyEl.style.getPropertyValue("contain-intrinsic-size")).toBe("auto 120px");
+  });
+});
+
+describe("JournalView residency after an editor goes", () => {
+  it("a row that left residency while focused is unloaded once its editor blurs and unmounts", async () => {
+    const { rows, mount, keep, residency } = await openWith(1);
+    const [row] = rows;
+    place(row.el, 100);
+    keep.trigger([{ target: row.el, isIntersecting: true }]);
+    mount.trigger([{ target: row.el, isIntersecting: true }]);
+    await settle();
+    const textarea = row.bodyEl.querySelector("textarea") as HTMLTextAreaElement;
+    textarea.focus();
+    Object.defineProperty(row.bodyEl, "offsetHeight", { configurable: true, value: 120 });
+
+    // A long flick with the caret still in it: out of every band at once.
+    mount.trigger([{ target: row.el, isIntersecting: false }]);
+    keep.trigger([{ target: row.el, isIntersecting: false }]);
+    residency.trigger([{ target: row.el, isIntersecting: false }]);
+    await settle();
+    expect(row.editor).not.toBeNull();
+    expect(row.bodyEl.classList.contains("is-dehydrated")).toBe(false);
+
+    textarea.blur();
+    await settle();
+
+    expect(row.editor).toBeNull();
+    expect(row.bodyEl.classList.contains("is-dehydrated")).toBe(true);
+    expect(row.renderComponent).toBeNull();
+    expect(row.bodyEl.childNodes).toHaveLength(0);
+    expect(row.bodyEl.style.minHeight).toBe("120px");
+  });
+
+  it("a row still inside residency keeps its rendered body when its editor unmounts", async () => {
+    const { rows, mount, keep, residency } = await openWith(1);
+    const [row] = rows;
+    place(row.el, 100);
+    residency.trigger([{ target: row.el, isIntersecting: true }]);
+    keep.trigger([{ target: row.el, isIntersecting: true }]);
+    mount.trigger([{ target: row.el, isIntersecting: true }]);
+    await settle();
+    mount.trigger([{ target: row.el, isIntersecting: false }]);
+
+    keep.trigger([{ target: row.el, isIntersecting: false }]);
+    await settle();
+
+    expect(row.editor).toBeNull();
+    expect(row.bodyEl.classList.contains("is-dehydrated")).toBe(false);
+    expect(row.bodyEl.textContent).toContain("entry 0");
   });
 });
 

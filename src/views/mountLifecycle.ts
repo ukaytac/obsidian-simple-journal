@@ -107,6 +107,13 @@ export interface MountDeps {
   lookup(path: string): MountEntry | undefined;
   /** Passed straight through to `entrySave.ts`'s `scheduleSave`/`flushSave`. */
   save: SaveDeps;
+  /**
+   * `JournalView.afterUnmount`: called once every `unmountEditor` call has
+   * finished, whether it unmounted or declined — residency's chance to unload
+   * a row it had to skip while it held an editor. Optional, so a test of this
+   * module alone need not supply it.
+   */
+  afterUnmount?(target: MountEntry): void;
 }
 
 /** The bound mount/unmount pipeline `createMountLifecycle` returns. */
@@ -424,6 +431,9 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     } finally {
       target.frozenHeight = null;
     }
+    // After, not inside the `finally`: a throw above already means something
+    // went wrong with this row, and unloading it then is no help to anyone.
+    deps.afterUnmount?.(target);
   }
 
   async function unmountEditorInner(target: MountEntry, opts: { evict?: boolean }): Promise<void> {
@@ -524,6 +534,14 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     // `?? offsetHeight` keeps every other caller (eviction, blur) unchanged.
     const height = target.frozenHeight ?? target.bodyEl.offsetHeight;
     target.bodyEl.style.minHeight = `${height}px`;
+    // Also as the intrinsic size, and left in place once `renderStatic`
+    // drops the `min-height`. The editor's body had no `is-static`, so the
+    // browser holds no remembered size for it; the static render sets
+    // `is-static`, and the row is leaving, so it is laid out off screen and
+    // would otherwise take the stylesheet's 4.5em fallback, then grow when
+    // it comes back into view — on iOS, a jump. Same reasoning as
+    // `JournalView.dehydrate`; see `.journal-entry-body.is-static`.
+    if (height > 0) target.bodyEl.style.containIntrinsicSize = `auto ${height}px`;
 
     target.editor?.destroy();
     target.editor = null;

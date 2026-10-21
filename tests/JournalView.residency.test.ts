@@ -90,6 +90,26 @@ describe("JournalView residency", () => {
     expect(bodyEl.classList.contains("is-static")).toBe(false);
   });
 
+  it("an unloaded row holds its height as the intrinsic size too, and keeps it after it renders again", async () => {
+    const { rendered, residency } = await openWith();
+    const bodyEl = rendered.bodyEl as HTMLElement;
+    Object.defineProperty(bodyEl, "offsetHeight", { configurable: true, value: 120 });
+
+    residency.trigger([{ target: rendered.el, isIntersecting: false }]);
+    expect(bodyEl.style.getPropertyValue("contain-intrinsic-size")).toBe("auto 120px");
+
+    residency.trigger([{ target: rendered.el, isIntersecting: true }]);
+    await settle();
+    expect(bodyEl.style.minHeight).toBe("");
+    expect(bodyEl.classList.contains("is-static")).toBe(true);
+    expect(bodyEl.style.getPropertyValue("contain-intrinsic-size")).toBe("auto 120px");
+  });
+
+  it("a first render sets no intrinsic size of its own", async () => {
+    const { rendered } = await openWith();
+    expect((rendered.bodyEl as HTMLElement).style.getPropertyValue("contain-intrinsic-size")).toBe("");
+  });
+
   it("entering re-renders the row and clears the held height once it lands", async () => {
     const { rendered, residency } = await openWith();
     const bodyEl = rendered.bodyEl as HTMLElement;

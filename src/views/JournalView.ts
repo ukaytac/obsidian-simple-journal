@@ -179,6 +179,31 @@ interface RenderedEntry {
    */
   withinKeep: boolean;
   /**
+   * Whether `el` is inside `RESIDENCY_ROOT_MARGIN`, per `residencyObserver`.
+   * Read by `unmountEditor` (via `MountDeps.afterUnmount`): residency skips a
+   * row that has an editor, and its observer does not report again until the
+   * row crosses back, so a row that left while it still had one — focused,
+   * dirty, or kept by the keep band — is unloaded only when the editor goes.
+   *
+   * Starts true, not false. The two wrong answers are not equally wrong: a
+   * row wrongly counted inside residency merely stays rendered until its
+   * first report corrects it, which is all any row did before residency
+   * existed; a row wrongly counted outside would have its body emptied by
+   * an unmount that lands before that report — and rows are created next to
+   * the viewport (paging, the composer, a reposition), so that would be a
+   * visible row going blank.
+   */
+  withinResidency: boolean;
+  /**
+   * How many `mountEditor` calls are reading this row's file right now. A
+   * count, not a flag: a tap and an observer can both start one, and the
+   * first to finish must not clear the mark the second still holds. Read by
+   * `mountPendingRows`, which must not start another mount over one already
+   * reading — the later one would bump `opToken` past it, and the one it
+   * superseded may be the tap's, the only mount that focuses what it mounts.
+   */
+  mountsInFlight: number;
+  /**
    * Absolute pixel distance between this entry's vertical centre and the
    * viewport's, as of the most recent `mountObserver` callback — fed to
    * `enforceMountLimit` (see `mountWindow.ts`'s `MountState.distance`) so an
@@ -531,6 +556,7 @@ export class JournalView extends ItemView {
     editorFactory: this.plugin.editorFactory,
     lookup: (path) => this.rendered.get(path),
     save: this.saveDeps,
+    afterUnmount: (target) => this.afterUnmount(target as RenderedEntry),
   });
   /**
    * The bound DOM-layer pipeline (see `timelineDom.ts`), owning `dayGroups`/
@@ -1497,9 +1523,12 @@ export class JournalView extends ItemView {
    *
    * A queued row is dropped rather than mounted when it is no longer inside
    * the mount margin (`mountEditor` would read the file only to bail), when it
-   * already has an editor (a tap's `remountOnInteraction` got there first), or
-   * when it is no longer the row `rendered` holds for its path (removed, or
-   * replaced by a reposition). `mountDistance` is as of each row's latest
+   * already has an editor (a tap's `remountOnInteraction` got there first),
+   * when a mount for it is already reading the file (`mountsInFlight` — a
+   * second would supersede the first, and if the first is a tap's, the editor
+   * would arrive without the caret the tap asked for), or when it is no
+   * longer the row `rendered` holds for its path (removed, or replaced by a
+   * reposition). `mountDistance` is as of each row's latest
    * `mountObserver` report, which is the freshest distance anything has.
    */
   private mountPendingRows(): void {
@@ -1508,7 +1537,7 @@ export class JournalView extends ItemView {
     const candidates: RenderedEntry[] = [];
     for (const rendered of this.pendingMounts) {
       const live = this.rendered.get(rendered.el.dataset.path ?? "") === rendered;
-      if (!live || !rendered.intersecting || rendered.editor) {
+      if (!live || !rendered.intersecting || rendered.editor || rendered.mountsInFlight > 0) {
         this.pendingMounts.delete(rendered);
         continue;
       }
@@ -1657,6 +1686,10 @@ export class JournalView extends ItemView {
           // By identity — see `renderedForObserved`.
           const rendered = this.renderedForObserved(observerEntry.target as HTMLElement);
           if (!rendered) continue;
+          // Recorded for every row, including the ones skipped below: a row
+          // with an editor is left alone now, and this is what lets its
+          // unmount finish the job later (see `afterUnmount`).
+          rendered.withinResidency = observerEntry.isIntersecting;
           if (!this.mayChangeResidency(rendered)) continue;
           (observerEntry.isIntersecting ? entering : leaving).push(rendered);
         }
@@ -1696,10 +1729,16 @@ export class JournalView extends ItemView {
 
   /**
    * Whether residency may touch this row at all. Never a row with an editor
-   * (a mounted editor is always inside the mount margin, so it cannot be
-   * outside residency; the check is still explicit, because the editor is
-   * where unsaved text lives), never the composer, and never a row being
-   * deleted (its file may already be gone, so it could not be read back).
+   * — the editor is where unsaved text lives — never the composer, and never
+   * a row being deleted (its file may already be gone, so it could not be
+   * read back).
+   *
+   * A row with an editor CAN be outside residency: a focused or dirty editor
+   * declines to unmount, the keep band leaves an editor mounted past the
+   * mount margin, and a jump (`scrollToTop`) can carry a mounted row 3000px
+   * away in one frame. Skipping it here is right, but the observer will not
+   * report it again until it crosses back, so `afterUnmount` unloads it once
+   * the editor is gone.
    */
   private mayChangeResidency(rendered: RenderedEntry): boolean {
     if (rendered.editor !== null) return false;
@@ -1707,6 +1746,29 @@ export class JournalView extends ItemView {
     if (!rendered.entry.file) return false;
     if (rendered.el.hasClass("is-deleting")) return false;
     return true;
+  }
+
+  /**
+   * Finishes what residency skipped: a row that left `RESIDENCY_ROOT_MARGIN`
+   * while it had an editor (see `mayChangeResidency`) is unloaded once the
+   * editor is gone. Called by `mountLifecycle` after every unmount attempt —
+   * the keep observer's, an eviction's, and an editor's `onBlur` second
+   * chance alike, the last of which never passes through this view's
+   * `unmountEditor` wrapper — so it re-checks everything rather than trusting
+   * that the unmount happened: a declined one leaves the editor in place, and
+   * the row may have been removed, replaced or brought back meanwhile.
+   *
+   * The static render the unmount just awaited is thrown away here, one wasted
+   * read through the cache. Skipping it would mean teaching `unmountEditor`
+   * about residency, for a path that only runs once per editor that outlived
+   * its row's residency.
+   */
+  private afterUnmount(rendered: RenderedEntry): void {
+    if (rendered.editor !== null || rendered.withinResidency) return;
+    const path = rendered.entry.file?.path;
+    if (!path || this.rendered.get(path) !== rendered) return;
+    if (!this.mayChangeResidency(rendered)) return;
+    this.dehydrate(rendered, rendered.bodyEl.offsetHeight);
   }
 
   /**
@@ -1720,7 +1782,22 @@ export class JournalView extends ItemView {
   private dehydrate(rendered: RenderedEntry, height: number): void {
     const bodyEl = rendered.bodyEl;
     if (bodyEl.hasClass("is-dehydrated")) return;
-    if (height > 0) bodyEl.style.minHeight = `${height}px`;
+    if (height > 0) {
+      bodyEl.style.minHeight = `${height}px`;
+      // The same height again as the body's intrinsic size, and left in
+      // place. Removing `is-static` below makes the browser forget the size
+      // it remembered for this body under `contain-intrinsic-size: auto`; the
+      // render that brings it back drops the `min-height` and sets `is-static`
+      // again, and if that happens while the row is still off screen — which
+      // is the point of rendering before it arrives — the skipped body lays
+      // out at the stylesheet's 4.5em fallback and grows on approach. On iOS,
+      // with no scroll anchoring, that growth above the viewport is a jump
+      // while scrolling back up through what was read. Inline, it outranks
+      // the fallback; `auto` still prefers a size the browser remembers once
+      // the body is laid out; and on a body without `content-visibility` (an
+      // editor's) it does nothing at all. See `.journal-entry-body.is-static`.
+      bodyEl.style.containIntrinsicSize = `auto ${height}px`;
+    }
     rendered.opToken++;
     rendered.renderComponent?.unload();
     rendered.renderComponent = null;
@@ -1835,6 +1912,8 @@ export class JournalView extends ItemView {
       savedBody: "",
       intersecting: false,
       withinKeep: false,
+      withinResidency: true,
+      mountsInFlight: 0,
       mountDistance: 0,
       opToken: 0,
       frozenHeight: null,
@@ -1848,8 +1927,9 @@ export class JournalView extends ItemView {
     // based eviction makes this rare, not impossible) or, in principle, any
     // other future path that unmounts without the entry actually leaving
     // `MOUNT_ROOT_MARGIN`. `mountEditor` is otherwise only ever called from
-    // `mountObserver`'s enter TRANSITION, which has already fired and won't
-    // fire again until the entry leaves and re-enters — without this, such a
+    // `mountObserver`'s enter TRANSITION (directly, or a frame or two later
+    // through `mountPendingRows` for a row it queued), which has already
+    // fired and won't fire again until the entry leaves and re-enters — without this, such a
     // row looks editable but silently swallows every click and keystroke
     // until the user scrolls it out of the margin and back in. No thrash
     // risk: this only acts when `rendered.editor` is null, and mounting sets
@@ -1864,8 +1944,17 @@ export class JournalView extends ItemView {
     // event that unambiguously says "the user meant this row". Mouse and pen
     // have no such ambiguity and keep the earlier, snappier `pointerdown`.
     // `focusin` stays: it only fires once something is genuinely focusing in.
+    //
+    // Out of the staging queue first. A row queued off screen and then
+    // scrolled on screen gets no new observer transition, so it is still
+    // queued when tapped; left there, the next frame's `mountPendingRows`
+    // would start a second mount over this one, bump `opToken` past it, and
+    // mount an editor nobody focuses — no caret, and on iOS no keyboard.
+    // `mountsInFlight` is the same guard from the queue's side, for a row
+    // that joins the queue again while this mount is still reading.
     const remountOnInteraction = (): void => {
       if (rendered.editor || !rendered.intersecting) return;
+      this.pendingMounts.delete(rendered);
       void this.mountEditor(rendered).then(() => rendered.editor?.focus());
     };
     bodyEl.addEventListener("pointerdown", (event) => {
@@ -2552,7 +2641,14 @@ export class JournalView extends ItemView {
    * through `this.`.
    */
   private async mountEditor(rendered: RenderedEntry): Promise<void> {
-    await this.mountLifecycle.mountEditor(rendered);
+    // Counted here rather than inside `mountLifecycle`, because the only
+    // reader is this view's staging queue (see `mountsInFlight`).
+    rendered.mountsInFlight++;
+    try {
+      await this.mountLifecycle.mountEditor(rendered);
+    } finally {
+      rendered.mountsInFlight--;
+    }
   }
 
   /**
@@ -2649,12 +2745,14 @@ export class JournalView extends ItemView {
    * rendering. See `unmountEditor` in `mountLifecycle.ts` for what this
    * actually does and why (the focused/intersecting/dirty declines,
    * `evict`'s meaning, the `generation` guard around its flush); this
-   * wrapper exists only so calls go through `this.` — `installMountObserver`'s
+   * wrapper exists only so calls go through `this.` — `installKeepObserver`'s
    * exit-transition callback and `tests/JournalView.raceGuards.test.ts`'s
    * reflection (see `mountEditor`'s doc). Every call `mountLifecycle.ts`
    * makes to its own internal `unmountEditor` (from `wireEditor`'s `onBlur`,
    * or `enforceMountLimit`'s eviction) bypasses this wrapper entirely —
-   * those are calls within the module, not back into the view.
+   * those are calls within the module, not back into the view — which is
+   * why anything that must follow every unmount (`afterUnmount`) is a
+   * `MountDeps` hook rather than code here.
    */
   private async unmountEditor(rendered: RenderedEntry, opts: { evict?: boolean } = {}): Promise<void> {
     await this.mountLifecycle.unmountEditor(rendered, opts);

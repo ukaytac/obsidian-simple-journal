@@ -69,7 +69,7 @@ export interface TimelineDomDeps {
   createEntryEl(entry: JournalEntry): DomRenderedEntry;
   /** `this.renderStatic` — the read-only render fallback, not part of this seam. `knownBody`, when given, is rendered as is and nothing is read. */
   renderStatic(rendered: DomRenderedEntry, knownBody?: string): Promise<void>;
-  /** `this.observeRow(el)` — hands the row to `mountObserver` and `residencyObserver` alike. */
+  /** `this.observeRow(el)` — hands the row to all three row observers alike: `mountObserver`, `keepObserver` and `residencyObserver`. */
   observeForMount(el: HTMLElement): void;
   /** `this.index` — the shared chronological array; not owned by this seam. */
   getIndex(): readonly JournalEntry[];

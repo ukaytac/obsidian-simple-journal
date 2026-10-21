@@ -241,6 +241,15 @@
    size and nothing the user is reading moves. The 4.5em is only for a body
    never laid out yet, and matches `.is-pending`.
 
+   A body that had a height before and lost the remembered one — unloaded by
+   residency (`dehydrate`), or coming back from an editor (`unmountEditor`'s
+   freeze), both of which leave a body without `is-static` for a while —
+   carries an inline `contain-intrinsic-size: auto <its height>px` instead,
+   which outranks this fallback. Without it, a body rendered again while still
+   off screen would lay out at 4.5em and grow on approach: on iOS, which has
+   no scroll anchoring, a jump while scrolling back up. Never set on a first
+   render, which has no height to remember.
+
    Never on a body holding an editor: `mountUsableEditor` removes the class,
    because CodeMirror measures its own DOM. Ignored by WebKit before iOS 18,
    which simply renders as before. */
