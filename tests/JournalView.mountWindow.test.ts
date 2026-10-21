@@ -391,6 +391,64 @@ describe("JournalView mount window", () => {
     expect(row.bodyEl.querySelector("textarea")).toBeTruthy();
   });
 
+  it("a batch of leaving entries reads every height before any of them is written", async () => {
+    // jsdom has no layout, so `offsetHeight` is a recorded getter. What is
+    // being pinned is ORDER: an `offsetHeight` read forces layout, and a
+    // `min-height` write (the freeze) invalidates it, so reads and writes
+    // interleaved per entry cost one layout per entry instead of one in all.
+    const h = createHarness();
+    const a = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "a");
+    const b = addEntry(h, new Date(2026, 7, 12, 10, 0, 0), "b");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered;
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const rowA = rendered.get(a.path);
+    const rowB = rendered.get(b.path);
+
+    mountObserver.trigger([
+      { target: rowA.el, isIntersecting: true },
+      { target: rowB.el, isIntersecting: true },
+    ]);
+    await settle();
+    expect(rowA.editor).not.toBeNull();
+    expect(rowB.editor).not.toBeNull();
+
+    const log: string[] = [];
+    const heights = new Map<HTMLElement, [string, number]>([
+      [rowA.bodyEl, ["A", 120]],
+      [rowB.bodyEl, ["B", 80]],
+    ]);
+    for (const [el, [name, height]] of heights) {
+      Object.defineProperty(el, "offsetHeight", {
+        configurable: true,
+        get: () => {
+          log.push(`read ${name}`);
+          return height;
+        },
+      });
+    }
+    const frozen: string[] = [];
+    vi.spyOn(internals(h.view), "renderStatic").mockImplementation(async (...args: unknown[]) => {
+      const target = args[0] as { bodyEl: HTMLElement };
+      const name = heights.get(target.bodyEl)![0];
+      log.push(`write ${name}`);
+      frozen.push(`${name}=${target.bodyEl.style.minHeight}`);
+    });
+
+    mountObserver.trigger([
+      { target: rowA.el, isIntersecting: false },
+      { target: rowB.el, isIntersecting: false },
+    ]);
+    await settle();
+
+    expect(frozen.sort()).toEqual(["A=120px", "B=80px"]);
+    expect(log.filter((l) => l.startsWith("read"))).toHaveLength(2);
+    const firstWrite = log.findIndex((l) => l.startsWith("write"));
+    expect(log.slice(0, firstWrite).filter((l) => l.startsWith("read"))).toHaveLength(2);
+  });
+
   it("does nothing on interaction with an entry that has genuinely left the mount margin", async () => {
     // The guard (`!rendered.intersecting`) matters: without it, clicking a
     // statically-rendered entry that is off-screen for the ordinary,

@@ -73,6 +73,12 @@ export interface MountEntry {
   intersecting: boolean;
   mountDistance: number;
   opToken: number;
+  /**
+   * The body's height as measured by the mount observer's callback BEFORE
+   * it started unmounting a batch, or null when nobody measured it. See
+   * `unmountEditor`'s freeze for why the read is hoisted.
+   */
+  frozenHeight?: number | null;
 }
 
 /**
@@ -388,6 +394,18 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
    * re-keyed path in `order` for an entry that only has one editor.
    */
   async function unmountEditor(target: MountEntry, opts: { evict?: boolean } = {}): Promise<void> {
+    // Every return below that does not reach the freeze must drop a height the
+    // observer pre-read, or a later unmount (a different scroll, a different
+    // size) would freeze at this stale number. Wrapped rather than repeated at
+    // each of the five early returns, so a sixth cannot forget it.
+    try {
+      await unmountEditorInner(target, opts);
+    } finally {
+      target.frozenHeight = null;
+    }
+  }
+
+  async function unmountEditorInner(target: MountEntry, opts: { evict?: boolean }): Promise<void> {
     if (!target.editor) return;
 
     if (target.editor.hasFocus()) {
@@ -469,7 +487,17 @@ export function createMountLifecycle(order: string[], max: number, deps: MountDe
     }
 
     // Freeze the height across the swap so the scroll position does not shift.
-    const height = target.bodyEl.offsetHeight;
+    //
+    // `frozenHeight` was read by the mount observer's callback before it
+    // started this batch's unmounts: `offsetHeight` forces layout, and the
+    // `minHeight` write below invalidates it, so reading here would make a
+    // fast flick that delivers N leaving rows pay N layouts (read, write,
+    // read, write...) instead of one. Reading earlier than this point is
+    // still the right number even though the flush above awaited: nothing
+    // between the callback and here changes the body's size — flushing writes
+    // the file, never the DOM — and a decline above discards it entirely.
+    // `?? offsetHeight` keeps every other caller (eviction, blur) unchanged.
+    const height = target.frozenHeight ?? target.bodyEl.offsetHeight;
     target.bodyEl.style.minHeight = `${height}px`;
 
     target.editor?.destroy();

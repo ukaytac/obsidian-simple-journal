@@ -138,6 +138,11 @@ interface RenderedEntry {
    */
   mountDistance: number;
   /**
+   * Body height pre-read by `mountObserver`'s callback for a row leaving in
+   * this batch, consumed (and reset to null) by `unmountEditor`. See there.
+   */
+  frozenHeight: number | null;
+  /**
    * Bumped every time `mountEditor` or `renderStatic` starts work for this
    * entry. Both capture the value at the start and re-check it after their
    * one await; a mismatch means a later operation (a mount superseding a
@@ -1313,6 +1318,18 @@ export class JournalView extends ItemView {
         const rootRect = this.contentEl.getBoundingClientRect();
         const rootCenter = rootRect.top + rootRect.height / 2;
 
+        // Every height this batch is about to freeze, read before the first
+        // unmount can write: `unmountEditor` sets `min-height` and swaps the
+        // body's content, and each of those invalidates layout, so a read
+        // left inside it would be a fresh forced layout per leaving row on a
+        // fast flick. Only rows that have an editor to tear down need one.
+        for (const observerEntry of entries) {
+          if (observerEntry.isIntersecting) continue;
+          const path = (observerEntry.target as HTMLElement).dataset.path;
+          const leaving = path ? this.rendered.get(path) : undefined;
+          if (leaving?.editor) leaving.frozenHeight = leaving.bodyEl.offsetHeight;
+        }
+
         for (const observerEntry of entries) {
           const path = (observerEntry.target as HTMLElement).dataset.path;
           if (!path) continue;
@@ -1446,6 +1463,7 @@ export class JournalView extends ItemView {
       intersecting: false,
       mountDistance: 0,
       opToken: 0,
+      frozenHeight: null,
       saveToken: 0,
       keyboardScrollHandle: null,
       longPressHandle: null,
