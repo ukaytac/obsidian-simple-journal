@@ -1481,11 +1481,24 @@ export class JournalView extends ItemView {
     // risk: this only acts when `rendered.editor` is null, and mounting sets
     // it, so a second interaction before the first mount resolves is a no-op
     // (see `mountEditor`'s own guard).
+    //
+    // Touch is the exception, and waits for `click` instead. On iOS a
+    // `pointerdown` is also how a scroll gesture begins, so mounting and
+    // focusing an editor there raises the keyboard in the middle of a scroll
+    // the user never meant as a tap. A tap that does not turn into a scroll
+    // still ends in `click`; a scroll never does, so `click` is the first
+    // event that unambiguously says "the user meant this row". Mouse and pen
+    // have no such ambiguity and keep the earlier, snappier `pointerdown`.
+    // `focusin` stays: it only fires once something is genuinely focusing in.
     const remountOnInteraction = (): void => {
       if (rendered.editor || !rendered.intersecting) return;
       void this.mountEditor(rendered).then(() => rendered.editor?.focus());
     };
-    bodyEl.addEventListener("pointerdown", remountOnInteraction);
+    bodyEl.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "touch") return;
+      remountOnInteraction();
+    });
+    bodyEl.addEventListener("click", remountOnInteraction);
     bodyEl.addEventListener("focusin", remountOnInteraction);
 
     button.onClick((event) => this.showEntryMenu(rendered, event));

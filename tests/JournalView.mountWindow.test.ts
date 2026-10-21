@@ -449,6 +449,37 @@ describe("JournalView mount window", () => {
     expect(log.slice(0, firstWrite).filter((l) => l.startsWith("read"))).toHaveLength(2);
   });
 
+  it("a touch pointerdown does not mount an editor, but the tap's click does", async () => {
+    // A touch `pointerdown` is also how a scroll begins, and mounting there
+    // focuses an editor mid-scroll (raising the iOS keyboard). A tap that
+    // stays a tap ends in `click`; a scroll never does.
+    const h = createHarness();
+    const file = addEntry(h, new Date(2026, 7, 12, 9, 0, 0), "original body");
+    h.service.load();
+    await h.view.onOpen();
+
+    const rendered = internals(h.view).rendered;
+    const mountObserver = internals(h.view).mountObserver as FakeIntersectionObserver;
+    const row = rendered.get(file.path);
+
+    mountObserver.trigger([{ target: row.el, isIntersecting: true }]);
+    await settle();
+    await internals(h.view).unmountEditor(row, { evict: true });
+    expect(row.editor).toBeNull();
+    expect(row.intersecting).toBe(true);
+
+    const touch = new MouseEvent("pointerdown", { bubbles: true });
+    Object.defineProperty(touch, "pointerType", { value: "touch" });
+    row.bodyEl.dispatchEvent(touch);
+    await settle();
+    expect(row.editor).toBeNull();
+
+    row.bodyEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(row.editor).not.toBeNull();
+    expect(row.editor.hasFocus()).toBe(true);
+  });
+
   it("does nothing on interaction with an entry that has genuinely left the mount margin", async () => {
     // The guard (`!rendered.intersecting`) matters: without it, clicking a
     // statically-rendered entry that is off-screen for the ordinary,
