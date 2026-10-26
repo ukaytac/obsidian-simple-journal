@@ -3,6 +3,18 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.6.1
+
+### Short entries no longer scroll inside themselves
+
+With some other plugins installed — Outliner, for one — an entry of one or two
+lines could become scrollable on its own, with its first line cut off under the
+timestamp. That plugin draws an invisible layer over every editor which is
+taller than a short entry, and the entry scrolled to make room for it.
+
+An entry is now never scrollable on its own. It is always exactly as tall as
+its text, and the timeline is the only thing that scrolls.
+
 ## 1.6.0
 
 A release about speed. Nothing you write, and nothing the timeline shows, has
