@@ -327,8 +327,27 @@
   display: none;
 }
 
+/* Never a scroll container. Obsidian gives an inline embed's content pane
+   `overflow: auto` (`.inline-embed > .markdown-embed-content`), which is
+   harmless only while nothing inside is taller than the editor — and the
+   editor is exactly as tall as the entry's text. Another plugin's overlay
+   need not be: Outliner appends an absolutely positioned, full-bleed
+   `.outliner-plugin-list-lines-scroller` to every `.cm-editor`, padded by
+   `--file-margins` above and below, so on a one- or two-line entry it is
+   taller than the text. The pane then scrolled, and the caret's
+   scroll-into-view scrolled it on its own: an entry with its first line cut
+   off under the timestamp. Measured in a live vault: a 48px editor in a pane
+   whose scrollHeight was 64px.
+
+   Clipped rather than reset to `visible`: what overflows here is another
+   plugin's chrome, not text, and drawn past the entry it would sit over the
+   next one. `clip` rather than `hidden`, because a `hidden` box can still be
+   scrolled programmatically and the caret would keep doing it. `hidden`
+   first only for WebKit before iOS 16, which ignores `clip`. */
 .journal-entry-embed .markdown-embed-content.journal-entry-embed-editor-pane {
   display: block;
+  overflow: hidden;
+  overflow: clip;
 }
 
 /* Only while `showEditor()` runs, inside one synchronous call, so it is never
