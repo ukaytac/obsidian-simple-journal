@@ -313,3 +313,157 @@ export function setCreatedProperty(data: string, value: string, key = DEFAULT_DA
   const newLine = `${key}: ${quoted}${frontmatter.includes("\r\n") ? "\r\n" : "\n"}`;
   return opening + newLine + frontmatter.slice(opening.length) + body;
 }
+
+// A top-level `tags:` or `tag:` key line, case-insensitive — the same keys
+// Obsidian's own `parseFrontMatterTags` reads (`/^tags?$/i`). Anchored at
+// column 0, so an indented `tags:` belonging to a nested mapping never
+// matches, and the `[ \t]*:` keeps `tagsCount:` from matching.
+const TAGS_KEY_LINE = /^tags?[ \t]*:[^\r\n]*/gim;
+
+// One block-sequence item on a single line: its indent, the dash, and an
+// optional value. Used to walk the items under an empty `tags:` key.
+const BLOCK_ITEM = /^([ \t]*)-(?:[ \t]+([^\r\n]*))?$/;
+
+/** True if `frontmatter` has a top-level `tags:`/`tag:` key line. See `addFrontmatterTag`. */
+export function hasTagsLine(frontmatter: string): boolean {
+  TAGS_KEY_LINE.lastIndex = 0;
+  const found = TAGS_KEY_LINE.test(frontmatter);
+  TAGS_KEY_LINE.lastIndex = 0;
+  return found;
+}
+
+/**
+ * The YAML form of a tag: plain when YAML can only read it as text, double
+ * quoted otherwise. `validateNewTag` has already confined a tag to letters,
+ * marks, digits, `_`, `-` and `/`, so no character in it can end a key, start
+ * a comment, or close a flow list. What remains is YAML resolving a plain
+ * scalar to a number (`2026-plans` is fine, `1e5` is not) or a boolean/null
+ * (`yes`, `No`, `null`, the YAML 1.1 words included). Starting with a letter
+ * rules out the first; the word list rules out the second. Anything that
+ * fails either test is quoted, which is always valid and always read as text.
+ */
+function yamlTagScalar(tag: string): string {
+  const plain = /^\p{L}/u.test(tag) && !/^(?:true|false|yes|no|on|off|y|n|null)$/i.test(tag);
+  return plain ? tag : JSON.stringify(tag);
+}
+
+/**
+ * Adds `tag` to the entry's frontmatter tags, as one inserted line or one
+ * inserted list element, and nothing else. Every other byte of the document
+ * — other properties, their order and formatting, the existing tags, the body
+ * — is left exactly as it was. This is the tag counterpart of
+ * `setCreatedProperty`, and avoids `fileManager.processFrontMatter` for the
+ * same reason: that re-serializes the whole block.
+ *
+ * Handles the shapes Obsidian's own Properties panel writes, plus the flow
+ * list another tool might:
+ *
+ * - no frontmatter, or no tags key: a `tags:` block list is added as the last
+ *   property (where Obsidian adds a new property), creating the block if
+ *   there is none;
+ * - an empty `tags:` key, or one followed by a block list: one `- tag` line
+ *   after the last item, at the list's own indent;
+ * - a one-line flow list `tags: [a, b]`: `, tag` before the closing bracket.
+ *
+ * Throws `UnsafeFrontmatterError`, writing nothing, for anything else: a
+ * single scalar (`tags: life` — turning it into a list would rewrite the
+ * user's line), a block scalar, a comment on the key line, a flow list that
+ * spans lines or nests, a list item that continues onto another line, mixed
+ * indents, a list that resumes after a blank line, or more than one tags key.
+ * Each of those is a shape where a blind insert could orphan a fragment or
+ * land in the wrong place, and the user can still add the tag in the source
+ * note.
+ *
+ * Does not check whether the tag is already there: Obsidian's own parse
+ * answers that better than a regex can, so the caller does
+ * (`EntryRepository.addEntryTag`).
+ */
+export function addFrontmatterTag(data: string, tag: string): string {
+  const item = yamlTagScalar(tag);
+  const { frontmatter, body } = splitFrontmatter(data);
+
+  if (!frontmatter) return `---\ntags:\n  - ${item}\n---\n${data}`;
+
+  const nl = frontmatter.includes("\r\n") ? "\r\n" : "\n";
+  const matches = [...frontmatter.matchAll(TAGS_KEY_LINE)];
+
+  if (matches.length > 1) {
+    throw new UnsafeFrontmatterError(`This entry's frontmatter has more than one "tags" key.`);
+  }
+
+  if (matches.length === 0) {
+    // Before the closing delimiter: `FRONTMATTER` guarantees the block ends
+    // with a `---` line, and `$` without the `m` flag only matches at the
+    // very end, so this finds that line and nothing earlier.
+    const closing = /---[ \t]*(?:\r?\n)?$/.exec(frontmatter)!;
+    return (
+      frontmatter.slice(0, closing.index) + `tags:${nl}  - ${item}${nl}` + frontmatter.slice(closing.index) + body
+    );
+  }
+
+  const match = matches[0];
+  const keyLine = match[0];
+  const lineStart = match.index;
+  const lineEnd = lineStart + keyLine.length;
+  const value = keyLine.slice(keyLine.indexOf(":") + 1).trim();
+
+  if (value.startsWith("[")) {
+    if (!value.endsWith("]") || /[[\]{}]/.test(value.slice(1, -1)) || /(^|[ \t])#/.test(value)) {
+      throw new UnsafeFrontmatterError(`This entry's "tags" property is not a simple one-line list.`);
+    }
+    const close = keyLine.lastIndexOf("]");
+    const head = keyLine.slice(0, close);
+    const tail = keyLine.slice(close);
+    const inner = value.slice(1, -1).trim();
+    let line: string;
+    if (!inner) {
+      line = head + item + tail;
+    } else {
+      const trimmed = head.replace(/[ \t]+$/, "");
+      line = trimmed + ", " + item + head.slice(trimmed.length) + tail;
+    }
+    return frontmatter.slice(0, lineStart) + line + frontmatter.slice(lineEnd) + body;
+  }
+
+  if (value !== "") {
+    throw new UnsafeFrontmatterError(`This entry's "tags" property is a single value rather than a list.`);
+  }
+
+  // An empty key: walk the block-list items under it, if any.
+  const lines: { text: string; end: number }[] = [];
+  const lineRe = /\r?\n([^\r\n]*)/y;
+  lineRe.lastIndex = lineEnd;
+  for (let m = lineRe.exec(frontmatter); m; m = lineRe.exec(frontmatter)) {
+    lines.push({ text: m[1], end: lineRe.lastIndex });
+  }
+
+  let indent: string | null = null;
+  let insertAt = lineEnd;
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const itemMatch = BLOCK_ITEM.exec(lines[i].text);
+    if (!itemMatch) break;
+    if (indent === null) indent = itemMatch[1];
+    else if (itemMatch[1] !== indent) {
+      throw new UnsafeFrontmatterError(`This entry's "tags" list mixes indents.`);
+    }
+    const itemValue = (itemMatch[2] ?? "").trim();
+    if (itemValue.startsWith("|") || itemValue.startsWith(">")) {
+      throw new UnsafeFrontmatterError(`This entry's "tags" list holds a multi-line value.`);
+    }
+    insertAt = lines[i].end;
+  }
+
+  // Whatever follows the list must be something that clearly ends it: the
+  // closing delimiter, or another top-level key. Blank lines and column-0
+  // comments are skipped over to find it.
+  for (; i < lines.length; i++) {
+    const text = lines[i].text;
+    if (text.trim() === "" || text.startsWith("#")) continue;
+    if (/^---[ \t]*$/.test(text) || /^[^\s#-]/.test(text)) break;
+    throw new UnsafeFrontmatterError(`This entry's "tags" list continues in a shape this plugin cannot safely edit.`);
+  }
+
+  const newLine = `${nl}${indent ?? "  "}- ${item}`;
+  return frontmatter.slice(0, insertAt) + newLine + frontmatter.slice(insertAt) + body;
+}

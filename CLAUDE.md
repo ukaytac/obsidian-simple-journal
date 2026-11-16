@@ -436,7 +436,8 @@ Never rewrite or normalize unrelated frontmatter properties.
 names the property that holds an entry's date and time, and everything this
 section says about `created` applies to whatever it names: the plugin reads it,
 writes it into a new entry, and rewrites only its line on a time correction.
-It remains the only property the plugin writes.
+Apart from a tag the user adds from the timeline (`# Tags` Rule 2), it
+remains the only property the plugin writes.
 
 It exists because `created` is a common name, and a user whose other tooling
 already writes something else there — a date-only `created: 2026-09-09`, say —
@@ -666,14 +667,56 @@ inline and frontmatter alike — exactly as `entryDate.ts` is the one place an
 entry's chronology is resolved. Nothing downstream asks which kind a given tag
 came from. Obsidian does not ask; neither do we.
 
-## Rule 2 — The plugin never writes a tag
+## Rule 2 — The plugin writes a tag only when the user adds one
 
-Frontmatter belongs to the user: only `created` is the plugin's to write (see
-**Entry Metadata**), and that boundary holds for tags too — no code path adds,
-removes, or reformats a `tags:` entry. The body needs no help either: the
-embedded editor is a real Obsidian editor (see **Editing**), so typing `#`
-brings up Obsidian's own tag autocomplete with nothing from this plugin
-involved. There is no tag-entry UI. "Automatic tagging" stays a non-goal.
+It once wrote none, and said so: frontmatter belongs to the user, and the body
+needs no help, because the embedded editor is a real Obsidian editor (see
+**Editing**) and typing `#` brings up Obsidian's own tag autocomplete. The
+second half still holds. The first half ran into Rule 3's own reasoning: the
+timeline hides the properties panel, so a frontmatter tag could be seen there
+but not added — a user who prefers the muted chip to an inline `#tag` had to
+open the source note, add the property, and come back, for every entry.
+
+So each entry has an **Add tag** control: a muted `+ tag` beside the time,
+revealed like the actions button, that opens a one-line field with the
+journal's tags as suggestions. The tag it writes appears in the chip row under
+the entry's text, where frontmatter tags are shown — under the text because a
+tag describes what was written, and the end of an entry is where people put
+inline tags too. That row takes no space on an entry without frontmatter tags,
+so the header holds only the time, this control and the menu. The typed text is always offered first when it
+is not an existing tag, so a new tag is one Enter away and never silently
+replaced by a highlighted near-match. That is the one path by which the plugin
+writes a tag, and it is held to the rules the date property already follows:
+
+* **One inserted line or list element, never a re-serialization.**
+  `addFrontmatterTag` in `journal/markdownDoc.ts` is the tag counterpart of
+  `setCreatedProperty`, and avoids `fileManager.processFrontMatter` for the
+  same reason. It adds a `tags:` block list as the last property when there is
+  none, one `- tag` line under an existing block list, or `, tag` inside a
+  one-line flow list. Every other byte stays where it was.
+* **Refuse rather than guess.** A single scalar (`tags: life` — making it a
+  list would rewrite the user's line), a block scalar, a comment on the key
+  line, a multi-line or nested flow list, a list item that continues onto
+  another line, mixed indents, a list resuming after a blank line, or two tags
+  keys: nothing is written, and the Notice says to add it in the source note.
+  `EntryRepository.addEntryTag` also cross-checks the raw text against
+  Obsidian's own parse, as `setEntryCreated` does, and refuses when they
+  disagree about whether a tags key exists.
+* **Obsidian's tag rule, narrowed.** `validateNewTag` in `journal/entryTags.ts`
+  admits letters in any script, digits, `_`, `-` and `/`, needs one character
+  that is not a digit, and refuses an empty nested level. Narrowed from
+  Obsidian's (which also admits some symbols and emoji) so that every
+  admitted tag is a safe plain YAML scalar; the few YAML would read as a
+  number or boolean (`2026-plans`, `yes`) are written quoted.
+* **Adding only.** A tag already on the entry, compared case-insensitively
+  against Obsidian's parse, writes nothing. Removing a tag from the timeline is
+  not built: a chip click already means "scope to this tag", and a second
+  gesture on the same chip is a separate decision.
+
+There is still no tag UI anywhere else, nothing tags an entry on its own, and
+"automatic tagging" stays a non-goal: every tag this plugin writes is one the
+user typed or picked a moment earlier. A new entry is still created with
+`created` alone.
 
 ## Rule 3 — Chips show only what the timeline hides
 

@@ -993,3 +993,84 @@ describe("filename format and date property settings", () => {
     ]);
   });
 });
+
+describe("addEntryTag", () => {
+  // Like `setEntryCreated`, this cross-checks the raw text against Obsidian's
+  // own parse, so a fixture populates both the file and the cache.
+  function addEntry(
+    fake: ReturnType<typeof createFakeApp>,
+    data: string,
+    frontmatter: Record<string, unknown> | undefined,
+  ) {
+    const file = fake.vault.addFile("Journal/2026/08/2026-08-12-22-41-52.md", data);
+    if (frontmatter) fake.metadataCache.frontmatter.set(file.path, frontmatter);
+    return file;
+  }
+
+  it("adds the tag and touches nothing else", async () => {
+    const { fake, repo } = setup();
+    const data = `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n---\n${body}`;
+    const file = addEntry(fake, data, { created: "2026-08-12T22:41:52+03:00", mood: "calm", tags: ["journal"] });
+
+    expect(await repo.addEntryTag(file, "work")).toBe(true);
+
+    expect(fake.vault.contents.get(file.path)).toBe(
+      `---\ncreated: 2026-08-12T22:41:52+03:00\nmood: "calm"\ntags:\n  - journal\n  - work\n---\n${body}`,
+    );
+  });
+
+  it("adds a tags property to an entry that has none", async () => {
+    const { fake, repo } = setup();
+    const file = addEntry(fake, `---\ncreated: x\n---\n${body}`, { created: "x" });
+
+    expect(await repo.addEntryTag(file, "work")).toBe(true);
+
+    expect(fake.vault.contents.get(file.path)).toBe(`---\ncreated: x\ntags:\n  - work\n---\n${body}`);
+  });
+
+  it("writes nothing when the entry already carries the tag, in any case", async () => {
+    const { fake, repo } = setup();
+    const data = `---\ntags: [Work]\n---\n${body}`;
+    const file = addEntry(fake, data, { tags: ["Work"] });
+
+    expect(await repo.addEntryTag(file, "work")).toBe(false);
+
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+
+  it("refuses, writing nothing, when Obsidian could not parse a block that has a tags line", async () => {
+    const { fake, repo } = setup();
+    const data = `---\ntags: [a]\nbroken: "unterminated\n---\n${body}`;
+    const file = addEntry(fake, data, undefined);
+
+    await expect(repo.addEntryTag(file, "work")).rejects.toThrow(UnsafeFrontmatterError);
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+
+  it("refuses when Obsidian reads a tags key the line match cannot see", async () => {
+    const { fake, repo } = setup();
+    const data = `---\n"tags": [a]\n---\n${body}`;
+    const file = addEntry(fake, data, { tags: ["a"] });
+
+    await expect(repo.addEntryTag(file, "work")).rejects.toThrow(UnsafeFrontmatterError);
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+
+  it("refuses when the line match sees a tags key Obsidian does not", async () => {
+    const { fake, repo } = setup();
+    const data = `---\nnote: "first\ntags: line"\n---\n${body}`;
+    const file = addEntry(fake, data, { note: "first tags: line" });
+
+    await expect(repo.addEntryTag(file, "work")).rejects.toThrow(UnsafeFrontmatterError);
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+
+  it("refuses a single-value tags property rather than rewriting it", async () => {
+    const { fake, repo } = setup();
+    const data = `---\ntags: life\n---\n${body}`;
+    const file = addEntry(fake, data, { tags: "life" });
+
+    await expect(repo.addEntryTag(file, "work")).rejects.toThrow(UnsafeFrontmatterError);
+    expect(fake.vault.contents.get(file.path)).toBe(data);
+  });
+});

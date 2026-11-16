@@ -156,12 +156,12 @@ export interface ChangeApplicationDeps {
    * Re-renders one row's frontmatter tag chips from the current metadata
    * cache — `JournalView.refreshEntryTags`. Called for every "content"/
    * "moved" change, INCLUDING the ones whose action is `noop`: that decline
-   * protects the editor's text, and the header's chips are not the editor.
+   * protects the editor's text, and the chips are not the editor.
    * Without this a chip would keep advertising a frontmatter tag the user
    * had already removed, until the next full reload.
    *
    * Narrowed to `entry`/`el` ONLY, deliberately — not the full `ChangeEntry`.
-   * The chips live in header DOM, a sibling of wherever the editor mounts,
+   * The chips live in their own row, a sibling of wherever the editor mounts,
    * and must never reach into it; previously that was enforced only by this
    * comment. Dropping `editor`/`saveHandle`/`savedBody` from the parameter
    * makes it a compile error for a future implementation to reach for

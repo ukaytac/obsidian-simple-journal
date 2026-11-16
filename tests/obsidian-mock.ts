@@ -646,6 +646,56 @@ export abstract class SuggestModal<T> extends Modal {
 }
 
 /**
+ * Minimal stand-in for Obsidian's `AbstractInputSuggest`. Real Obsidian
+ * floats a list under the field as the user types; jsdom has no layout for
+ * that, so this keeps only what is observable: typing asks
+ * `getSuggestions` and opens the list when it returned anything (closing it
+ * otherwise), and the real, public `selectSuggestion(value, evt)` is how a
+ * test picks one — it hands the value to the `onSelect` callback, as the
+ * real one does.
+ */
+export abstract class AbstractInputSuggest<T> {
+  limit = 100;
+  private selectCallback: ((value: T, evt: MouseEvent | KeyboardEvent) => unknown) | null = null;
+
+  constructor(
+    _app: unknown,
+    private readonly textInputEl: HTMLInputElement | HTMLDivElement,
+  ) {
+    textInputEl.addEventListener("input", () => {
+      void Promise.resolve(this.getSuggestions(this.getValue())).then((values) => {
+        if (values.length > 0) this.open();
+        else this.close();
+      });
+    });
+  }
+
+  open(): void {}
+  close(): void {}
+
+  setValue(value: string): void {
+    if (this.textInputEl instanceof HTMLInputElement) this.textInputEl.value = value;
+    else this.textInputEl.textContent = value;
+  }
+
+  getValue(): string {
+    return this.textInputEl instanceof HTMLInputElement ? this.textInputEl.value : this.textInputEl.textContent ?? "";
+  }
+
+  onSelect(callback: (value: T, evt: MouseEvent | KeyboardEvent) => unknown): this {
+    this.selectCallback = callback;
+    return this;
+  }
+
+  selectSuggestion(value: T, evt: MouseEvent | KeyboardEvent): void {
+    this.selectCallback?.(value, evt);
+  }
+
+  protected abstract getSuggestions(query: string): T[] | Promise<T[]>;
+  abstract renderSuggestion(value: T, el: HTMLElement): void;
+}
+
+/**
  * The subset of Obsidian's `ViewState` this mock records. `group` is omitted
  * deliberately — nothing under test sets it, and modelling leaf grouping
  * would mean modelling the split tree this workspace does not have.

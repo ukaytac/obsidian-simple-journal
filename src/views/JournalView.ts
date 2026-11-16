@@ -13,6 +13,7 @@ import {
 } from "obsidian";
 import type { JournalEntry } from "../journal/entry";
 import {
+  collectTags,
   entriesWithTag,
   frontmatterTags,
   normalizeTag,
@@ -39,6 +40,7 @@ import {
 } from "./entrySave";
 import { createMountLifecycle, type MountLifecycle } from "./mountLifecycle";
 import { createTimelineDom, type TimelineDom } from "./timelineDom";
+import { createTagAdder } from "./entryTagAdder";
 import { TextareaEditor } from "./TextareaEditor";
 
 export const VIEW_TYPE_JOURNAL = "simple-journal-timeline";
@@ -1873,12 +1875,15 @@ export class JournalView extends ItemView {
     // below. `commitComposer` re-enables it the moment the entry gets a file.
     if (!entry.file) timeButton.disabled = true;
 
-    // Chips for the FRONTMATTER tags only — the ones the timeline hides by
-    // suppressing `.metadata-container` (see styles.css). An inline `#tag`
-    // already renders as a clickable pill in live preview, so chipping it too
-    // would show the same tag twice. See `entryTags.ts`'s module doc.
-    const tagsEl = headerEl.createDiv({ cls: "journal-entry-tags" });
-    this.renderEntryTagsInto(tagsEl, entry);
+    // "Add tag" — the one place the plugin writes a tag (CLAUDE.md § Tags,
+    // Rule 2). Beside the time, revealed with the actions button. Its own
+    // element, never inside `.journal-entry-tags` below: the chips are
+    // emptied and rebuilt on every change to this entry, including the one
+    // this control's own write causes, which would wipe a field mid-typing.
+    // Hidden for the composer like the actions button, for the same reason;
+    // `commitComposer` reveals both together.
+    const tagAddEl = headerEl.createDiv({ cls: "journal-entry-tag-adder" });
+    if (!entry.file) tagAddEl.addClass("journal-entry-actions-pending");
 
     // Hidden until hover/focus (see styles.css) — the timeline is a writing
     // surface, not a dashboard, so nothing but the timestamp is visible at rest.
@@ -1898,6 +1903,18 @@ export class JournalView extends ItemView {
     // code fences, blockquotes, tables and callouts pick up its styling
     // (and whatever a theme layers on top of it) instead of browser defaults.
     const bodyEl = el.createDiv({ cls: "journal-entry-body markdown-rendered" });
+
+    // Chips for the FRONTMATTER tags only — the ones the timeline hides by
+    // suppressing `.metadata-container` (see styles.css). An inline `#tag`
+    // already renders as a clickable pill in live preview, so chipping it too
+    // would show the same tag twice. See `entryTags.ts`'s module doc.
+    //
+    // Under the text rather than in the header: a tag describes what was
+    // written, and the end of an entry is where people put inline tags too.
+    // A sibling of `bodyEl`, never inside it, so a refresh cannot reach the
+    // editor (see `refreshEntryTags`). Collapsed by CSS while empty.
+    const tagsEl = el.createDiv({ cls: "journal-entry-tags" });
+    this.renderEntryTagsInto(tagsEl, entry);
 
     const rendered: RenderedEntry = {
       entry,
@@ -1965,6 +1982,14 @@ export class JournalView extends ItemView {
     bodyEl.addEventListener("focusin", remountOnInteraction);
 
     button.onClick((event) => this.showEntryMenu(rendered, event));
+
+    createTagAdder(tagAddEl, {
+      app: this.app,
+      journalTags: () => collectTags(this.plugin.journal.getEntries()),
+      entryTags: () =>
+        rendered.entry.file ? frontmatterTags(this.app.metadataCache.getFileCache(rendered.entry.file)) : [],
+      commit: (tag) => this.addTagToEntry(rendered, tag),
+    });
 
     // Same code path as the "Change entry time" menu item below, so the two
     // affordances can never diverge — `changeEntryTime` already no-ops for
@@ -2081,7 +2106,9 @@ export class JournalView extends ItemView {
         const target = event.target;
         if (
           target instanceof Element &&
-          target.closest(".journal-entry-body, .journal-entry-actions, .journal-entry-time, .journal-entry-tag")
+          target.closest(
+            ".journal-entry-body, .journal-entry-actions, .journal-entry-time, .journal-entry-tag, .journal-entry-tag-adder",
+          )
         ) {
           return;
         }
@@ -2781,6 +2808,38 @@ export class JournalView extends ItemView {
    * for what this actually does and why; this wrapper exists only so calls
    * go through `this.` (see `scheduleSave`'s doc).
    */
+  /**
+   * The write behind the header's "Add tag" field (`entryTagAdder.ts`).
+   * Shaped like `commitEntryTimeChange`: a pending body save is flushed
+   * first so the two writes cannot race on the same file, then
+   * `EntryRepository.addEntryTag` inserts one line. Nothing here touches the
+   * rendered row — the chip appears from the write's own metadata event, as
+   * a tag added in another pane would, so there is one way chips change.
+   *
+   * Bails if the file is gone, for the race `changeEntryTime`'s doc
+   * describes. A refused shape gets an actionable Notice, any other failure
+   * the generic one: `# Error Handling` asks to fail visibly.
+   */
+  private async addTagToEntry(rendered: RenderedEntry, tag: string): Promise<void> {
+    const file = rendered.entry.file;
+    if (!file) return;
+    if (this.app.vault.getAbstractFileByPath(file.path) !== file) return;
+
+    await this.flushSave(rendered);
+    if (this.closed) return;
+
+    try {
+      await this.plugin.repository.addEntryTag(file, tag);
+    } catch (error) {
+      console.error("Simple Journal: could not add a tag to the entry", file.path, error);
+      new Notice(
+        error instanceof UnsafeFrontmatterError
+          ? "This entry's tags are written in a form that can't be edited safely here. Add the tag in the source note instead."
+          : "Could not add the tag. See the developer console for details.",
+      );
+    }
+  }
+
   private async flushSave(rendered: RenderedEntry): Promise<void> {
     await flushSaveEntry(rendered, this.saveDeps);
   }
@@ -3341,7 +3400,7 @@ export class JournalView extends ItemView {
     // rendered copy does not: that "added" change resolves to an insert,
     // and `insertEntryInPlace` early-returns because this path is already
     // rendered. So `rendered.entry.tags` stays `[]` until a reload or a
-    // reposition, and nothing may rely on it: the header's chips read the
+    // reposition, and nothing may rely on it: the entry's chips read the
     // metadata cache live, and `changeEntryTime` re-resolves rather than
     // carrying this array over.
     rendered.entry = { file, created, tags: [] };
@@ -3350,6 +3409,7 @@ export class JournalView extends ItemView {
     // Reveal the actions button now that there's a file for it to act on
     // (see createEntryEl's doc on why it starts hidden for the composer).
     rendered.el.querySelector<HTMLElement>(".journal-entry-actions")?.removeClass("journal-entry-actions-pending");
+    rendered.el.querySelector<HTMLElement>(".journal-entry-tag-adder")?.removeClass("journal-entry-actions-pending");
     // Same moment: the timestamp button was disabled for the exact same
     // reason (see createEntryEl) and is now correctable too.
     const timeButton = rendered.el.querySelector<HTMLButtonElement>(".journal-entry-time");
@@ -3730,12 +3790,12 @@ export class JournalView extends ItemView {
   /**
    * Re-reads one rendered row's frontmatter chips from the metadata cache.
    * Called for every "content"/"moved" change, including those whose action
-   * is a `noop` to protect a focused or dirty editor — the chips are in the
-   * header, not the editor, so refreshing them is always safe, and a chip
+   * is a `noop` to protect a focused or dirty editor — the chips are not in
+   * the editor, so refreshing them is always safe, and a chip
    * advertising a tag the user already deleted is a lie the timeline has no
    * other way to correct before the next reload.
    *
-   * Confined strictly to `.journal-entry-tags`, a child of `headerEl`: that
+   * Confined strictly to `.journal-entry-tags`, the row under the text: that
    * element is a SIBLING of `bodyEl`, where the editor is mounted, so
    * touching it cannot disturb the editor's focus, selection, or CM6 state.
    * Enforced by the type now, not just this comment: the parameter is

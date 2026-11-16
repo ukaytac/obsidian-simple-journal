@@ -6,6 +6,7 @@ import {
   entryHasTag,
   frontmatterTags,
   resolveTags,
+  validateNewTag,
 } from "../src/journal/entryTags";
 
 /** A cache shaped like Obsidian's, as `getFileCache` returns it. */
@@ -149,5 +150,44 @@ describe("collectTags", () => {
 
   it("is empty for an empty journal", () => {
     expect(collectTags([])).toEqual([]);
+  });
+});
+
+describe("validateNewTag", () => {
+  it("accepts a tag, stripping a leading # and surrounding space", () => {
+    expect(validateNewTag("  #work ")).toEqual({ ok: true, tag: "work" });
+  });
+
+  it("accepts Turkish letters, digits, _, - and nested levels", () => {
+    expect(validateNewTag("günlük/iş_2026-ağustos")).toEqual({ ok: true, tag: "günlük/iş_2026-ağustos" });
+    expect(validateNewTag("İstanbul")).toEqual({ ok: true, tag: "İstanbul" });
+  });
+
+  it("accepts a tag that starts with a digit, as Obsidian does", () => {
+    expect(validateNewTag("2026-plans")).toEqual({ ok: true, tag: "2026-plans" });
+  });
+
+  it("rejects an empty tag", () => {
+    expect(validateNewTag(" # ").ok).toBe(false);
+  });
+
+  it("rejects a space inside the tag", () => {
+    expect(validateNewTag("deep work").ok).toBe(false);
+  });
+
+  it("rejects a tag made only of digits, which Obsidian does not count as a tag", () => {
+    expect(validateNewTag("1984").ok).toBe(false);
+  });
+
+  it("rejects punctuation that would not survive as a tag or as plain YAML", () => {
+    for (const raw of ["a:b", "a#b", "a,b", "a.b", "[a]", "a\"b", "a!"]) {
+      expect(validateNewTag(raw).ok, raw).toBe(false);
+    }
+  });
+
+  it("rejects an empty nested level", () => {
+    for (const raw of ["/work", "work/", "work//project"]) {
+      expect(validateNewTag(raw).ok, raw).toBe(false);
+    }
   });
 });

@@ -22,8 +22,10 @@ import type { JournalEntry } from "./entry";
  * filters, "any of N tags" — that belongs in its own module rather than
  * accreting onto this one.
  *
- * Nothing here ever WRITES a tag. Frontmatter belongs to the user (only
- * `created` is ours, via `setCreatedProperty`), and the body needs no help:
+ * Nothing here WRITES a tag. The one write is the header's "Add tag" field,
+ * through `EntryRepository.addEntryTag` and `markdownDoc.addFrontmatterTag`
+ * (CLAUDE.md § Tags, Rule 2); what this module adds to it is
+ * `validateNewTag`, the rule for what may be written. The body needs no help:
  * the embedded editor is a real Obsidian editor, so typing `#` brings up
  * Obsidian's own tag autocomplete.
  */
@@ -85,7 +87,7 @@ export function resolveTags(cache: CachedMetadata | null | undefined): string[] 
 }
 
 /**
- * Only the frontmatter side. Used for the chips in an entry's header, and
+ * Only the frontmatter side. Used for the chips under an entry's text, and
  * for nothing else — see this module's doc for why that one asymmetry exists.
  */
 export function frontmatterTags(cache: CachedMetadata | null | undefined): string[] {
@@ -148,4 +150,41 @@ export function entriesWithTag(entries: readonly JournalEntry[], tag: string): J
 /** Every tag across `entries`, deduped and alphabetical — the suggester's list. */
 export function collectTags(entries: readonly JournalEntry[]): string[] {
   return normalizeAll(entries.flatMap((entry) => entry.tags)).sort((a, b) => a.localeCompare(b));
+}
+
+/** What `validateNewTag` decided: the tag to write, or why there is none. */
+export type NewTagResult = { ok: true; tag: string } | { ok: false; reason: string };
+
+/**
+ * Decides whether text the user typed into an entry's "Add tag" field may be
+ * written as a tag, and in what form — the one place that rule lives.
+ *
+ * The rule is Obsidian's own, narrowed: letters (any script, so `günlük` and
+ * `İstanbul` are fine), combining marks, digits, `_`, `-`, and `/` for nested
+ * tags, with at least one character that is not a digit (`#1984` is not a
+ * tag in Obsidian). Narrowed in two ways. Obsidian also accepts some emoji
+ * and symbols; this does not, because every character admitted here must
+ * also be safe in a plain YAML scalar inside a flow list (see
+ * `addFrontmatterTag`), and `:`, `#`, `,` and brackets are not. And an empty
+ * nested level (`/work`, `work/`, `a//b`) is refused rather than guessed at.
+ *
+ * Case is kept as typed. Obsidian treats tags case-insensitively, so
+ * `Work` added beside an existing `work` is the same tag to search, the tag
+ * pane and the scope — which is why the caller checks for an existing tag
+ * case-insensitively before writing.
+ */
+export function validateNewTag(raw: string): NewTagResult {
+  const tag = normalizeTag(raw);
+  if (!tag) return { ok: false, reason: "Type a tag first." };
+  if (/\s/.test(tag)) return { ok: false, reason: "A tag can't contain spaces." };
+  if (!/^[\p{L}\p{M}\p{N}_\-/]+$/u.test(tag)) {
+    return { ok: false, reason: "A tag can only contain letters, numbers, _, - and /." };
+  }
+  if (/^\p{N}+$/u.test(tag.replace(/\//g, ""))) {
+    return { ok: false, reason: "A tag needs at least one character that isn't a number." };
+  }
+  if (tag.startsWith("/") || tag.endsWith("/") || tag.includes("//")) {
+    return { ok: false, reason: "A nested tag can't have an empty level." };
+  }
+  return { ok: true, tag };
 }

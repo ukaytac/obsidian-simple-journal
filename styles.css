@@ -952,10 +952,19 @@
    leave a filled, rounded, shadowed chip where a quiet tag belongs. The
    two-class selector clears both, and the explicit :hover entry keeps a
    theme's own `button:hover` from flipping the tie back. */
+/* The chip row under an entry's text (see JournalView.createEntryEl). Takes
+   no space at all on an entry without frontmatter tags. Wraps, since it is
+   no longer sharing a line with the time and can hold more than fits. */
 .journal-entry-tags {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--size-4-1);
+  gap: var(--size-4-1) var(--size-4-2);
+  margin-top: var(--size-4-1);
+}
+
+.journal-entry-tags:empty {
+  display: none;
 }
 
 /* Obsidian tags whatever the user is pressing on a touch device with
@@ -963,9 +972,9 @@
    class ahead of the reset below — so without this, every tap on a tag chip
    flashes the filled chip back for the duration of the press. Same fix as
    `.journal-entry-time` and `.journal-calendar-day` above. */
-.journal-entry-header .journal-entry-tag,
-.journal-entry-header .journal-entry-tag:hover,
-.journal-entry-header .journal-entry-tag.mobile-tap {
+.journal-entry-tags .journal-entry-tag,
+.journal-entry-tags .journal-entry-tag:hover,
+.journal-entry-tags .journal-entry-tag.mobile-tap {
   padding: 0;
   height: auto;
   border: none;
@@ -984,13 +993,13 @@
    `outline: none`. Without this, a high-contrast user gets no focus
    indicator at all — same fix as `.journal-entry-time` above. */
 @media (forced-colors: active) {
-  .journal-entry-header .journal-entry-tag:focus-visible {
+  .journal-entry-tags .journal-entry-tag:focus-visible {
     outline: 2px solid ButtonText;
   }
 }
 
-.journal-entry-header .journal-entry-tag:hover,
-.journal-entry-header .journal-entry-tag:focus-visible {
+.journal-entry-tags .journal-entry-tag:hover,
+.journal-entry-tags .journal-entry-tag:focus-visible {
   color: var(--text-accent);
 }
 
@@ -999,8 +1008,90 @@
    no visible focus indicator at all. Reinstated explicitly, using the same
    variable Obsidian's own focus rings use — same fix as `.journal-entry-time`
    above. */
-.journal-entry-header .journal-entry-tag:focus-visible {
+.journal-entry-tags .journal-entry-tag:focus-visible {
   box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+/* "Add tag" (see entryTagAdder.ts), beside the time. Revealed exactly like
+   .journal-entry-actions — hover or focus on desktop, always on (dimmed on
+   mobile) where there is no hover — so at rest the header is still only the
+   timestamp. */
+.journal-entry-tag-adder {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 100ms ease-in-out;
+}
+
+.journal-entry:hover .journal-entry-tag-adder,
+.journal-entry-tag-adder:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .journal-entry-tag-adder {
+    opacity: 1;
+  }
+}
+
+.is-mobile .journal-entry-tag-adder {
+  opacity: 0.5;
+}
+
+.is-mobile .journal-entry-tag-adder:focus-within {
+  opacity: 1;
+}
+
+/* Reads as one more muted chip, not as a button — the same reset as
+   `.journal-entry-tags .journal-entry-tag` above, for the same reasons
+   (Obsidian's `button:not(.clickable-icon)` and bare `button` rules, the
+   `mobile-tap` flash, the erased focus ring). */
+.journal-entry-tag-adder .journal-entry-tag-add,
+.journal-entry-tag-adder .journal-entry-tag-add:hover,
+.journal-entry-tag-adder .journal-entry-tag-add.mobile-tap {
+  padding: 0;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: transparent;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.journal-entry-tag-adder .journal-entry-tag-add:hover,
+.journal-entry-tag-adder .journal-entry-tag-add:focus-visible {
+  color: var(--text-accent);
+}
+
+.journal-entry-tag-adder .journal-entry-tag-add:focus-visible {
+  box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+@media (forced-colors: active) {
+  .journal-entry-tag-adder .journal-entry-tag-add:focus-visible {
+    outline: 2px solid ButtonText;
+  }
+}
+
+.journal-entry-tag-adder .journal-entry-tag-add[hidden] {
+  display: none;
+}
+
+.journal-entry-tag-input {
+  width: 10em;
+  height: auto;
+  padding: 0 var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+}
+
+.journal-tag-suggestion-new {
+  margin-left: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
 }
 
 /* ── Mentions ─────────────────────────────────────────────────────────────

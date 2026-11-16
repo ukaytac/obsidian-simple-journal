@@ -1,9 +1,11 @@
 import { App, TFile, TFolder, Vault } from "obsidian";
 import type { JournalEntry } from "./entry";
 import { resolveEntryDate } from "./entryDate";
-import { resolveTags } from "./entryTags";
+import { frontmatterTags, resolveTags } from "./entryTags";
 import {
+  addFrontmatterTag,
   hasCreatedLine,
+  hasTagsLine,
   preserveSeparator,
   replaceBody,
   setCreatedProperty,
@@ -843,6 +845,57 @@ export class EntryRepository {
       const { frontmatter, body: existingBody } = splitFrontmatter(data);
       return replaceBody(data, preserveSeparator(frontmatter, existingBody, body));
     });
+  }
+
+  /**
+   * Adds `tag` to the entry's frontmatter tags — the one path through which
+   * this plugin writes a tag, and only because the user typed it into the
+   * entry's "Add tag" field (CLAUDE.md § Tags, Rule 2). The write is one
+   * inserted line or list element, through `addFrontmatterTag`; see its doc
+   * for the shapes it accepts and refuses.
+   *
+   * Returns false, writing nothing, when Obsidian's parse already shows the
+   * tag on this entry, compared case-insensitively as Obsidian compares
+   * tags. A tag that appears only inline in the body is not "already there":
+   * the user asked for a property, and the chip that results is what they
+   * asked to see.
+   *
+   * Cross-checks the raw text against `metadataCache.getFileCache` the way
+   * `setEntryCreated` does, and refuses (`UnsafeFrontmatterError`, writing
+   * nothing) when the two disagree about whether a tags key exists — either
+   * direction means the line match is not looking at the property Obsidian
+   * reads — or when a block holding a tags line could not be parsed at all.
+   *
+   * Not a self-write (`markSelfWrite`): the chips refresh from this write's
+   * own metadata event, exactly as they do for a tag added in another pane.
+   */
+  async addEntryTag(file: TFile, tag: string): Promise<boolean> {
+    let added = false;
+    await this.app.vault.process(file, (data) => {
+      const { frontmatter } = splitFrontmatter(data);
+      const cache = this.app.metadataCache.getFileCache(file);
+      const cached = cache?.frontmatter;
+      const rawHasTags = hasTagsLine(frontmatter);
+      const cacheHasTags = !!cached && Object.keys(cached).some((key) => /^tags?$/i.test(key));
+
+      if (frontmatter && rawHasTags && !cached) {
+        throw new UnsafeFrontmatterError(
+          "This entry's frontmatter could not be parsed by Obsidian; refusing to guess at it.",
+        );
+      }
+      if (rawHasTags !== cacheHasTags) {
+        throw new UnsafeFrontmatterError(
+          `This entry's "tags" line does not match Obsidian's own reading of its frontmatter.`,
+        );
+      }
+
+      const needle = tag.toLowerCase();
+      if (frontmatterTags(cache).some((existing) => existing.toLowerCase() === needle)) return data;
+
+      added = true;
+      return addFrontmatterTag(data, tag);
+    });
+    return added;
   }
 
   /**
