@@ -3,6 +3,31 @@
 The text of each GitHub release is taken from here. Starts at 1.1.0 — earlier
 versions were released without written notes.
 
+## 1.7.0
+
+### Add a tag without leaving the journal
+
+Each entry now has a **+ tag** next to its time. It shows when you point at
+the entry, and stays dimmed on a phone. Click it, type a tag and press Enter.
+Your journal's existing tags are suggested as you type, and a tag you have
+never used before works just as well.
+
+The tag goes into the entry's `tags` property, the same place Obsidian's own
+Properties panel puts it. Nothing else in the note changes: your other
+properties keep their order and formatting, and the text you wrote is not
+touched. If an entry's tags are written in a form that can't be edited safely
+from here, for example `tags: life` as a single value rather than a list, the
+journal says so, changes nothing, and you can add the tag in the note itself.
+
+Tags can use letters from any language, numbers, `_`, `-` and `/` for nested
+tags.
+
+### Tags now sit under the entry
+
+An entry's property tags used to appear next to its time. They now appear in a
+row under the entry's text, and the row takes no space on an entry without
+tags. Clicking a tag still filters the journal to it.
+
 ## 1.6.1
 
 ### Short entries no longer scroll inside themselves
